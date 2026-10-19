@@ -1,3 +1,4 @@
+import {loadMapLocation, saveMapLocation} from "./lib/mapLocationStorage";
 import {requestLocation, MAX_LOCATION_ACCURACY} from "./lib/location";
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -24,16 +25,17 @@ import { LocationSearchBox } from "./components/LocationSearchBox";
 import {bestSearchScore, searchMatchLabel} from './lib/koreanSearch';
 
 export default function App() {
-  const [center, setCenter] = useState(INITIAL_LOCATION);
+  const [initialMap] = useState(()=>loadMapLocation() ?? {location: INITIAL_LOCATION, label: "강남역 주변"});
+  const [center, setCenter] = useState(initialMap.location);
   const [viewport, setViewport] = useState<MapBounds | null>(null);
   const [nearbyLimit, setNearbyLimit] = useState<number | null>(5);
   const [focus, setFocus] = useState({
-    location: INITIAL_LOCATION,
+    location: initialMap.location,
     revision: 0,
   });
   const [userLocation, setUserLocation] = useState<Coordinates | null>(null),
     [mapReady, setMapReady] = useState(false);
-  const [label, setLabel] = useState("강남역 주변"),
+  const [label, setLabel] = useState(initialMap.label),
     [radius, setRadius] = useState(500);
   const [view, setView] = useState<"nearby" | "favorites" | "route">("nearby"),
     [filter, setFilter] = useState(false);
@@ -189,6 +191,7 @@ export default function App() {
     setNearbyLimit(fromLocation ? 5 : null);
     setFocus((f) => ({ location, revision: f.revision + 1 }));
     setLabel(title);
+    saveMapLocation(location, fromLocation ? "마지막으로 확인한 위치 주변" : title);
     setSubmitted("");
     setText("");
     setSelectedId(null);
@@ -202,6 +205,7 @@ export default function App() {
     setFocus(previous=>({location:place.location,revision:previous.revision+1}));
     setFocusedPlace(place);
     setLabel(`${place.name} 주변`);
+    saveMapLocation(place.location, `${place.name} 주변`);
     setSelectedId(null);
     setPickingOrigin(false);
     setSheet("mid");
@@ -219,6 +223,7 @@ export default function App() {
     setFocusedPlace(place);
   }
   function select(station: Station) {
+    saveMapLocation(station.location, `${station.stationName} 주변`);
     allowInitialLocation.current = false;
     setFocusedPlace(null);
     if (submitted && view !== "route") recentPlaces.remember(submitted);
@@ -264,7 +269,7 @@ export default function App() {
           : error.code === 3
             ? "위치 확인 시간이 초과됐어요. 현재 위치 버튼으로 다시 시도해 주세요."
             : "브라우저가 현재 위치를 제공하지 못했어요. 운영체제 위치 서비스와 네트워크 연결을 확인해 주세요.";
-        setMessage(reason + (initial ? " 현재는 강남역 주변을 보여드려요." : " 장소 검색은 계속 사용할 수 있어요."));
+        setMessage(reason + (initial ? ` 현재는 ${initialMap.label}을 보여드려요.` : " 장소 검색은 계속 사용할 수 있어요."));
         setLocating(false);
       },
     );
@@ -622,6 +627,7 @@ export default function App() {
               allowInitialLocation.current=false;
               setCenter(location);
               setLabel("지도 중심 주변");
+              saveMapLocation(location, "마지막으로 본 지도 주변");
               setNearbyLimit(5);
               setSubmitted("");
               setText("");
