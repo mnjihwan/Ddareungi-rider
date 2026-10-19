@@ -311,14 +311,9 @@ export default function App() {
           </span>
           <span>
             따릉라이더
-            <small>ddareungrider</small>
           </span>
         </a>
         <nav aria-label="대여소 보기">
-          <button className={view === "route" ? "active" : ""}
-            onClick={() => {allowInitialLocation.current=false;setView("route");setSelectedId(null);setSheet(route ? "mid" : "full");}}>
-            <Icon name="arrow" size={17} />길찾기
-          </button>
           <button
             className={view === "nearby" ? "active" : ""}
             onClick={() => {
@@ -329,6 +324,10 @@ export default function App() {
           >
             <Icon name="pin" size={17} />
             주변 대여소
+          </button>
+          <button className={view === "route" ? "active" : ""}
+            onClick={() => {allowInitialLocation.current=false;setView("route");setSelectedId(null);setSheet(route ? "mid" : "full");}}>
+            <Icon name="arrow" size={17} />길찾기
           </button>
           <button
             className={view === "favorites" ? "active" : ""}
