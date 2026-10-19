@@ -10,8 +10,9 @@ import { LocationSearchBox } from './LocationSearchBox';
 import { SwipeRow } from './SwipeRow';
 
 const minutes = (seconds: number) => `${Math.max(0, Math.ceil(seconds / 60))}분`;
-export function RoutePlanner({onPlanningChange, active, favoriteStations, favoritesLoading, favoritesError, userLocation, userLocationAccuracy, endpointSelection, pickedEndpoint, plan, onPlan, onLocation, onSelectStation, onPickEndpoint, onPlaceSelected, searchCenter, onSearchStart}: {
+export function RoutePlanner({onStationSelectionChange, onPlanningChange, active, favoriteStations, favoritesLoading, favoritesError, userLocation, userLocationAccuracy, endpointSelection, pickedEndpoint, plan, onPlan, onLocation, onSelectStation, onPickEndpoint, onPlaceSelected, searchCenter, onSearchStart}: {
   onPlanningChange: (pending: boolean) => void;
+  onStationSelectionChange: (stations: Station[]) => void;
   active: boolean;
   favoriteStations: Station[];
   favoritesLoading: boolean;
@@ -63,6 +64,9 @@ export function RoutePlanner({onPlanningChange, active, favoriteStations, favori
     assignEndpoint(activeEndpoint,place,station);onPlaceSelected(place);
   }
   useEffect(() => { onPlanningChange(pending); }, [pending, onPlanningChange]);
+  useEffect(() => {
+    onStationSelectionChange([pinned,arrival].filter((station): station is Station=>station!==null));
+  }, [pinned,arrival,onStationSelectionChange]);
   useEffect(() => () => request.current?.abort(), []);
   useEffect(() => { if(plan)resultElement.current?.scrollIntoView({block:'start'}); }, [plan]);
   useEffect(() => {

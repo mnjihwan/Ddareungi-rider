@@ -9,6 +9,7 @@ import { MapMarker } from "./MapMarker";
 interface Props {
   theme?: "light" | "dark";
   stations: Station[];
+  routeStationsOnly?: boolean;
   selectedId: string | null;
   focus: { location: Coordinates; revision: number };
   userLocation: Coordinates | null;
@@ -27,6 +28,7 @@ interface Props {
 export function StationMap({
   theme = "light",
   stations,
+  routeStationsOnly = false,
   selectedId,
   focus,
   userLocation,
@@ -207,16 +209,16 @@ export function StationMap({
         };
       })
       .filter(
-        (point) =>
+        (point) => routeStationsOnly || (
           point.x >= -30 &&
           point.x <= width + 30 &&
           point.y >= 20 &&
-          point.y <= height - 40,
+          point.y <= height - 40),
       );
-    const showIndividual=state==="ready" && map && map.getLevel()<=4;
+    const showIndividual=state==="ready" && map && (routeStationsOnly || map.getLevel()<=4);
     const grouped=clusterPoints(points, selectedId,showIndividual ? 0 : 72,48);
     setGroups(showIndividual ? separateMarkerGroups(grouped,selectedId) : grouped);
-  }, [stations, selectedId, version, state, focus]);
+  }, [stations, selectedId, version, state, focus, routeStationsOnly]);
 
   function zoom(delta: number) {
     const map = mapRef.current;
@@ -362,7 +364,7 @@ export function StationMap({
             ? <MapMarker key={group.id} map={mapRef.current} sdk={window.kakao.maps}
                 location={{latitude: members.reduce((sum, station) => sum + station.location.latitude, 0) / members.length,
                   longitude: members.reduce((sum, station) => sum + station.location.longitude, 0) / members.length}}
-                selected={group.stationIds.includes(selectedId ?? "")}>{button}</MapMarker>
+                selected={group.stationIds.includes(selectedId ?? "")} zIndex={routeStationsOnly ? 110 : undefined}>{button}</MapMarker>
             : button;
           const position = state === "ready" ? {left:group.offsetX??0,top:group.offsetY??0} : {left: group.x, top: group.y};
           if (group.stationIds.length > 1)
@@ -394,6 +396,7 @@ export function StationMap({
               className={`station-marker ${status} ${station.stationId === selectedId ? "selected" : ""}`}
               style={position}
               data-station-id={station.stationId}
+              data-route-station={routeStationsOnly || undefined}
               data-station-ids={group.stationIds.join(",")}
               onClick={() => onSelect(station)}
               aria-label={`${station.stationName}, ${AVAILABILITY_LABEL[status]}, ${status === "unknown" ? "수량 미확인" : `${station.availableBikeCount}대`}`}
