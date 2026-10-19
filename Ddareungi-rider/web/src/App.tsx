@@ -277,8 +277,8 @@ export default function App() {
   const searchShortcuts = (
 <div className="search-shortcuts">
             {recentPlaces.items.length>0 && <div className="recommendation-row recent-places"><span>최근 장소</span>
-              {recentPlaces.items.slice(0,2).map(item=><button key={item.query} onClick={()=>{allowInitialLocation.current=false;setFocusedPlace(null);setText(item.query);setSubmitted(item.query);setSelectedId(null);setSheet("full");}}>{item.query}</button>)}
-              <button className="clear-recent" aria-label="최근 장소 지우기" onClick={recentPlaces.clear}><Icon name="close" size={12}/></button>
+              <div className="recent-place-items">{recentPlaces.items.slice(0,2).map(item=><button key={item.query} onClick={()=>{allowInitialLocation.current=false;setFocusedPlace(null);setText(item.query);setSubmitted(item.query);setSelectedId(null);setSheet("full");}}>{item.query}</button>)}</div>
+              <button className="clear-recent" aria-label="최근 장소 지우기" title="최근 장소 전체 지우기" onClick={recentPlaces.clear}><Icon name="close" size={12}/></button>
             </div>}
             <div className="recommendation-row subway-suggestions"><span>{reliableLocation?"내 주변역":"지도 주변역"}</span>
               {subwaySuggestions.data?.map(place=><button key={place.name} title={place.address} onClick={()=>openPlace(place)}>{place.name.replace(/역(?:\s|[0-9]+호선).*$/,'역')}</button>)}

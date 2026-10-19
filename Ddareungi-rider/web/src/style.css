@@ -1552,3 +1552,11 @@ p {
   .workspace .search-this-area { top: 74px; }
   .workspace .map-connection { top: 74px; }
 }
+
+.recommendation-row.recent-places { overflow: visible; }
+.recent-place-items { display: flex; gap: 6px; flex: 1; min-width: 0; overflow-x: auto; }
+.recent-place-items button { flex-shrink: 0; }
+.recommendation-row .clear-recent { margin-left: auto; width: 36px; height: 36px; display: grid; place-items: center; background: transparent; }
+@media (max-width: 767px) {
+  .recommendation-row .clear-recent { width: 44px; height: 44px; }
+}
