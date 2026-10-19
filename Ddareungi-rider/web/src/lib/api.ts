@@ -1,0 +1,84 @@
+import axios from "axios";
+import type { Coordinates, Forecast, Place, Station, MapBounds, BikeRoute } from "./types";
+
+export const api = axios.create({ baseURL: "/api/v1", timeout: 10_000 });
+export async function planBikeRoute(origin: Coordinates, destination: Coordinates, departureStationId?: string, signal?: AbortSignal): Promise<BikeRoute> {
+  return (await api.post<{data: BikeRoute}>("/routes/plan", {origin, destination, departureStationId},
+    {signal, timeout: 90_000})).data.data;
+}
+export async function nearby(
+  center: Coordinates,
+  radius: number,
+  signal?: AbortSignal,
+): Promise<Station[]> {
+  return (
+    await api.get<{ data: Station[] }>("/stations/nearby", {
+      params: { ...center, radiusMeters: radius },
+      signal,
+    })
+  ).data.data;
+}
+export async function viewportStations(bounds: MapBounds, signal?: AbortSignal): Promise<Station[]> {
+  return (await api.get<{data: Station[]}>("/stations/viewport", {params: bounds, signal})).data.data;
+}
+export async function favoriteStations(
+  ids: string[],
+  center: Coordinates,
+  signal?: AbortSignal,
+): Promise<Station[]> {
+  if (!ids.length) return [];
+  return (
+    await api.post<{ data: Station[] }>(
+      "/stations/batch",
+      { stationIds: ids, ...center },
+      { signal },
+    )
+  ).data.data;
+}
+export async function searchPlaces(
+  query: string,
+  signal?: AbortSignal,
+  center?: Coordinates,
+): Promise<Place[]> {
+  return (
+    await api.get<{ data: Place[] }>("/places/search", {
+      params: { query, ...center },
+      signal,
+    })
+  ).data.data;
+}
+export async function nearbySubways(center:Coordinates,signal?:AbortSignal):Promise<Place[]> {
+  return (await api.get<{data:Place[]}>('/places/nearby-subways',{params:center,signal})).data.data;
+}
+export async function searchStations(
+  query: string,
+  center: Coordinates,
+  signal?: AbortSignal,
+): Promise<Station[]> {
+  return (
+    await api.get<{ data: Station[] }>("/stations/search", {
+      params: { query, ...center },
+      signal,
+    })
+  ).data.data;
+}
+export const forecastPath = import.meta.env.VITE_FORECAST_API_PATH as
+  string | undefined;
+export async function loadForecast(
+  stationId: string,
+  signal?: AbortSignal,
+): Promise<Forecast> {
+  if (!forecastPath || !/^\/(?!\/)/.test(forecastPath))
+    throw new Error("Forecast service unavailable");
+  const response = await api.post<{ data: Forecast[] }>(
+    forecastPath,
+    { stationIds: [stationId], horizons: [5, 10, 15, 30, 60] },
+    { signal },
+  );
+  const result = response.data.data.find(
+    (value) => value.stationId === stationId,
+  );
+  if (!result || !Array.isArray(result.predictions))
+    throw new Error("Forecast unavailable");
+  return result;
+}
