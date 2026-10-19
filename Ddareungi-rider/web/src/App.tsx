@@ -306,12 +306,7 @@ export default function App() {
     <main className="app-shell">
       <header className="app-header">
         <a className="brand" href="/" aria-label="따릉라이더 홈">
-          <span className="brand-icon">
-            <Icon name="bike" size={25} />
-          </span>
-          <span>
-            따릉라이더
-          </span>
+          <img className="brand-logo" src="/branding/ddareung-rider-logo.png" alt="따릉라이더" width={2172} height={724} />
         </a>
         <nav aria-label="대여소 보기">
           <button
