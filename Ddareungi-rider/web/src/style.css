@@ -1236,9 +1236,6 @@ p {
     white-space: nowrap;
   }
   .app-header nav button > svg { width: 14px; height: 14px; }
-  .route-mode.route-sheet-mid .map-surface { bottom: 46%; }
-  .route-mode.route-sheet-peek .map-surface { bottom: 102px; }
-  .route-mode.route-sheet-full .map-surface { bottom: calc(100% - 77px); }
   .route-mode .map-top-label { top: 15px; }
   .route-mode .map-legend { top: 60px; }
   .route-mode .map-connection { top: 105px; }
@@ -1538,17 +1535,18 @@ p {
   .app-header .brand > span:last-child { display: none; }
   .app-header nav { gap: 6px; }
   .app-header nav button { padding: 10px 9px; font-size: 11px; }
-  .workspace { height: calc(100dvh - 56px); --mobile-sheet-height: 46%; }
+  .workspace { height: calc(100dvh - 56px); --mobile-sheet-height: calc((100dvh - 56px) * 0.46); }
   .workspace.map-sheet-peek { --mobile-sheet-height: 102px; }
   .workspace.map-sheet-full { --mobile-sheet-height: calc(100% - 77px); }
-  .workspace .map-surface { bottom: var(--mobile-sheet-height); }
+  /* Keep the map canvas fixed while the sheet overlays it. */
+  .workspace .map-surface { bottom: 102px; }
   .workspace .map-top-label, .workspace .map-legend, .desktop-shortcuts { display: none; }
   .mobile-map-info { display: block; margin: 16px 0; }
   .mobile-map-info .search-shortcuts { padding: 0; margin: 0 0 12px; background: transparent; }
   .mobile-map-legend { color: #68788f; font-size: 11px; }
   .mobile-map-legend summary { padding: 8px 0; cursor: pointer; }
   .mobile-map-legend p { line-height: 1.6; margin: 4px 0; }
-  .workspace .zoom-controls { top: auto; bottom: 16px; }
+  .workspace .zoom-controls { top: auto; bottom: calc(var(--mobile-sheet-height) - 86px); }
   .workspace .location-button { top: auto; bottom: calc(var(--mobile-sheet-height) + 116px); }
   .workspace.map-sheet-full .zoom-controls, .workspace.map-sheet-full .location-button { display: none; }
   .workspace .search-this-area { top: 74px; }
