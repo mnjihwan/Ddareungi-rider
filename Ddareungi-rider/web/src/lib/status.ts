@@ -23,6 +23,13 @@ export function availability(station: Station, now = Date.now()): Availability {
   return count === 0 ? "empty" : count <= 3 ? "low" : "available";
 }
 
+/** Rentable stations first; zero stock second; unavailable or stale data last. */
+export function compareStations(a: Station, b: Station, now = Date.now()): number {
+  const rank: Record<Availability, number> = { available: 0, low: 0, empty: 1, unknown: 2 };
+  return rank[availability(a, now)] - rank[availability(b, now)]
+    || a.distanceMeters - b.distanceMeters;
+}
+
 export function distanceLabel(meters: number): string {
   return meters >= 1000
     ? `${(meters / 1000).toFixed(1)}km`
@@ -55,7 +62,7 @@ export function forecastAt(
     .filter(
       (point) =>
         point &&
-        Number.isFinite(point.expectedBikes) &&
+        Number.isFinite(point.expectedBikes) && point.expectedBikes >= 0 &&
         Number.isFinite(Date.parse(point.targetTime)),
     )
     .sort(
@@ -72,4 +79,22 @@ export function forecastAt(
     count: Math.max(0, Math.round(closest.expectedBikes)),
     targetTime: closest.targetTime,
   };
+}
+
+/** Prediction mode uses only validated forecasts; missing forecasts sort last. */
+export function stationOutlook(station: Station, forecast: import("./types").Forecast | undefined, minutes: number, now = Date.now()) {
+  if (minutes === 0) {
+    const state = availability(station, now);
+    return {state, count: state === "unknown" ? null : station.availableBikeCount};
+  }
+  const prediction = forecast?.stationId === station.stationId ? forecastAt(forecast, minutes, now) : null;
+  const count = prediction?.count ?? null;
+  const state: Availability = count === null ? "unknown" : count === 0 ? "empty" : count <= 3 ? "low" : "available";
+  return {state, count};
+}
+export function compareOutlooks(a: Station, b: Station, forecasts: Map<string, import("./types").Forecast>, minutes: number, now = Date.now()) {
+  const rank: Record<Availability, number> = {available: 0, low: 0, empty: 1, unknown: 2};
+  return rank[stationOutlook(a, forecasts.get(a.stationId), minutes, now).state]
+    - rank[stationOutlook(b, forecasts.get(b.stationId), minutes, now).state]
+    || a.distanceMeters - b.distanceMeters;
 }
