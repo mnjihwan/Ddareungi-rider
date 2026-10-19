@@ -651,8 +651,8 @@ export default function App() {
           />
           <div className="map-top-label">
             <Icon name="pin" size={16} />
-            {view === "route" ? "도보 · 따릉이 · 도보 길찾기" : label}
-            <span>목록 {radius < 1000 ? `${radius}m` : `${radius / 1000}km`} · {mapStations.isFetching ? "지도 갱신 중" : `지도 ${mapStations.data?.length ?? 0}곳`}</span>
+            {view === "route" ? "따릉이 길찾기" : label}
+            {view !== "route" && <span>목록 {radius < 1000 ? `${radius}m` : `${radius / 1000}km`} · {mapStations.isFetching ? "지도 갱신 중" : `지도 ${mapStations.data?.length ?? 0}곳`}</span>}
           </div>
           {mapStations.isError && <button className="search-this-area" onClick={() => void mapStations.refetch()}>
             <Icon name="refresh" size={17} />지도 대여소 다시 불러오기
