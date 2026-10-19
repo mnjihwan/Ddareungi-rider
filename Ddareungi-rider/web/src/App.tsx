@@ -24,7 +24,10 @@ import { RoutePlanner } from "./components/RoutePlanner";
 import { LocationSearchBox } from "./components/LocationSearchBox";
 import {bestSearchScore, searchMatchLabel} from './lib/koreanSearch';
 
+import { useTheme } from "./lib/useTheme";
+
 export default function App() {
+  const {theme, toggle: toggleTheme} = useTheme();
   const [initialMap] = useState(()=>loadMapLocation() ?? {location: INITIAL_LOCATION, label: "강남역 주변"});
   const [center, setCenter] = useState(initialMap.location);
   const [viewport, setViewport] = useState<MapBounds | null>(null);
@@ -338,14 +341,11 @@ export default function App() {
             즐겨찾기<span className="nav-count">{favorites.ids.length}</span>
           </button>
         </nav>
-        <span className="header-status">
-          <i />
-          {mode.data === "sample"
-            ? "샘플 데이터"
-            : mode.data === "infra"
-              ? "실시간 대여소"
-              : "대여소 탐색"}
-        </span>
+        <button className="theme-toggle" onClick={toggleTheme}
+          aria-label={theme === 'dark' ? '라이트 모드로 전환' : '다크 모드로 전환'}
+          title={theme === 'dark' ? '라이트 모드로 전환' : '다크 모드로 전환'}>
+          <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={21}/>
+        </button>
       </header>
       <div className={`workspace map-sheet-${sheet} ${recentPlaces.items.length ? "has-recent-places" : ""} ${view === "route" ? `route-mode route-sheet-${sheet}` : ""}`}>
         <section className="search-area" aria-label="장소 검색">
@@ -624,6 +624,7 @@ export default function App() {
         </aside>
         <section className={`map-region ${selected ? "has-detail" : ""}`} aria-label="지도에서 대여소 찾기">
           <StationMap
+            theme={theme}
             stations={hideStationMarkers ? [] : Array.from(merged.values())}
             selectedId={selectedId}
             focus={focus}
