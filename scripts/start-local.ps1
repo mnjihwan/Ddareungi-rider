@@ -68,7 +68,7 @@ if ($Mode -eq 'Real') {
         & .\gradlew.bat :backend:bootJar --no-daemon
         if ($LASTEXITCODE -ne 0) { throw 'Backend build failed.' }
     } finally { Pop-Location }
-    $jar = Get-ChildItem -LiteralPath (Join-Path $rider 'backend/build/libs') -Filter '*-SNAPSHOT.jar' | Select-Object -First 1
+    $jar = Get-ChildItem -LiteralPath (Join-Path $rider 'backend/build/libs') -Filter '*.jar' | Where-Object { $_.Name -notmatch '-plain\.jar$' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if (-not $jar) { throw 'Backend jar not found.' }
     $backendProcess = Start-Process -FilePath (Get-Command java.exe).Source -ArgumentList @('-jar', ('"' + $jar.FullName + '"'), '--spring.profiles.active=local') -WorkingDirectory $rider -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $stateDirectory 'backend.log') -RedirectStandardError (Join-Path $stateDirectory 'backend-error.log')
     Save-Process $backendProcess 'backend'

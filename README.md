@@ -4,12 +4,16 @@
 
 Python 기반 대여·반납 수요 학습은 [AI 실행 안내](ai/README.md)를 참고하세요. 요일·10분 통계와 LightGBM을 시간순으로 평가하고 결과를 저장하는 오프라인 기반 코드입니다. 실제 웹 예측 연결 전 단계이며, 원본 수집 방법은 [데이터 수집 안내](docs/data-collection.md)에 있습니다.
 
+## v0.1.0 — 1차 웹 기능 릴리스
+
+지도, 장소·대여소 검색, 실시간 수량, 즐겨찾기와 도보→따릉이→도보 길찾기를 포함합니다. AI 미래 잔여 수량 예측은 아직 제공하지 않습니다. 구현 범위, 검증 결과와 운영 전 확인사항은 [릴리스 기록](docs/releases/0.1.0.md)을 참고하세요.
+
 ## 저장소 받기
 
-통합 저장소의 개발 브랜치와 수집기 submodule을 함께 받습니다.
+통합 저장소의 릴리스 브랜치와 수집기 submodule을 함께 받습니다. 후속 개발은 `develop` 브랜치에서 진행합니다.
 
 ```powershell
-git clone --branch develop --recurse-submodules https://github.com/mnjihwan/Ddareungi-rider.git ddareungi
+git clone --branch main --recurse-submodules https://github.com/mnjihwan/Ddareungi-rider.git ddareungi
 cd ddareungi
 ```
 
