@@ -1,3 +1,4 @@
+import {requestLocation, MAX_LOCATION_ACCURACY} from "./lib/location";
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -234,12 +235,16 @@ export default function App() {
       return;
     }
     setLocating(true);
-    navigator.geolocation.getCurrentPosition(
+    requestLocation(navigator.geolocation,
       ({ coords }) => {
         if (requestId !== locationRequest.current) return;
         setLocating(false);
         // A delayed permission response must not replace a place the user already chose.
         if (initial && !allowInitialLocation.current) return;
+        if (!Number.isFinite(coords.accuracy) || coords.accuracy > MAX_LOCATION_ACCURACY) {
+          setMessage(`현재 위치 오차가 ${Number.isFinite(coords.accuracy) ? `약 ${Math.round(coords.accuracy)}m로 커서` : '확인되지 않아'} 지도를 이동하지 않았어요. 장소 검색으로 실제 위치를 지정해 주세요.`);
+          return;
+        }
         const location = {
           latitude: coords.latitude,
           longitude: coords.longitude,
@@ -262,7 +267,6 @@ export default function App() {
         setMessage(reason + (initial ? " 현재는 강남역 주변을 보여드려요." : " 장소 검색은 계속 사용할 수 있어요."));
         setLocating(false);
       },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
     );
   }
   const detail = selected && (
