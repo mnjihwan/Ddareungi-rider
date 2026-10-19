@@ -2,14 +2,15 @@ import {requestLocation, MAX_LOCATION_ACCURACY} from "../lib/location";
 import { useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { useQuery } from '@tanstack/react-query';
-import { api, planBikeRoute, reversePlace } from '../lib/api';
+import { api, nearby, planBikeRoute, reversePlace } from '../lib/api';
 import type { BikeRoute, Coordinates, Place, Station } from '../lib/types';
-import { distanceLabel, observationLabel } from '../lib/status';
+import { availability, AVAILABILITY_LABEL, compareStations, distanceLabel, observationLabel } from '../lib/status';
 import { Icon } from './Icon';
 import { LocationSearchBox } from './LocationSearchBox';
 
 const minutes = (seconds: number) => `${Math.max(0, Math.ceil(seconds / 60))}분`;
-export function RoutePlanner({favoriteStations, favoritesLoading, favoritesError, userLocation, userLocationAccuracy, endpointSelection, pickedOrigin, plan, onPlan, onLocation, onSelectStation, onPickOrigin, onPlaceSelected, searchCenter, onSearchStart}: {
+export function RoutePlanner({active, favoriteStations, favoritesLoading, favoritesError, userLocation, userLocationAccuracy, endpointSelection, pickedOrigin, plan, onPlan, onLocation, onSelectStation, onPickOrigin, onPlaceSelected, searchCenter, onSearchStart}: {
+  active: boolean;
   favoriteStations: Station[];
   favoritesLoading: boolean;
   favoritesError: boolean;
@@ -38,6 +39,18 @@ export function RoutePlanner({favoriteStations, favoritesLoading, favoritesError
   const status = useQuery({queryKey:['routing-status'], queryFn: async ({signal}) =>
     (await api.get<{data:{configured:boolean}}>('/routes/status',{signal})).data.data,
     staleTime:30_000, retry:1});
+  const nearbyCenter = origin?.location ?? searchCenter;
+  const nearbyStations = useQuery({
+    queryKey: ['route-nearby', nearbyCenter],
+    queryFn: ({signal}) => nearby(nearbyCenter, 1000, signal),
+    enabled: active && !plan,
+    staleTime: 30_000, refetchInterval: active && !plan ? 60_000 : false, retry: 1,
+  });
+  const suggestions = [...(nearbyStations.data ?? [])].sort(compareStations).slice(0, 3);
+  function chooseDeparture(station: Station) {
+    const place = {name:station.stationName,address:station.address,location:station.location};
+    invalidate();setPositionAccuracy(null);setOrigin(place);setPinned(station);onPlaceSelected(place);
+  }
   useEffect(() => () => request.current?.abort(), []);
   useEffect(() => { if(plan)resultElement.current?.scrollIntoView({block:'start'}); }, [plan]);
   useEffect(() => {
@@ -110,10 +123,7 @@ export function RoutePlanner({favoriteStations, favoritesLoading, favoritesError
       {favoriteStations.length ? <div className="route-favorite-chips" role="group" aria-labelledby="route-favorites-label" tabIndex={0}>
         {favoriteStations.map(station=><button key={station.stationId} type="button"
           aria-pressed={pinned?.stationId===station.stationId}
-          onClick={()=>{
-            const place={name:station.stationName,address:station.address,location:station.location};
-            invalidate();setPositionAccuracy(null);setOrigin(place);setPinned(station);onPlaceSelected(place);
-          }}>{station.stationName.replace(/^\s*\d+\s*\.\s*/, '')}</button>)}
+          onClick={()=>chooseDeparture(station)}>{station.stationName.replace(/^\s*\d+\s*\.\s*/, '')}</button>)}
       </div> : <p className="route-favorites-empty" role="status">{favoritesLoading?'불러오는 중…':favoritesError?'즐겨찾기를 불러오지 못했어요':'저장된 대여소가 없어요'}</p>}
     </div>
     <div className="route-origin-actions">
@@ -133,6 +143,21 @@ export function RoutePlanner({favoriteStations, favoritesLoading, favoritesError
     </button>
     {status.data?.configured === false && <p className="subtle-notice" role="status">길찾기 연결을 준비하고 있어요. 장소와 대여소 조회는 계속 이용할 수 있어요.</p>}
     {error && <p className="error-notice" role="alert">{error}</p>}
+    {!plan && <section className="route-nearby" aria-label="길찾기 주변 대여소">
+      <h2>{origin ? '출발지 주변 대여소' : '지도 주변 대여소'}</h2>
+      <p>1km 이내 · 대여 가능한 곳부터 · 직선거리순</p>
+      {nearbyStations.isPending ? <p role="status">주변 대여소를 찾고 있어요…</p>
+        : nearbyStations.isError ? <p role="status">대여소를 불러오지 못했어요. <button onClick={()=>void nearbyStations.refetch()}>다시 시도</button></p>
+        : suggestions.length ? <div className="route-nearby-list">{suggestions.map(station=>{
+          const state = availability(station);
+          return <button key={station.stationId} className="route-nearby-station"
+            aria-pressed={pinned?.stationId===station.stationId} onClick={()=>chooseDeparture(station)}>
+            <span><b>{station.stationName.replace(/^\s*\d+\s*\.\s*/, '')}</b>
+              <small>{distanceLabel(station.distanceMeters)} · {AVAILABILITY_LABEL[state]}</small></span>
+            <span className="route-nearby-stock">{state==='unknown'?'수량 미확인':`${station.availableBikeCount}대`}<small>출발지로 선택</small></span>
+          </button>;
+        })}</div> : <p>1km 이내에 대여소가 없어요. 다른 출발 장소를 검색해 주세요.</p>}
+    </section>}
     {plan && <div className="route-result" aria-live="polite" ref={resultElement}>
       <div className="route-summary"><span>예상 이동 시간<strong>{minutes(plan.durationSeconds)}</strong></span><span>총 이동 거리<strong>{distanceLabel(plan.distanceMeters)}</strong></span></div>
       <p className="route-note">대여·반납 시간은 별도예요. 가까운 대여소 후보 중 이동 시간이 짧은 경로를 골랐어요.</p>
