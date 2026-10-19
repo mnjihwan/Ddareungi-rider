@@ -1,0 +1,33 @@
+spring:
+  application:
+    name: ddareungrider
+  profiles:
+    default: local
+  http:
+    clients:
+      connect-timeout: 10s
+      read-timeout: 20s
+  data:
+    redis:
+      timeout: 2s
+      repositories:
+        enabled: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+server:
+  port: ${SERVER_PORT:8080}
+
+routing:
+  provider: kakao
+  enabled: true
+  ors:
+    api-key: ${ORS_API_KEY:}
+
+kakao:
+  maps:
+    rest-api-key: ${KAKAO_MAPS_REST_API_KEY:}
