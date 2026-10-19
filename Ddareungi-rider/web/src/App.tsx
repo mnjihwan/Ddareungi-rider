@@ -521,11 +521,6 @@ export default function App() {
                         </span>
                         <Icon name="arrow" size={17} />
                       </button>
-                      {place.sourceUrl && (
-                        <a className="place-source" href={place.sourceUrl} target="_blank" rel="noopener noreferrer">
-                          카카오맵 장소 정보 ↗
-                        </a>
-                      )}
                     </div>
                   ))}
                   {search.data.placesUnavailable && (

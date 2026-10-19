@@ -1026,12 +1026,6 @@ p {
   flex: 1;
   min-width: 0;
 }
-.place-source {
-  display: block;
-  padding: 0 4px 10px 49px;
-  color: #556986;
-  font-size: 11px;
-}
 .place-results b {
   display: block;
   font-size: 12px;
