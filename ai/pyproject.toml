@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ddareungrider-ai"
+version = "0.1.0"
+description = "Offline station demand baselines and evaluation for ddareungrider"
+requires-python = ">=3.11"
+dependencies = ["numpy>=2.2,<3", "pandas>=2.2,<4", "lightgbm>=4.6,<5", "pymysql[rsa]>=1.1,<2"]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10"]
+
+[project.scripts]
+ddareungrider-ai = "ddareungrider_ai.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
