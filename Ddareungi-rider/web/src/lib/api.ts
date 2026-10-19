@@ -47,9 +47,6 @@ export async function searchPlaces(
     })
   ).data.data;
 }
-export async function mapPlaces(center: Coordinates, signal?: AbortSignal): Promise<Place[]> {
-  return (await api.get<{data: Place[]}>('/places/map-places', {params: center, signal, timeout: 20_000})).data.data;
-}
 export async function nearbySubways(center:Coordinates,signal?:AbortSignal):Promise<Place[]> {
   return (await api.get<{data:Place[]}>('/places/nearby-subways',{params:center,signal})).data.data;
 }

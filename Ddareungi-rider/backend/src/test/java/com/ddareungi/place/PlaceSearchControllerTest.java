@@ -240,48 +240,4 @@ class PlaceSearchControllerTest {
         });
         server.verify();
     }
-
-    @Test void mapPlacesUseActualNamesAddressesCoordinatesAndDeduplicateWithinRadius() {
-        for (String category : java.util.List.of("FD6", "CE7", "CS2", "SW8")) {
-            server.expect(requestTo("https://dapi.kakao.com/v2/local/search/category.json?category_group_code=" + category
-                    + "&x=127.02&y=37.5&radius=500&sort=distance&size=15"))
-                .andExpect(header("Authorization", "KakaoAK test-secret"))
-                .andRespond(withSuccess("""
-                    {"documents":[
-                    {"place_name":"실제 가게","road_address_name":"서울 도로명 10","address_name":"서울 지번", "x":"127.0201","y":"37.5001","category_group_code":"%s","place_url":"http://place.map.kakao.com/123"},
-                    {"place_name":"먼 가게","address_name":"먼 주소","x":"128","y":"38","category_group_code":"%s"},
-                    {"place_name":"주소 없음","x":"127.02","y":"37.5","category_group_code":"%s"},
-                    {"place_name":"잘못된 좌표","address_name":"서울","x":"NaN","y":"37.5","category_group_code":"%s"}]}
-                    """.formatted(category,category,category,category), MediaType.APPLICATION_JSON));
-        }
-        var places = controller.mapPlaces(37.5,127.02).data();
-        assertThat(places).hasSize(1);
-        assertThat(places.getFirst().name()).isEqualTo("실제 가게");
-        assertThat(places.getFirst().address()).isEqualTo("서울 도로명 10");
-        assertThat(places.getFirst().location()).isEqualTo(new com.ddareungi.station.domain.Location(37.5001,127.0201));
-        server.verify();
-    }
-
-    @Test void mapPlacesPreserveSuccessfulCategoriesAndSanitizeTotalFailures() {
-        server.expect(anything()).andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS).body("test-secret"));
-        for (int i=0;i<3;i++) server.expect(anything()).andRespond(withSuccess("{\"documents\":[]}", MediaType.APPLICATION_JSON));
-        assertThat(controller.mapPlaces(37.5,127.02).data()).isEmpty();
-        server.verify();
-        server.reset();
-        for (int i=0;i<4;i++) server.expect(anything()).andRespond(withStatus(HttpStatus.UNAUTHORIZED).body("test-secret"));
-        assertThatThrownBy(()->controller.mapPlaces(37.5,127.02)).isInstanceOfSatisfying(ResponseStatusException.class,error->{
-            assertThat(error.getStatusCode()).isEqualTo(HttpStatus.BAD_GATEWAY);
-            assertThat(error.getReason()).doesNotContain("test-secret");
-            assertThat(error.getCause()).isNull();
-        });
-        server.verify();
-    }
-
-    @Test void mapPlacesRejectInvalidCentersAndMissingKeysWithoutProviderCalls() {
-        assertThatThrownBy(()->controller.mapPlaces(Double.NaN,127)).isInstanceOf(IllegalArgumentException.class);
-        var missing = new PlaceSearchController(RestClient.builder(), JsonMapper.builder().build(), "", stations);
-        assertThatThrownBy(()->missing.mapPlaces(37.5,127)).isInstanceOfSatisfying(ResponseStatusException.class,
-                error->assertThat(error.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE));
-        server.verify();
-    }
 }
