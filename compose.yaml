@@ -1,0 +1,83 @@
+name: ddareungi-local
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-ddareungi}
+      MYSQL_USER: ${MYSQL_USER:-ddareungi}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+      TZ: Asia/Seoul
+    ports: ["127.0.0.1:${MYSQL_PORT:-3307}:3306"]
+    volumes: ["mysql_data:/var/lib/mysql"]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+  redis:
+    image: redis:7.4-alpine
+    ports: ["127.0.0.1:${REDIS_PORT:-6380}:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  collector:
+    profiles: ["real"]
+    build: ./bikeseoul_data
+    environment:
+      MYSQL_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-ddareungi}?serverTimezone=Asia/Seoul&characterEncoding=UTF-8&rewriteBatchedStatements=true
+      MYSQL_USER: ${MYSQL_USER:-ddareungi}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      SEOUL_API_KEY: ${SEOUL_API_KEY:-}
+      SEOUL_API_BASE_URL: ${SEOUL_API_BASE_URL:-http://openapi.seoul.go.kr:8088}
+      FLOW_CSV_INPUT_DIR: /data/oa-21229
+      COLLECTOR_CRON: ${COLLECTOR_CRON:-0 */5 * * * *}
+      EXTENDED_COLLECTION_ENABLED: ${EXTENDED_COLLECTION_ENABLED:-true}
+      OD_DOWNLOAD_ENABLED: ${OD_DOWNLOAD_ENABLED:-true}
+      OD_DOWNLOAD_MAX_FILES: ${OD_DOWNLOAD_MAX_FILES:-7}
+      OD_DOWNLOAD_LOOKBACK_DAYS: ${OD_DOWNLOAD_LOOKBACK_DAYS:-14}
+      USAGE_CSV_INPUT_DIR: /data/usage
+      USAGE_API_KINDS: ${USAGE_API_KINDS:-station-month,day,hour}
+      USAGE_API_LAG_DAYS: ${USAGE_API_LAG_DAYS:-5}
+      USAGE_MONTHLY_LOOKBACK: ${USAGE_MONTHLY_LOOKBACK:-2}
+      USAGE_BACKFILL_TASKS: ${USAGE_BACKFILL_TASKS:-}
+      TZ: Asia/Seoul
+    volumes: ["./bikeseoul_data/data/oa-21229:/data/oa-21229", "./bikeseoul_data/data/usage:/data/usage:ro"]
+    ports: ["127.0.0.1:8081:8081"]
+    depends_on:
+      mysql: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8081/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+  backend:
+    profiles: ["real"]
+    build: ./Ddareungi-rider
+    environment:
+      SPRING_PROFILES_ACTIVE: infra
+      MYSQL_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-ddareungi}?serverTimezone=Asia/Seoul&characterEncoding=UTF-8
+      MYSQL_USER: ${MYSQL_USER:-ddareungi}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      ORS_API_KEY: ${ORS_API_KEY:-}
+      KAKAO_MAPS_REST_API_KEY: ${KAKAO_MAPS_REST_API_KEY:-}
+      SEOUL_API_KEY: ${SEOUL_API_KEY:-}
+      SEOUL_API_BASE_URL: ${SEOUL_API_BASE_URL:-http://openapi.seoul.go.kr:8088}
+      TZ: Asia/Seoul
+    ports: ["127.0.0.1:8080:8080"]
+    depends_on:
+      collector: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+volumes:
+  mysql_data:

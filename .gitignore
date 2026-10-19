@@ -1,0 +1,23 @@
+.env
+.local/
+**/node_modules/
+**/build/
+**/dist/
+**/.gradle/
+**/.gradle-user-home/
+**/.expo/
+bikeseoul_data/data/
+.venv-ai/
+**/__pycache__/
+**/.pytest_cache/
+**/*.egg-info/
+ai/data/
+ai/artifacts/
+
+# Secrets and generated local environments
+**/.env*
+!**/.env.example
+**/.venv*/
+**/__pycache__/
+**/.pytest_cache/
+**/*.egg-info/
