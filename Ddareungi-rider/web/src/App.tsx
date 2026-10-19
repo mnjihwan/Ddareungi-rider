@@ -62,6 +62,7 @@ export default function App() {
   const [forecastMinutes, setForecastMinutes] = useState(0);
   const [route, setRoute] = useState<BikeRoute | null>(null);
   const [planningRoute, setPlanningRoute] = useState(false);
+  const [pinnedRouteStations, setPinnedRouteStations] = useState<Station[]>([]);
   const hideStationMarkers = view === "route" && (planningRoute || route !== null);
   const [endpointSelection, setEndpointSelection] = useState<{role:"origin"|"destination";place:Place;station?:Station;revision:number} | null>(null);
   const [searchPlace, setSearchPlace] = useState<Place | null>(null);
@@ -163,6 +164,10 @@ export default function App() {
     ...(search.data?.stations ?? []),
     ...(selectedQuery.data ?? []),
   ].forEach((s) => merged.set(s.stationId, s));
+  const displayedMapStations = hideStationMarkers
+    ? Array.from(new Map((route ? [route.departureStation,route.arrivalStation] : pinnedRouteStations)
+        .map(station=>[station.stationId,merged.get(station.stationId) ?? station])).values())
+    : Array.from(merged.values());
   const selected = selectedId ? merged.get(selectedId) : undefined,
     active = view === "favorites" ? saved : stations;
   const baseList = submitted
@@ -405,7 +410,7 @@ export default function App() {
           <div className="sidebar-content" ref={sidebar}>
             {selected && <div className="mobile-detail">{detail}</div>}
             <div hidden={view !== "route"} className={selected ? "route-planner-container mobile-hidden" : "route-planner-container"}>
-              <RoutePlanner onPlanningChange={setPlanningRoute} active={view === "route"} favoriteStations={(saved.data ?? []).filter(station=>favorites.ids.includes(station.stationId))}
+              <RoutePlanner onStationSelectionChange={setPinnedRouteStations} onPlanningChange={setPlanningRoute} active={view === "route"} favoriteStations={(saved.data ?? []).filter(station=>favorites.ids.includes(station.stationId))}
                 favoritesLoading={saved.isFetching} favoritesError={saved.isError}
                 userLocation={userLocation} endpointSelection={endpointSelection} plan={route}
                 onPlaceSelected={focusPlace}
@@ -622,7 +627,8 @@ export default function App() {
         <section className={`map-region ${selected ? "has-detail" : ""}`} aria-label="지도에서 대여소 찾기">
           <StationMap
             theme={theme}
-            stations={hideStationMarkers ? [] : Array.from(merged.values())}
+            stations={displayedMapStations}
+            routeStationsOnly={hideStationMarkers}
             selectedId={selectedId}
             focus={focus}
             userLocation={userLocation}
