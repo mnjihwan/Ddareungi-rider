@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { loadKakaoMaps, coordinatesOf } from "../lib/kakaoMaps";
 import { clusterPoints, separateMarkerGroups, type MarkerGroup } from "../lib/clusters";
-import type { Coordinates, Station, MapBounds, BikeRoute, Place } from "../lib/types";
+import type { Coordinates, Station, MapBounds, BikeRoute, Place, RouteEndpointRole } from "../lib/types";
 import { availability, AVAILABILITY_LABEL } from "../lib/status";
 import { Icon } from "./Icon";
 import { MapMarker } from "./MapMarker";
@@ -17,8 +17,8 @@ interface Props {
   onUserPan: (location: Coordinates) => void;
   onReady: (ready: boolean) => void;
   route?: BikeRoute | null;
-  pickingOrigin?: boolean;
-  onPickOrigin?: (location:Coordinates) => void;
+  pickingEndpoint?: RouteEndpointRole | null;
+  onPickEndpoint?: (location:Coordinates) => void;
   onCancelPick?: () => void;
   focusedPlace?: Place | null;
   onDismissPlace?: () => void;
@@ -35,8 +35,8 @@ export function StationMap({
   onUserPan,
   onReady,
   route,
-  pickingOrigin,
-  onPickOrigin,
+  pickingEndpoint,
+  onPickEndpoint,
   onCancelPick,
   focusedPlace,
   onDismissPlace,
@@ -415,17 +415,17 @@ export function StationMap({
           </MapMarker>
         )}
       </div>
-      {pickingOrigin && <>
+      {pickingEndpoint && <>
         <div className="origin-crosshair" aria-hidden="true">
           <span className="origin-crosshair-target" />
-          <span className="origin-crosshair-label">출발 위치</span>
+          <span className="origin-crosshair-label">{pickingEndpoint==='origin'?'출발 위치':'도착 위치'}</span>
           <svg className="origin-crosshair-pin" width="48" height="64" viewBox="0 0 48 64">
             <path d="M24 62C20 54 3 36 3 24a21 21 0 0 1 42 0c0 12-17 30-21 38Z" fill="currentColor" stroke="white" strokeWidth="3" strokeLinejoin="round" />
             <circle cx="24" cy="24" r="8" fill="white" />
           </svg>
         </div>
-        <div className="origin-picker" role="status"><p>지도를 움직여 중앙 핀을 출발 위치에 맞춰 주세요.</p>
-          <button className="primary-button" disabled={state!=="ready"} onClick={()=>{if(mapRef.current)onPickOrigin?.(coordinatesOf(mapRef.current.getCenter()));}}>이 위치에서 출발</button>
+        <div className="origin-picker" role="status"><p>지도를 움직여 중앙 핀을 {pickingEndpoint==='origin'?'출발':'도착'} 위치에 맞춰 주세요.</p>
+          <button className="primary-button" disabled={state!=="ready"} onClick={()=>{if(mapRef.current)onPickEndpoint?.(coordinatesOf(mapRef.current.getCenter()));}}>{pickingEndpoint==='origin'?'이 위치에서 출발':'이 위치로 도착'}</button>
           <button onClick={onCancelPick}>취소</button>
         </div>
       </>}

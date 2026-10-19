@@ -12,7 +12,7 @@ import {
   nearbySubways,
   forecastPath, loadForecasts,
 } from "./lib/api";
-import { INITIAL_LOCATION, type Coordinates, type Station, type MapBounds, type BikeRoute, type Place } from "./lib/types";
+import { INITIAL_LOCATION, type Coordinates, type Station, type MapBounds, type BikeRoute, type Place, type RouteEndpointRole } from "./lib/types";
 import {useRecentPlaces} from './lib/useRecentPlaces';
 import { useFavorites } from "./lib/useFavorites";
 import { availability, compareOutlooks, stationOutlook } from "./lib/status";
@@ -66,8 +66,8 @@ export default function App() {
   const [endpointSelection, setEndpointSelection] = useState<{role:"origin"|"destination";place:Place;station?:Station;revision:number} | null>(null);
   const [searchPlace, setSearchPlace] = useState<Place | null>(null);
   const [userLocationAccuracy, setUserLocationAccuracy] = useState<number | null>(null);
-  const [pickingOrigin, setPickingOrigin] = useState(false);
-  const [pickedOrigin, setPickedOrigin] = useState<{location:Coordinates;revision:number} | null>(null);
+  const [pickingEndpoint, setPickingEndpoint] = useState<RouteEndpointRole | null>(null);
+  const [pickedEndpoint, setPickedEndpoint] = useState<{role:RouteEndpointRole;location:Coordinates;revision:number} | null>(null);
   const [focusedPlace, setFocusedPlace] = useState<Place | null>(null);
   const recentPlaces = useRecentPlaces();
   const reliableLocation = userLocation && userLocationAccuracy !== null && userLocationAccuracy <= 500;
@@ -213,7 +213,7 @@ export default function App() {
     setLabel(`${place.name} 주변`);
     saveMapLocation(place.location, `${place.name} 주변`);
     setSelectedId(null);
-    setPickingOrigin(false);
+    setPickingEndpoint(null);
     setSheet("mid");
     if(query)recentPlaces.remember(query);
   }
@@ -225,7 +225,7 @@ export default function App() {
   function chooseEndpoint(role:"origin"|"destination", place:Place, station?:Station) {
     allowInitialLocation.current = false;
     setEndpointSelection(previous=>({role,place,station,revision:(previous?.revision??0)+1}));
-    setRoute(null); setPickingOrigin(false); setView("route"); setSelectedId(null); setSheet("full");
+    setRoute(null); setPickingEndpoint(null); setView("route"); setSelectedId(null); setSheet("full");
     setFocusedPlace(place);
   }
   function select(station: Station) {
@@ -410,8 +410,8 @@ export default function App() {
                 userLocation={userLocation} endpointSelection={endpointSelection} plan={route}
                 onPlaceSelected={focusPlace}
                 searchCenter={center} onSearchStart={()=>setFocusedPlace(null)}
-                userLocationAccuracy={userLocationAccuracy} pickedOrigin={pickedOrigin}
-                onPickOrigin={()=>{setRoute(null);setSelectedId(null);setPickingOrigin(true);setSheet("peek");}}
+                userLocationAccuracy={userLocationAccuracy} pickedEndpoint={pickedEndpoint}
+                onPickEndpoint={role=>{setRoute(null);setSelectedId(null);setPickingEndpoint(role);setSheet("peek");}}
                 onPlan={plan => {setRoute(plan);if(plan)setSheet("mid");}} onLocation={(location,accuracy)=>{setUserLocation(location);setUserLocationAccuracy(accuracy);}} onSelectStation={select} />
             </div>
             <div
@@ -641,9 +641,9 @@ export default function App() {
             onDismissPlace={()=>setFocusedPlace(null)}
             route={view === "route" ? route : null}
             focusedPlace={route && view==="route" ? null : focusedPlace}
-            pickingOrigin={view === "route" && pickingOrigin}
-            onPickOrigin={location=>{setPickedOrigin(previous=>({location,revision:(previous?.revision??0)+1}));setPickingOrigin(false);setSheet("full");}}
-            onCancelPick={()=>setPickingOrigin(false)}
+            pickingEndpoint={view === "route" ? pickingEndpoint : null}
+            onPickEndpoint={location=>{if(!pickingEndpoint)return;setPickedEndpoint(previous=>({role:pickingEndpoint,location,revision:(previous?.revision??0)+1}));setPickingEndpoint(null);setSheet("full");}}
+            onCancelPick={()=>setPickingEndpoint(null)}
           />
           <div className="map-top-label">
             <Icon name="pin" size={16} />

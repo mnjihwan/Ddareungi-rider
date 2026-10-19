@@ -1634,3 +1634,13 @@ p {
 
 :root[data-theme="dark"] .theme-toggle-sun { color: #a5a5ae; }
 :root[data-theme="dark"] .toast { background: #303034; }
+
+.route-place-input.is-active > label { color: var(--accent-text, var(--accent)); }
+.route-place-input.is-active form { border-color: var(--accent-text, #8da7ce); }
+.route-endpoint-tools { margin-top: 14px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--raised-surface, #f7f9fc); }
+.route-tool-target { color: var(--accent-text, var(--accent)); font-size: 11px; font-weight: 600; }
+.route-endpoint-tools .route-favorites { margin-top: 8px; }
+.route-endpoint-tools .subtle-notice { padding-bottom: 0; }
+
+.location-search-box.route .search-suggestions { position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 10; margin-top: 0; max-height: min(280px, 35dvh); }
+.route-place-input:focus-within { position: relative; z-index: 2; }

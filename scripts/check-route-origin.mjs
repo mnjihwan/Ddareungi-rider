@@ -13,7 +13,7 @@ try {
       geolocation:{latitude:35.1,longitude:127.0,accuracy:50000}});
     const page=await context.newPage(), errors=[];
     page.on('pageerror',error=>errors.push(error.message));
-    await page.goto('http://localhost:5173/',{waitUntil:'networkidle'});
+    await page.goto(process.env.CHECK_BASE_URL || 'http://localhost:5173/',{waitUntil:'networkidle'});
     await page.locator('.station-card-select').first().click();
     await page.getByRole('button',{name:'여기서 출발',exact:true}).filter({visible:true}).click();
     await page.locator('.pinned-station').waitFor();
@@ -37,8 +37,9 @@ try {
     await page.waitForFunction(()=>[...document.querySelectorAll('.kakao-map img')].some(image=>image.complete && image.naturalWidth>100));
     assert.equal(await page.locator('.route-endpoint').count(),4);
     await page.screenshot({path:fileURLToPath(new URL(`.local/origin-${name}-route.png`,root)),fullPage:true});
-    await page.getByRole('button',{name:'현재 위치를 출발지로',exact:true}).click();
-    await page.getByText('현재 위치 오차가 커서 출발지를 변경하지 않았어요. 출발 장소를 검색하거나 지도에서 지정해 주세요.').waitFor();
+    await page.getByLabel('출발지',{exact:true}).click();
+    await page.getByRole('button',{name:'현재 위치',exact:true}).click();
+    await page.getByText('현재 위치 오차가 커서 출발지를 변경하지 않았어요. 장소를 검색하거나 지도에서 지정해 주세요.').waitFor();
     const geoOptions=await page.evaluate(async()=>{
       const getPosition=navigator.geolocation.getCurrentPosition.bind(navigator.geolocation);
       window.__geoOptions=null;
@@ -46,11 +47,12 @@ try {
       return true;
     });
     assert(geoOptions);
-    await page.getByRole('button',{name:'현재 위치를 출발지로',exact:true}).click();
+    await page.getByLabel('출발지',{exact:true}).click();
+    await page.getByRole('button',{name:'현재 위치',exact:true}).click();
     await page.waitForFunction(()=>window.__geoOptions?.enableHighAccuracy===true);
     const options=await page.evaluate(()=>window.__geoOptions);
     assert.equal(options.maximumAge,0);
-    await page.getByRole('button',{name:'지도에서 출발지 선택',exact:true}).click();
+    await page.getByRole('button',{name:'지도에서 선택',exact:true}).click();
     await page.locator('.origin-picker').waitFor();
     assert(await page.locator('.origin-crosshair').isVisible());
     const addressResponse=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/v1/places/reverse');
