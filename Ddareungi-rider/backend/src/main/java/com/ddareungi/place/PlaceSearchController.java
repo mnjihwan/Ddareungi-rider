@@ -170,6 +170,40 @@ public class PlaceSearchController {
         }
     }
 
+    @GetMapping("/map-places")
+    public ApiResponse<List<Place>> mapPlaces(@RequestParam double latitude, @RequestParam double longitude) {
+        var center = new Location(latitude, longitude);
+        if (key.isBlank()) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "지도 장소를 현재 조회할 수 없습니다.");
+        var distinct = new java.util.LinkedHashMap<String, Place>();
+        int succeeded = 0;
+        // A bounded first page per category keeps nearby shops and transport stops balanced.
+        for (String category : List.of("FD6", "CE7", "CS2", "SW8")) {
+            try {
+                String body = client.get().uri(uri -> uri.path("/v2/local/search/category.json")
+                        .queryParam("category_group_code", category).queryParam("x", longitude).queryParam("y", latitude)
+                        .queryParam("radius", 500).queryParam("sort", "distance").queryParam("size", 15).build())
+                        .header("Authorization", "KakaoAK " + key).retrieve().body(String.class);
+                var items = mapper.readTree(body).path("documents");
+                if (!items.isArray()) throw new IllegalStateException("Invalid map places");
+                int accepted = 0;
+                for (var item : items) {
+                    if (!category.equals(item.path("category_group_code").asString(""))) continue;
+                    try {
+                        var place = place(item);
+                        if (place.address().isBlank() || center.distanceTo(place.location()) > 500) continue;
+                        String id = place.sourceUrl() == null ? place.name() + "|" + place.location() : place.sourceUrl();
+                        distinct.putIfAbsent(id, place);
+                        if (++accepted >= 8) break;
+                    } catch (IllegalArgumentException | IllegalStateException ignored) { /* Skip unusable individual places. */ }
+                }
+                succeeded++;
+            } catch (Exception ignored) { /* Other categories can still provide useful real places. */ }
+        }
+        if (succeeded == 0) throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "지도 장소를 가져오지 못했습니다.");
+        return ApiResponse.ok(distinct.values().stream()
+                .sorted(java.util.Comparator.comparingDouble(place -> center.distanceTo(place.location()))).limit(32).toList());
+    }
+
     private static Place place(tools.jackson.databind.JsonNode item) {
         var location = new Location(Double.parseDouble(item.path("y").asString()), Double.parseDouble(item.path("x").asString()));
         String address = item.path("road_address_name").asString("");
