@@ -1,0 +1,12 @@
+.gradle/
+.gradle-user-home/
+**/build/
+**/node_modules/
+**/dist/
+web/.env*
+!web/.env.example
+mobile/.expo/
+mobile/.env
+.idea/
+*.iml
+.DS_Store

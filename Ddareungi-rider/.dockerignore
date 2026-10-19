@@ -1,0 +1,10 @@
+**/node_modules
+**/build
+**/.git
+**/.gradle
+**/.gradle-user-home
+**/.expo
+**/dist
+**/.env
+mobile
+web
