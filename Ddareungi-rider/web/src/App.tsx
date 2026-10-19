@@ -316,6 +316,9 @@ export default function App() {
       <header className="app-header">
         <a className="brand" href="/" aria-label="따릉라이더 홈">
           <img className="brand-logo" src="/branding/ddareung-rider-logo.png" alt="따릉라이더" width={2172} height={724} />
+          <svg className="brand-symbol" viewBox="70 170 680 410" aria-hidden="true" focusable="false">
+            <image href="/branding/ddareung-rider-logo.png" width="2172" height="724"/>
+          </svg>
         </a>
         <nav aria-label="대여소 보기">
           <button

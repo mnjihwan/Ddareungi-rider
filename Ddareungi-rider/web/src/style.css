@@ -1551,13 +1551,6 @@ p {
 .route-favorite-chips button { cursor: inherit; }
 .route-favorite-chips[data-dragging="true"] { cursor: grabbing; }
 
-@media (max-width: 480px) {
-  .brand-logo { width: 110px; }
-  .app-header nav { gap: 2px; }
-  .app-header nav button { padding: 10px 4px; font-size: 10px; gap: 3px; }
-  .app-header nav button > svg { display: none; }
-}
-
 /* Keep the new wordmark and navigation on one line on tablet screens. */
 @media (min-width: 768px) and (max-width: 1023px) {
   .app-header { padding: 0 24px; gap: 24px; }
@@ -1585,7 +1578,7 @@ p {
   --muted: #c4c4cc;
   --border: #55555d;
 }
-:root[data-theme="dark"] .brand-logo { filter: brightness(1.9) saturate(.75); }
+:root[data-theme="dark"] .brand-logo, :root[data-theme="dark"] .brand-symbol { filter: brightness(1.9) saturate(.75); }
 :root[data-theme="dark"] input { color: var(--theme-text); }
 :root[data-theme="dark"] input::placeholder { color: #bdbdc6; opacity: 1; }
 :root[data-theme="dark"] .forecast-list-controls select {
@@ -1605,19 +1598,6 @@ p {
 .theme-toggle[data-dragging="true"] { cursor: grabbing; }
 .theme-toggle[data-dragging="true"] .theme-toggle-thumb { transition: none; }
 @media (prefers-reduced-motion: reduce) { .theme-toggle-thumb { transition: none; } }
-@media (max-width: 767px) {
-  .app-header { gap: 4px; }
-  .theme-toggle { margin-left: 0; width: 60px; }
-  .theme-toggle-track { --thumb-size: 24px; --thumb-inset: 2px; height: 30px; }
-  .theme-toggle-track svg { width: 16px; height: 16px; }
-}
-@media (max-width: 380px) {
-  .brand-logo { width: 88px; }
-  .theme-toggle { width: 54px; }
-  .theme-toggle-track { --thumb-size: 22px; height: 28px; }
-  .nav-count { display: none; }
-}
-
 /* Only raster basemap tiles are recolored. SDK branding, overlays and route SVGs stay intact. */
 :root[data-theme="dark"] .kakao-map img[src*=".kakaocdn.net/"][src*="/tile/"],
 :root[data-theme="dark"] .map-preview > svg {
@@ -1630,7 +1610,6 @@ p {
   border-radius: 3px;
 }
 
-@media (max-width: 340px) { .brand-logo { width: 76px; } }
 
 :root[data-theme="dark"] .theme-toggle-sun { color: #a5a5ae; }
 :root[data-theme="dark"] .toast { background: #303034; }
@@ -1644,3 +1623,21 @@ p {
 
 .location-search-box.route .search-suggestions { position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 10; margin-top: 0; max-height: min(280px, 35dvh); }
 .route-place-input:focus-within { position: relative; z-index: 2; }
+
+.brand-symbol, .theme-toggle-compact { display: none; }
+@media (max-width: 767px) {
+  .app-header { gap: 4px; }
+  .brand-logo { display: none; }
+  .brand-symbol { display: block; width: 44px; height: 44px; }
+  .app-header nav { gap: 4px; }
+  .app-header nav button { padding: 10px 8px; font-size: 12px; gap: 4px; }
+  .app-header nav button > svg { display: none; }
+  .theme-toggle { width: 44px; min-height: 44px; margin-left: 0; }
+  .theme-toggle-track { display: none; }
+  .theme-toggle-compact { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; background: var(--raised-surface, #f0f3f7); color: var(--theme-blue, #395780); }
+  .theme-toggle:hover .theme-toggle-compact { background: var(--selected-surface, #e4ebf5); }
+}
+@media (max-width: 380px) {
+  .app-header nav { gap: 2px; }
+  .app-header nav button { padding: 10px 4px; font-size: 11px; }
+}
