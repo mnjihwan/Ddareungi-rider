@@ -628,7 +628,7 @@ export default function App() {
         </aside>
         <section className={`map-region ${selected ? "has-detail" : ""}`} aria-label="지도에서 대여소 찾기">
           <StationMap
-            stations={Array.from(merged.values())}
+            stations={view === "route" ? [] : Array.from(merged.values())}
             selectedId={selectedId}
             focus={focus}
             userLocation={userLocation}
@@ -656,7 +656,7 @@ export default function App() {
             {view === "route" ? "따릉이 길찾기" : label}
             {view !== "route" && <span>목록 {radius < 1000 ? `${radius}m` : `${radius / 1000}km`} · {mapStations.isFetching ? "지도 갱신 중" : `지도 ${mapStations.data?.length ?? 0}곳`}</span>}
           </div>
-          {mapStations.isError && <button className="search-this-area" onClick={() => void mapStations.refetch()}>
+          {view !== "route" && mapStations.isError && <button className="search-this-area" onClick={() => void mapStations.refetch()}>
             <Icon name="refresh" size={17} />지도 대여소 다시 불러오기
           </button>}
           <button
@@ -667,7 +667,7 @@ export default function App() {
           >
             <Icon name={locating ? "refresh" : "locate"} size={21} />
           </button>
-          <div className="map-legend" aria-label="대여 수량 범례">
+          {view !== "route" && <div className="map-legend" aria-label="대여 수량 범례">
             <span>
               <i className="available" />
               4대 이상
@@ -684,7 +684,7 @@ export default function App() {
               <i className="unknown" />
               정보 없음
             </span>
-          </div>
+          </div>}
           {selected && <div className="desktop-detail">{detail}</div>}
         </section>
       </div>
