@@ -30,6 +30,30 @@ public class PlaceSearchController {
         this.mapper = mapper; this.key = key.trim(); this.stations = stations;
     }
 
+    @GetMapping("/reverse")
+    public ApiResponse<Place> reverse(@RequestParam double latitude, @RequestParam double longitude) {
+        var location = new Location(latitude, longitude);
+        if (key.isBlank()) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "주소 조회를 현재 사용할 수 없습니다.");
+        try {
+            String body = client.get().uri(uri -> uri.path("/v2/local/geo/coord2address.json")
+                    .queryParam("x", longitude).queryParam("y", latitude).queryParam("input_coord", "WGS84").build())
+                    .header("Authorization", "KakaoAK " + key).retrieve().body(String.class);
+            var documents = mapper.readTree(body).path("documents");
+            if (!documents.isArray()) throw new IllegalStateException("Invalid address response");
+            for (var document : documents) {
+                var road = document.path("road_address");
+                String address = road.path("address_name").asString("");
+                if (address.isBlank()) address = document.path("address").path("address_name").asString("");
+                if (address.isBlank()) continue;
+                String building = road.path("building_name").asString("");
+                return ApiResponse.ok(new Place(building.isBlank() ? address : building, address, location, null, ""));
+            }
+            return ApiResponse.ok(null);
+        } catch (Exception exception) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "주소를 가져오지 못했습니다.");
+        }
+    }
+
     @GetMapping("/search")
     public ApiResponse<List<Place>> search(@RequestParam String query,
             @RequestParam(required = false) Double latitude,

@@ -29,6 +29,25 @@ class PlaceSearchControllerTest {
         controller = new PlaceSearchController(builder, JsonMapper.builder().build(), "test-secret", stations);
     }
 
+    @Test void reverseAddressKeepsChosenCoordinatesAndUsesBuildingName() {
+        server.expect(requestTo("https://dapi.kakao.com/v2/local/geo/coord2address.json?x=127.0&y=37.5&input_coord=WGS84"))
+            .andRespond(withSuccess("""
+            {"documents":[{"road_address":{"address_name":"서울 테스트로 10","building_name":"테스트빌딩"}}]}
+            """,MediaType.APPLICATION_JSON));
+        var place=controller.reverse(37.5,127.0).data();
+        assertThat(place.name()).isEqualTo("테스트빌딩");
+        assertThat(place.address()).isEqualTo("서울 테스트로 10");
+        assertThat(place.location().latitude()).isEqualTo(37.5);
+    }
+    @Test void reverseAddressFallsBackToLandLotAndAllowsNoAddress() {
+        server.expect(anything()).andRespond(withSuccess("""
+            {"documents":[{"road_address":null,"address":{"address_name":"서울 테스트동 10"}}]}
+            """,MediaType.APPLICATION_JSON));
+        server.expect(anything()).andRespond(withSuccess("{\"documents\":[]}",MediaType.APPLICATION_JSON));
+        assertThat(controller.reverse(37.5,127.0).data().name()).isEqualTo("서울 테스트동 10");
+        assertThat(controller.reverse(0,0).data()).isNull();
+    }
+
     @Test void retriesWrongKeyboardForGeneralPlacesWithoutDiscardingCorrectedResults() {
         server.expect(anything()).andRespond(withSuccess("{\"documents\":[]}", MediaType.APPLICATION_JSON));
         server.expect(request -> assertThat(java.net.URLDecoder.decode(request.getURI().getRawQuery(), java.nio.charset.StandardCharsets.UTF_8))

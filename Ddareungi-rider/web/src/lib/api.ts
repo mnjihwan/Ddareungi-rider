@@ -83,3 +83,7 @@ export async function loadForecast(stationId: string, signal?: AbortSignal): Pro
   if (!result) throw new Error("Forecast unavailable");
   return result;
 }
+
+export async function reversePlace(location: Coordinates, signal?: AbortSignal): Promise<Place | null> {
+  return (await api.get<{data: Place | null}>("/places/reverse", {params: location, signal})).data.data;
+}

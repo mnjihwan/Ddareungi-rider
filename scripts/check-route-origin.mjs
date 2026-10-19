@@ -53,8 +53,10 @@ try {
     await page.getByRole('button',{name:'지도에서 출발지 선택',exact:true}).click();
     await page.locator('.origin-picker').waitFor();
     assert(await page.locator('.origin-crosshair').isVisible());
+    const addressResponse=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/v1/places/reverse');
     await page.getByRole('button',{name:'이 위치에서 출발',exact:true}).click();
-    await page.waitForFunction(()=>document.querySelector('#route-출발지')?.value==='지도에서 지정한 출발지');
+    await addressResponse;
+    await page.waitForFunction(()=>{const value=document.querySelector('#route-출발지')?.value;return value && value!=='지도에서 지정한 출발지';});
     assert.equal(await page.locator('.origin-picker').count(),0);
     assert.equal(await page.getByText(/브라우저 위치 정확도/).count(),0);
     assert.equal(await page.locator('.pinned-station').count(),0);
