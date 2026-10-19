@@ -106,19 +106,15 @@ export function RoutePlanner({favoriteStations, favoritesLoading, favoritesError
     <p className="route-intro">걸어서 대여하고, 목적지 근처에서 반납하세요.</p>
     <PlaceInput label="출발지" center={searchCenter} selected={origin} onSearchStart={onSearchStart} onSelect={(place,query)=>{invalidate();clearPinned();setPositionAccuracy(null);setOrigin(place);if(place)onPlaceSelected(place,query);}} />
     <div className="route-favorites">
-      <label htmlFor="route-favorite-origin"><Icon name="star" size={15}/>즐겨찾기</label>
-      <select id="route-favorite-origin" aria-label="즐겨찾기 대여소를 출발지로 선택"
-        value={favoriteStations.some(station=>station.stationId===pinned?.stationId)?pinned!.stationId:''}
-        disabled={!favoriteStations.length}
-        onChange={event=>{
-          const station=favoriteStations.find(item=>item.stationId===event.target.value);
-          if(!station)return;
-          const place={name:station.stationName,address:station.address,location:station.location};
-          invalidate();setPositionAccuracy(null);setOrigin(place);setPinned(station);onPlaceSelected(place);
-        }}>
-        <option value="" disabled>{favoriteStations.length?'출발 대여소 선택':favoritesLoading?'불러오는 중…':favoritesError?'즐겨찾기를 불러오지 못했어요':'저장된 대여소가 없어요'}</option>
-        {favoriteStations.map(station=><option key={station.stationId} value={station.stationId}>{station.stationName}</option>)}
-      </select>
+      <span className="route-favorites-label" id="route-favorites-label"><Icon name="star" size={15}/>즐겨찾기</span>
+      {favoriteStations.length ? <div className="route-favorite-chips" role="group" aria-labelledby="route-favorites-label" tabIndex={0}>
+        {favoriteStations.map(station=><button key={station.stationId} type="button"
+          aria-pressed={pinned?.stationId===station.stationId}
+          onClick={()=>{
+            const place={name:station.stationName,address:station.address,location:station.location};
+            invalidate();setPositionAccuracy(null);setOrigin(place);setPinned(station);onPlaceSelected(place);
+          }}>{station.stationName.replace(/^\s*\d+\s*\.\s*/, '')}</button>)}
+      </div> : <p className="route-favorites-empty" role="status">{favoritesLoading?'불러오는 중…':favoritesError?'즐겨찾기를 불러오지 못했어요':'저장된 대여소가 없어요'}</p>}
     </div>
     <div className="route-origin-actions">
       <button className="route-locate" onClick={locate} disabled={locating}>
