@@ -1,0 +1,24 @@
+{
+  "expo": {
+    "name": "따릉이 라이더",
+    "slug": "ddareungi-rider",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "주변 따릉이 대여소를 찾기 위해 위치를 사용합니다."
+        }
+      ],
+      "expo-status-bar"
+    ],
+    "android": {
+      "package": "com.ddareungi.rider"
+    },
+    "ios": {
+      "bundleIdentifier": "com.ddareungi.rider"
+    }
+  }
+}
