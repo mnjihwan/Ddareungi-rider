@@ -14,7 +14,7 @@
         const hour = new Date().getHours();
         const theme = preference === 'light' || preference === 'dark' ? preference : hour >= 7 && hour < 19 ? 'light' : 'dark';
         document.documentElement.dataset.theme = theme;
-        if (theme === 'dark') document.querySelector('meta[name="theme-color"]').content = '#141d2a';
+        if (theme === 'dark') document.querySelector('meta[name="theme-color"]').content = '#303034';
       })();
     </script>
     <title>따릉라이더 | ddareungrider</title>
