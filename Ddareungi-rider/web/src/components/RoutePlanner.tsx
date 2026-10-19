@@ -9,7 +9,10 @@ import { Icon } from './Icon';
 import { LocationSearchBox } from './LocationSearchBox';
 
 const minutes = (seconds: number) => `${Math.max(0, Math.ceil(seconds / 60))}분`;
-export function RoutePlanner({userLocation, userLocationAccuracy, endpointSelection, pickedOrigin, plan, onPlan, onLocation, onSelectStation, onPickOrigin, onPlaceSelected, searchCenter, onSearchStart}: {
+export function RoutePlanner({favoriteStations, favoritesLoading, favoritesError, userLocation, userLocationAccuracy, endpointSelection, pickedOrigin, plan, onPlan, onLocation, onSelectStation, onPickOrigin, onPlaceSelected, searchCenter, onSearchStart}: {
+  favoriteStations: Station[];
+  favoritesLoading: boolean;
+  favoritesError: boolean;
   searchCenter: Coordinates;
   onSearchStart: () => void;
   userLocation: Coordinates | null;
@@ -102,10 +105,27 @@ export function RoutePlanner({userLocation, userLocationAccuracy, endpointSelect
     <h1>목적지까지 따릉이로</h1>
     <p className="route-intro">걸어서 대여하고, 목적지 근처에서 반납하세요.</p>
     <PlaceInput label="출발지" center={searchCenter} selected={origin} onSearchStart={onSearchStart} onSelect={(place,query)=>{invalidate();clearPinned();setPositionAccuracy(null);setOrigin(place);if(place)onPlaceSelected(place,query);}} />
-    <button className="route-locate" onClick={locate} disabled={locating}>
-      <Icon name="locate" size={15}/>{locating?'위치 확인 중…':'현재 위치를 출발지로'}
-    </button>
-    <button className="route-locate" onClick={()=>{invalidate();onPickOrigin();}}><Icon name="pin" size={15}/>지도에서 출발지 선택</button>
+    <div className="route-favorites">
+      <label htmlFor="route-favorite-origin"><Icon name="star" size={15}/>즐겨찾기</label>
+      <select id="route-favorite-origin" aria-label="즐겨찾기 대여소를 출발지로 선택"
+        value={favoriteStations.some(station=>station.stationId===pinned?.stationId)?pinned!.stationId:''}
+        disabled={!favoriteStations.length}
+        onChange={event=>{
+          const station=favoriteStations.find(item=>item.stationId===event.target.value);
+          if(!station)return;
+          const place={name:station.stationName,address:station.address,location:station.location};
+          invalidate();setPositionAccuracy(null);setOrigin(place);setPinned(station);onPlaceSelected(place);
+        }}>
+        <option value="" disabled>{favoriteStations.length?'출발 대여소 선택':favoritesLoading?'불러오는 중…':favoritesError?'즐겨찾기를 불러오지 못했어요':'저장된 대여소가 없어요'}</option>
+        {favoriteStations.map(station=><option key={station.stationId} value={station.stationId}>{station.stationName}</option>)}
+      </select>
+    </div>
+    <div className="route-origin-actions">
+      <button className="route-locate" onClick={locate} disabled={locating}>
+        <Icon name="locate" size={15}/>{locating?'확인 중…':'현재 위치'}
+      </button>
+      <button className="route-locate" onClick={()=>{invalidate();onPickOrigin();}}><Icon name="pin" size={15}/>지도에서 선택</button>
+    </div>
     {origin && positionAccuracy!==null && <p className="subtle-notice" role="status">브라우저 위치 정확도 약 {distanceLabel(positionAccuracy)}{positionAccuracy>100?' · 실제 위치와 다르면 출발 장소를 검색해 주세요.':''}</p>}
     <PlaceInput label="목적지" center={searchCenter} selected={destination} onSearchStart={onSearchStart} onSelect={(place,query)=>{invalidate();setArrival(null);setDestination(place);if(place)onPlaceSelected(place,query);}} />
     {pinned && <div className="pinned-station"><span>출발 대여소 <b>{pinned.stationName}</b></span>

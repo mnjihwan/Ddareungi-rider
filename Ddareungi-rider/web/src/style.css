@@ -764,9 +764,9 @@ p {
 .route-locate { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--accent); padding: 7px 0; }
 /* The pin tip and target stay anchored to the map's actual center. */
 .origin-crosshair { position: absolute; left: 50%; top: 50%; width: 0; height: 0; z-index: 150; color: var(--accent); pointer-events: none; }
-.origin-crosshair-pin { position: absolute; bottom: 0; left: -24px; overflow: visible; filter: drop-shadow(0 3px 4px #102c5466); }
-.origin-crosshair-label { position: absolute; bottom: 73px; left: 0; transform: translateX(-50%); padding: 7px 12px; border: 2px solid white; border-radius: 20px; background: #203c60; color: white; font-size: 13px; font-weight: 700; white-space: nowrap; box-shadow: 0 2px 8px #102c5440; }
-.origin-crosshair-target { position: absolute; left: -11px; top: -11px; width: 22px; height: 22px; border: 2px solid white; border-radius: 50%; background: #2563a633; box-shadow: 0 0 0 2px #2563a6; }
+.origin-crosshair-pin { position: absolute; width: 34px; height: 45px; bottom: 0; left: -17px; overflow: visible; filter: drop-shadow(0 3px 4px #102c5466); }
+.origin-crosshair-label { position: absolute; bottom: 52px; left: 0; transform: translateX(-50%); padding: 7px 12px; border: 2px solid white; border-radius: 20px; background: #203c60; color: white; font-size: 13px; font-weight: 700; white-space: nowrap; box-shadow: 0 2px 8px #102c5440; }
+.origin-crosshair-target { position: absolute; left: -8px; top: -8px; width: 16px; height: 16px; border: 2px solid white; border-radius: 50%; background: #2563a633; box-shadow: 0 0 0 2px #2563a6; }
 .origin-picker { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 140; width: min(340px, calc(100% - 24px)); padding: 14px; border-radius: 16px; background: #fff; box-shadow: 0 4px 24px #18355533; text-align: center; }
 .origin-picker p { font-size: 12px; margin: 0 0 10px; }
 .origin-picker .primary-button { width: 100%; margin-bottom: 8px; }
@@ -1564,3 +1564,10 @@ p {
 @media (max-width: 767px) {
   .recommendation-row .clear-recent { width: 44px; height: 44px; }
 }
+
+.route-origin-actions { display: flex; align-items: center; gap: 20px; }
+.route-origin-actions .route-locate { min-height: 44px; white-space: nowrap; }
+.route-favorites { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+.route-favorites label { display: flex; align-items: center; gap: 5px; flex-shrink: 0; font-size: 12px; color: #52657c; }
+.route-favorites select { flex: 1; min-width: 0; min-height: 44px; padding: 8px; border: 1px solid #cdd7e5; border-radius: 8px; background: #f7f9fc; color: #203c60; font: inherit; font-size: 12px; text-overflow: ellipsis; }
+.route-favorites select:disabled { color: #52657c; }
