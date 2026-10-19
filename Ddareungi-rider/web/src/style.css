@@ -762,8 +762,12 @@ p {
 .route-place-input form button { padding: 8px; color: var(--accent); }
 .route-place-selected { display: block; font-size: 11px; color: #52657c; margin-top: 7px; line-height: 1.6; }
 .route-locate { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--accent); padding: 7px 0; }
-.origin-crosshair { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -100%); z-index: 130; color: var(--accent); pointer-events: none; filter: drop-shadow(0 2px 3px #fff); }
-.origin-picker { position: absolute; bottom: 70px; left: 50%; transform: translateX(-50%); z-index: 140; width: min(340px, calc(100% - 24px)); padding: 14px; border-radius: 16px; background: #fff; box-shadow: 0 4px 24px #18355533; text-align: center; }
+/* The pin tip and target stay anchored to the map's actual center. */
+.origin-crosshair { position: absolute; left: 50%; top: 50%; width: 0; height: 0; z-index: 150; color: var(--accent); pointer-events: none; }
+.origin-crosshair-pin { position: absolute; bottom: 0; left: -24px; overflow: visible; filter: drop-shadow(0 3px 4px #102c5466); }
+.origin-crosshair-label { position: absolute; bottom: 73px; left: 0; transform: translateX(-50%); padding: 7px 12px; border: 2px solid white; border-radius: 20px; background: #203c60; color: white; font-size: 13px; font-weight: 700; white-space: nowrap; box-shadow: 0 2px 8px #102c5440; }
+.origin-crosshair-target { position: absolute; left: -11px; top: -11px; width: 22px; height: 22px; border: 2px solid white; border-radius: 50%; background: #2563a633; box-shadow: 0 0 0 2px #2563a6; }
+.origin-picker { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 140; width: min(340px, calc(100% - 24px)); padding: 14px; border-radius: 16px; background: #fff; box-shadow: 0 4px 24px #18355533; text-align: center; }
 .origin-picker p { font-size: 12px; margin: 0 0 10px; }
 .origin-picker .primary-button { width: 100%; margin-bottom: 8px; }
 .route-place-results { max-height: 240px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; margin-top: 10px; }
