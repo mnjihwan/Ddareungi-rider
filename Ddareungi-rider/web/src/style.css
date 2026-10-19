@@ -1531,3 +1531,26 @@ p {
 .forecast-list-controls label { display: flex; align-items: center; gap: 16px; }
 .forecast-list-controls select { min-height: 44px; min-width: 132px; padding: 10px 12px; font: inherit; color: inherit; border: 1px solid #d7dce3; border-radius: 8px; background: white; }
 .forecast-list-controls p { color: #68788f; line-height: 1.5; }
+
+.mobile-map-info { display: none; }
+@media (max-width: 767px) {
+  .app-header { height: 56px; padding: 0 12px; }
+  .app-header .brand > span:last-child { display: none; }
+  .app-header nav { gap: 6px; }
+  .app-header nav button { padding: 10px 9px; font-size: 11px; }
+  .workspace { height: calc(100dvh - 56px); --mobile-sheet-height: 46%; }
+  .workspace.map-sheet-peek { --mobile-sheet-height: 102px; }
+  .workspace.map-sheet-full { --mobile-sheet-height: calc(100% - 77px); }
+  .workspace .map-surface { bottom: var(--mobile-sheet-height); }
+  .workspace .map-top-label, .workspace .map-legend, .desktop-shortcuts { display: none; }
+  .mobile-map-info { display: block; margin: 16px 0; }
+  .mobile-map-info .search-shortcuts { padding: 0; margin: 0 0 12px; background: transparent; }
+  .mobile-map-legend { color: #68788f; font-size: 11px; }
+  .mobile-map-legend summary { padding: 8px 0; cursor: pointer; }
+  .mobile-map-legend p { line-height: 1.6; margin: 4px 0; }
+  .workspace .zoom-controls { top: auto; bottom: 16px; }
+  .workspace .location-button { top: auto; bottom: calc(var(--mobile-sheet-height) + 116px); }
+  .workspace.map-sheet-full .zoom-controls, .workspace.map-sheet-full .location-button { display: none; }
+  .workspace .search-this-area { top: 74px; }
+  .workspace .map-connection { top: 74px; }
+}
