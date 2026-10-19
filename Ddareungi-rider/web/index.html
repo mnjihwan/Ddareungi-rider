@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#2563a6" />
+    <meta name="application-name" content="따릉라이더" />
+    <meta name="description" content="따릉라이더(ddareungrider)에서 주변 대여소와 자전거 수를 확인하고 도보·따릉이·도보 경로를 찾아보세요." />
+    <script>
+      // Apply before first paint; keep the time boundaries in sync with lib/theme.ts.
+      (() => {
+        let preference;
+        try { preference = localStorage.getItem('ddareungrider:theme:v1'); } catch {}
+        const hour = new Date().getHours();
+        const theme = preference === 'light' || preference === 'dark' ? preference : hour >= 7 && hour < 19 ? 'light' : 'dark';
+        document.documentElement.dataset.theme = theme;
+        if (theme === 'dark') document.querySelector('meta[name="theme-color"]').content = '#303034';
+      })();
+    </script>
+    <title>따릉라이더 | ddareungrider</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

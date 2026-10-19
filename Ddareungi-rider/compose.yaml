@@ -1,0 +1,3 @@
+# Shared infrastructure; the workspace root .env is used.
+include:
+  - ../compose.yaml

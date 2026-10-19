@@ -1,0 +1,18 @@
+spring:
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3307/ddareungi?serverTimezone=Asia/Seoul&characterEncoding=UTF-8}
+    username: ${MYSQL_USER:ddareungi}
+    password: ${MYSQL_PASSWORD:ddareungi}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6380}
+
+seoul-bike:
+  api:
+    base-url: ${SEOUL_API_BASE_URL:http://openapi.seoul.go.kr:8088}
+    key: ${SEOUL_API_KEY}
+    page-size: 1000
+    max-pages: 5
+    realtime-service: bikeList
+    refresh-cron: ${REALTIME_REFRESH_CRON:0 * * * * *}
