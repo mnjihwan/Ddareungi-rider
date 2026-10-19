@@ -57,6 +57,8 @@ export default function App() {
   }, []);
   const [forecastMinutes, setForecastMinutes] = useState(0);
   const [route, setRoute] = useState<BikeRoute | null>(null);
+  const [planningRoute, setPlanningRoute] = useState(false);
+  const hideStationMarkers = view === "route" && (planningRoute || route !== null);
   const [endpointSelection, setEndpointSelection] = useState<{role:"origin"|"destination";place:Place;station?:Station;revision:number} | null>(null);
   const [searchPlace, setSearchPlace] = useState<Place | null>(null);
   const [userLocationAccuracy, setUserLocationAccuracy] = useState<number | null>(null);
@@ -412,7 +414,7 @@ export default function App() {
           <div className="sidebar-content" ref={sidebar}>
             {selected && <div className="mobile-detail">{detail}</div>}
             <div hidden={view !== "route"} className={selected ? "route-planner-container mobile-hidden" : "route-planner-container"}>
-              <RoutePlanner active={view === "route"} favoriteStations={(saved.data ?? []).filter(station=>favorites.ids.includes(station.stationId))}
+              <RoutePlanner onPlanningChange={setPlanningRoute} active={view === "route"} favoriteStations={(saved.data ?? []).filter(station=>favorites.ids.includes(station.stationId))}
                 favoritesLoading={saved.isFetching} favoritesError={saved.isError}
                 userLocation={userLocation} endpointSelection={endpointSelection} plan={route}
                 onPlaceSelected={focusPlace}
@@ -628,7 +630,7 @@ export default function App() {
         </aside>
         <section className={`map-region ${selected ? "has-detail" : ""}`} aria-label="지도에서 대여소 찾기">
           <StationMap
-            stations={view === "route" ? [] : Array.from(merged.values())}
+            stations={hideStationMarkers ? [] : Array.from(merged.values())}
             selectedId={selectedId}
             focus={focus}
             userLocation={userLocation}
@@ -656,7 +658,7 @@ export default function App() {
             {view === "route" ? "따릉이 길찾기" : label}
             {view !== "route" && <span>목록 {radius < 1000 ? `${radius}m` : `${radius / 1000}km`} · {mapStations.isFetching ? "지도 갱신 중" : `지도 ${mapStations.data?.length ?? 0}곳`}</span>}
           </div>
-          {view !== "route" && mapStations.isError && <button className="search-this-area" onClick={() => void mapStations.refetch()}>
+          {!hideStationMarkers && mapStations.isError && <button className="search-this-area" onClick={() => void mapStations.refetch()}>
             <Icon name="refresh" size={17} />지도 대여소 다시 불러오기
           </button>}
           <button
@@ -667,7 +669,7 @@ export default function App() {
           >
             <Icon name={locating ? "refresh" : "locate"} size={21} />
           </button>
-          {view !== "route" && <div className="map-legend" aria-label="대여 수량 범례">
+          {!hideStationMarkers && <div className="map-legend" aria-label="대여 수량 범례">
             <span>
               <i className="available" />
               4대 이상

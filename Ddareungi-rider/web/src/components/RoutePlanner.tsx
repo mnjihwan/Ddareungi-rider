@@ -9,7 +9,8 @@ import { Icon } from './Icon';
 import { LocationSearchBox } from './LocationSearchBox';
 
 const minutes = (seconds: number) => `${Math.max(0, Math.ceil(seconds / 60))}분`;
-export function RoutePlanner({active, favoriteStations, favoritesLoading, favoritesError, userLocation, userLocationAccuracy, endpointSelection, pickedOrigin, plan, onPlan, onLocation, onSelectStation, onPickOrigin, onPlaceSelected, searchCenter, onSearchStart}: {
+export function RoutePlanner({onPlanningChange, active, favoriteStations, favoritesLoading, favoritesError, userLocation, userLocationAccuracy, endpointSelection, pickedOrigin, plan, onPlan, onLocation, onSelectStation, onPickOrigin, onPlaceSelected, searchCenter, onSearchStart}: {
+  onPlanningChange: (pending: boolean) => void;
   active: boolean;
   favoriteStations: Station[];
   favoritesLoading: boolean;
@@ -51,6 +52,7 @@ export function RoutePlanner({active, favoriteStations, favoritesLoading, favori
     const place = {name:station.stationName,address:station.address,location:station.location};
     invalidate();setPositionAccuracy(null);setOrigin(place);setPinned(station);onPlaceSelected(place);
   }
+  useEffect(() => { onPlanningChange(pending); }, [pending, onPlanningChange]);
   useEffect(() => () => request.current?.abort(), []);
   useEffect(() => { if(plan)resultElement.current?.scrollIntoView({block:'start'}); }, [plan]);
   useEffect(() => {
