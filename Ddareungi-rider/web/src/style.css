@@ -69,19 +69,12 @@ p {
 .brand {
   display: flex;
   align-items: center;
-  gap: 11px;
-  font-size: 26px;
-  font-weight: 800;
-  letter-spacing: -1px;
+  flex-shrink: 0;
 }
-.brand-icon {
-  display: grid;
-  place-items: center;
-  width: 43px;
-  height: 43px;
-  border-radius: 14px;
-  background: var(--accent);
-  color: white;
+.brand-logo {
+  display: block;
+  width: 240px;
+  height: auto;
 }
 .app-header nav {
   display: flex;
@@ -1207,15 +1200,8 @@ p {
     gap: 0;
     justify-content: space-between;
   }
-  .brand {
-    font-size: 16px;
-    gap: 7px;
-    white-space: nowrap;
-  }
-  .brand-icon {
-    width: 34px;
-    height: 34px;
-    border-radius: 11px;
+  .brand-logo {
+    width: 120px;
   }
   .header-status {
     display: none;
@@ -1527,7 +1513,6 @@ p {
 .mobile-map-info { display: none; }
 @media (max-width: 767px) {
   .app-header { height: 64px; padding: 0 12px; }
-  .app-header .brand > span:last-child { display: none; }
   .app-header nav { gap: 6px; }
   .app-header nav button { padding: 10px 9px; font-size: 11px; }
   .workspace { height: calc(100dvh - 64px); --mobile-sheet-height: calc((100dvh - 64px) * 0.46); }
@@ -1580,3 +1565,10 @@ p {
 .route-favorite-chips::-webkit-scrollbar { display: none; }
 .route-favorite-chips button { cursor: inherit; }
 .route-favorite-chips[data-dragging="true"] { cursor: grabbing; }
+
+@media (max-width: 400px) {
+  .brand-logo { width: 110px; }
+  .app-header nav { gap: 2px; }
+  .app-header nav button { padding: 10px 4px; font-size: 10px; gap: 3px; }
+  .app-header nav button > svg { display: none; }
+}
