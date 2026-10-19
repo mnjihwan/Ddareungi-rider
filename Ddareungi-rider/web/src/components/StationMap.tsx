@@ -7,6 +7,7 @@ import { Icon } from "./Icon";
 import { MapMarker } from "./MapMarker";
 
 interface Props {
+  theme?: "light" | "dark";
   stations: Station[];
   selectedId: string | null;
   focus: { location: Coordinates; revision: number };
@@ -24,6 +25,7 @@ interface Props {
 }
 
 export function StationMap({
+  theme = "light",
   stations,
   selectedId,
   focus,
@@ -58,10 +60,16 @@ export function StationMap({
     map.relayout();
     const lines = route.legs.map(leg => new sdk.Polyline({map,
       path:leg.path.map(point=>new sdk.LatLng(point.latitude,point.longitude)),
-      strokeColor:leg.mode==='walk'?'#2563a6':'#0087a8',strokeWeight:leg.mode==='walk'?5:7,
+      strokeColor:leg.mode==='walk'?(theme==='dark'?'#92bfff':'#2563a6'):(theme==='dark'?'#5dd5e5':'#0087a8'),strokeWeight:leg.mode==='walk'?5:7,
       strokeStyle:leg.mode==='walk'?'shortdash':'solid',strokeOpacity:0.95,zIndex:5}));
-    fitRoute(map, sdk, route);
     return () => lines.forEach(line=>line.setMap(null));
+  }, [route,state,theme]);
+
+  // A theme change redraws lines without changing the user's map position or zoom.
+  useEffect(() => {
+    if (state === 'ready' && route && mapRef.current && window.kakao?.maps) {
+      fitRoute(mapRef.current, window.kakao.maps, route);
+    }
   }, [route,state]);
 
   useEffect(() => {
