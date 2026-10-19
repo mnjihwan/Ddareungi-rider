@@ -25,9 +25,10 @@ import { LocationSearchBox } from "./components/LocationSearchBox";
 import {bestSearchScore, searchMatchLabel} from './lib/koreanSearch';
 
 import { useTheme } from "./lib/useTheme";
+import { ThemeToggle } from "./components/ThemeToggle";
 
 export default function App() {
-  const {theme, toggle: toggleTheme} = useTheme();
+  const {theme, changeTheme} = useTheme();
   const [initialMap] = useState(()=>loadMapLocation() ?? {location: INITIAL_LOCATION, label: "강남역 주변"});
   const [center, setCenter] = useState(initialMap.location);
   const [viewport, setViewport] = useState<MapBounds | null>(null);
@@ -341,11 +342,7 @@ export default function App() {
             즐겨찾기<span className="nav-count">{favorites.ids.length}</span>
           </button>
         </nav>
-        <button className="theme-toggle" onClick={toggleTheme}
-          aria-label={theme === 'dark' ? '라이트 모드로 전환' : '다크 모드로 전환'}
-          title={theme === 'dark' ? '라이트 모드로 전환' : '다크 모드로 전환'}>
-          <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={21}/>
-        </button>
+        <ThemeToggle theme={theme} onChange={changeTheme}/>
       </header>
       <div className={`workspace map-sheet-${sheet} ${recentPlaces.items.length ? "has-recent-places" : ""} ${view === "route" ? `route-mode route-sheet-${sheet}` : ""}`}>
         <section className="search-area" aria-label="장소 검색">
