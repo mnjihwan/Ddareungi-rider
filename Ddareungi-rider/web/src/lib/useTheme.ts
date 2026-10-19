@@ -30,10 +30,9 @@ export function useTheme() {
     document.documentElement.dataset.theme = theme;
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#141d2a' : '#2563a6');
   }, [theme]);
-  function toggle() {
-    const next = theme === 'dark' ? 'light' : 'dark';
+  function changeTheme(next: Theme) {
     setPreference(next);
     try { localStorage.setItem(THEME_KEY, next); } catch { /* Keep the choice for this session. */ }
   }
-  return { theme, toggle };
+  return { theme, changeTheme };
 }

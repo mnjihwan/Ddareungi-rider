@@ -1594,15 +1594,28 @@ p {
 :root[data-theme="dark"] .skeletons > div { background: linear-gradient(110deg, #1e2a3a, #2c3b50, #1e2a3a); }
 :root[data-theme="dark"] .station-marker.selected { color: white; }
 :root[data-theme="dark"] .station-marker:after { background: inherit; }
-.theme-toggle { margin-left: auto; display: grid; place-items: center; width: 40px; height: 40px; flex-shrink: 0; border-radius: 50%; color: var(--theme-blue, #395780); background: var(--raised-surface, #f0f3f7); }
-.theme-toggle:hover { background: var(--selected-surface, #e4ebf5); }
+.theme-toggle { margin-left: auto; display: grid; place-items: center; width: 72px; min-height: 44px; padding: 0; flex-shrink: 0; border-radius: 24px; touch-action: pan-y; user-select: none; }
+.theme-toggle-track { --thumb-size: 28px; --thumb-inset: 3px; position: relative; display: flex; width: 100%; height: 36px; border: 1px solid #c3d1e3; border-radius: 24px; background: #e7eff8; box-shadow: inset 0 1px 3px #203c6014; }
+.theme-toggle-thumb { position: absolute; top: var(--thumb-inset); left: calc(var(--thumb-inset) + (100% - var(--thumb-size) - 2 * var(--thumb-inset)) * var(--toggle-progress)); width: var(--thumb-size); height: var(--thumb-size); border-radius: 50%; background: #fff; box-shadow: 0 2px 5px #18355530; transition: left .2s ease, background .2s ease; }
+.theme-toggle-sun, .theme-toggle-moon { display: grid; place-items: center; position: relative; width: 50%; color: #71839d; pointer-events: none; }
+:root[data-theme="light"] .theme-toggle-sun { color: #2563a6; }
+:root[data-theme="dark"] .theme-toggle-track { background: #1e2c40; border-color: #40536e; }
+:root[data-theme="dark"] .theme-toggle-thumb { background: #385b88; }
+:root[data-theme="dark"] .theme-toggle-moon { color: #f0f6ff; }
+.theme-toggle[data-dragging="true"] { cursor: grabbing; }
+.theme-toggle[data-dragging="true"] .theme-toggle-thumb { transition: none; }
+@media (prefers-reduced-motion: reduce) { .theme-toggle-thumb { transition: none; } }
 @media (max-width: 767px) {
   .app-header { gap: 4px; }
-  .theme-toggle { margin-left: 0; width: 36px; height: 36px; }
+  .theme-toggle { margin-left: 0; width: 60px; }
+  .theme-toggle-track { --thumb-size: 24px; --thumb-inset: 2px; height: 30px; }
+  .theme-toggle-track svg { width: 16px; height: 16px; }
 }
-@media (max-width: 360px) {
+@media (max-width: 380px) {
   .brand-logo { width: 88px; }
-  .theme-toggle { width: 32px; height: 32px; }
+  .theme-toggle { width: 54px; }
+  .theme-toggle-track { --thumb-size: 22px; height: 28px; }
+  .nav-count { display: none; }
 }
 
 /* Only raster basemap tiles are recolored. SDK branding, overlays and route SVGs stay intact. */
@@ -1616,3 +1629,5 @@ p {
   background: #fffffff2;
   border-radius: 3px;
 }
+
+@media (max-width: 340px) { .brand-logo { width: 76px; } }
