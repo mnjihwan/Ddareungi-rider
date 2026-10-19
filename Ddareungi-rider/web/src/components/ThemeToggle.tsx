@@ -21,6 +21,7 @@ export function ThemeToggle({theme, onChange}: {theme: Theme; onChange: (theme: 
       skipClick.current = false;
       if (event.button !== 0) return;
       const track = event.currentTarget.querySelector('.theme-toggle-track')!;
+      if (getComputedStyle(track).display === 'none') return;
       const thumb = event.currentTarget.querySelector('.theme-toggle-thumb')!;
       drag.current = {id:event.pointerId,x:event.clientX,start:dark ? 1 : 0,
         travel:track.clientWidth-thumb.clientWidth-2*parseFloat(getComputedStyle(track).getPropertyValue('--thumb-inset')),moved:false};
@@ -46,6 +47,7 @@ export function ThemeToggle({theme, onChange}: {theme: Theme; onChange: (theme: 
         event.preventDefault();onChange(event.key==='ArrowRight'?'dark':'light');
       }
     }}>
+    <span className="theme-toggle-compact" aria-hidden="true"><Icon name={dark ? 'sun' : 'moon'} size={21}/></span>
     <span className="theme-toggle-track" aria-hidden="true">
       <span className="theme-toggle-thumb" />
       <span className="theme-toggle-sun"><Icon name="sun" size={18}/></span>
