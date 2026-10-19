@@ -464,9 +464,9 @@ export default function App() {
                 </div>
               )}
               <div className="forecast-list-controls">
-                <label>수량 기준 <select value={forecastMinutes} onChange={e=>setForecastMinutes(Number(e.target.value))}>
-                  <option value={0}>현재 수량</option>
-                  {[5,10,15,30,60].map(minutes=><option key={minutes} value={minutes}>{minutes}분 후 예상</option>)}
+                <label>대여 예정 시간 <select value={forecastMinutes} onChange={e=>setForecastMinutes(Number(e.target.value))}>
+                  <option value={0}>지금</option>
+                  {[5,10,15,30,60].map(minutes=><option key={minutes} value={minutes}>{minutes}분 후</option>)}
                 </select></label>
                 {forecastMinutes > 0 && <p role="status">{usePredictions
                   ? `${forecastMinutes}분 후 예상 기준 · 예측 없는 대여소는 마지막에 표시해요. 대여를 보장하지 않아요.`
