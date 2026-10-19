@@ -58,7 +58,7 @@ p {
   overflow: hidden;
 }
 .app-header {
-  height: 80px;
+  height: 96px;
   background: #fff;
   display: flex;
   align-items: center;
@@ -124,7 +124,7 @@ p {
   background: #6984aa;
 }
 .workspace {
-  height: calc(100dvh - 80px);
+  height: calc(100dvh - 96px);
   display: grid;
   grid-template-columns: 380px 1fr;
   grid-template-rows: 180px minmax(0, 1fr);
@@ -1526,11 +1526,11 @@ p {
 
 .mobile-map-info { display: none; }
 @media (max-width: 767px) {
-  .app-header { height: 56px; padding: 0 12px; }
+  .app-header { height: 64px; padding: 0 12px; }
   .app-header .brand > span:last-child { display: none; }
   .app-header nav { gap: 6px; }
   .app-header nav button { padding: 10px 9px; font-size: 11px; }
-  .workspace { height: calc(100dvh - 56px); --mobile-sheet-height: calc((100dvh - 56px) * 0.46); }
+  .workspace { height: calc(100dvh - 64px); --mobile-sheet-height: calc((100dvh - 64px) * 0.46); }
   .workspace.map-sheet-peek { --mobile-sheet-height: 102px; }
   .workspace.map-sheet-full { --mobile-sheet-height: calc(100% - 77px); }
   /* Keep the map canvas fixed while the sheet overlays it. */
