@@ -1569,29 +1569,29 @@ p {
 :root { color-scheme: light; }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --theme-text: #e5edf8;
-  --theme-muted: #a7b5c8;
-  --theme-blue: #a5cbff;
-  --accent-text: #9ac5ff;
+  --theme-text: #f0f0f2;
+  --theme-muted: #c4c4cc;
+  --theme-blue: #8fbfff;
+  --accent-text: #80b7ff;
   --theme-warning: #e6c17c;
   --theme-negative: #f1a599;
   --theme-teal: #7bd5e0;
-  --surface: #141d2a;
-  --raised-surface: #1e2a3a;
-  --selected-surface: #263c57;
+  --surface: #303034;
+  --raised-surface: #39393e;
+  --selected-surface: #45454c;
   --warning-surface: #382f22;
   --negative-surface: #3b292b;
-  --theme-line: #3d4d63;
-  --muted: #a7b5c8;
-  --border: #344359;
+  --theme-line: #62626b;
+  --muted: #c4c4cc;
+  --border: #55555d;
 }
 :root[data-theme="dark"] .brand-logo { filter: brightness(1.9) saturate(.75); }
 :root[data-theme="dark"] input { color: var(--theme-text); }
-:root[data-theme="dark"] input::placeholder { color: #9eacc0; opacity: 1; }
+:root[data-theme="dark"] input::placeholder { color: #bdbdc6; opacity: 1; }
 :root[data-theme="dark"] .forecast-list-controls select {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='m3 4.5 3 3 3-3' fill='none' stroke='%23a5cbff' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='m3 4.5 3 3 3-3' fill='none' stroke='%238fbfff' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
-:root[data-theme="dark"] .skeletons > div { background: linear-gradient(110deg, #1e2a3a, #2c3b50, #1e2a3a); }
+:root[data-theme="dark"] .skeletons > div { background: linear-gradient(110deg, #39393e, #49494f, #39393e); }
 :root[data-theme="dark"] .station-marker.selected { color: white; }
 :root[data-theme="dark"] .station-marker:after { background: inherit; }
 .theme-toggle { margin-left: auto; display: grid; place-items: center; width: 72px; min-height: 44px; padding: 0; flex-shrink: 0; border-radius: 24px; touch-action: pan-y; user-select: none; }
@@ -1599,9 +1599,9 @@ p {
 .theme-toggle-thumb { position: absolute; top: var(--thumb-inset); left: calc(var(--thumb-inset) + (100% - var(--thumb-size) - 2 * var(--thumb-inset)) * var(--toggle-progress)); width: var(--thumb-size); height: var(--thumb-size); border-radius: 50%; background: #fff; box-shadow: 0 2px 5px #18355530; transition: left .2s ease, background .2s ease; }
 .theme-toggle-sun, .theme-toggle-moon { display: grid; place-items: center; position: relative; width: 50%; color: #71839d; pointer-events: none; }
 :root[data-theme="light"] .theme-toggle-sun { color: #2563a6; }
-:root[data-theme="dark"] .theme-toggle-track { background: #1e2c40; border-color: #40536e; }
-:root[data-theme="dark"] .theme-toggle-thumb { background: #385b88; }
-:root[data-theme="dark"] .theme-toggle-moon { color: #f0f6ff; }
+:root[data-theme="dark"] .theme-toggle-track { background: #3e3e44; border-color: #686871; }
+:root[data-theme="dark"] .theme-toggle-thumb { background: #2563a6; }
+:root[data-theme="dark"] .theme-toggle-moon { color: #fff; }
 .theme-toggle[data-dragging="true"] { cursor: grabbing; }
 .theme-toggle[data-dragging="true"] .theme-toggle-thumb { transition: none; }
 @media (prefers-reduced-motion: reduce) { .theme-toggle-thumb { transition: none; } }
@@ -1621,7 +1621,7 @@ p {
 /* Only raster basemap tiles are recolored. SDK branding, overlays and route SVGs stay intact. */
 :root[data-theme="dark"] .kakao-map img[src*=".kakaocdn.net/"][src*="/tile/"],
 :root[data-theme="dark"] .map-preview > svg {
-  filter: invert(.92) hue-rotate(180deg) saturate(.65) brightness(.95);
+  filter: invert(.82) hue-rotate(180deg) saturate(.65) brightness(1.05);
 }
 
 /* Preserve the SDK's black logo and scale on their own light backing. */
@@ -1631,3 +1631,6 @@ p {
 }
 
 @media (max-width: 340px) { .brand-logo { width: 76px; } }
+
+:root[data-theme="dark"] .theme-toggle-sun { color: #a5a5ae; }
+:root[data-theme="dark"] .toast { background: #303034; }

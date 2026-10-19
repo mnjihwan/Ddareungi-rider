@@ -28,7 +28,7 @@ export function useTheme() {
   }, []);
   useLayoutEffect(() => {
     document.documentElement.dataset.theme = theme;
-    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#141d2a' : '#2563a6');
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#303034' : '#2563a6');
   }, [theme]);
   function changeTheme(next: Theme) {
     setPreference(next);
