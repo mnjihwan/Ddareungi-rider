@@ -274,6 +274,20 @@ export default function App() {
       },
     );
   }
+  const searchShortcuts = (
+<div className="search-shortcuts">
+            {recentPlaces.items.length>0 && <div className="recommendation-row recent-places"><span>최근 장소</span>
+              {recentPlaces.items.slice(0,2).map(item=><button key={item.query} onClick={()=>{allowInitialLocation.current=false;setFocusedPlace(null);setText(item.query);setSubmitted(item.query);setSelectedId(null);setSheet("full");}}>{item.query}</button>)}
+              <button className="clear-recent" aria-label="최근 장소 지우기" onClick={recentPlaces.clear}><Icon name="close" size={12}/></button>
+            </div>}
+            <div className="recommendation-row subway-suggestions"><span>{reliableLocation?"내 주변역":"지도 주변역"}</span>
+              {subwaySuggestions.data?.map(place=><button key={place.name} title={place.address} onClick={()=>openPlace(place)}>{place.name.replace(/역(?:\s|[0-9]+호선).*$/,'역')}</button>)}
+              {subwaySuggestions.isFetching && !subwaySuggestions.data && <span>찾는 중…</span>}
+              {subwaySuggestions.isError && <span>주변역 조회 불가</span>}
+              {subwaySuggestions.data?.length===0 && <span>2km 안에 지하철역이 없어요</span>}
+            </div>
+          </div>
+  );
   const detail = selected && (
     <StationDetail
       key={selected.stationId}
@@ -337,7 +351,7 @@ export default function App() {
               : "대여소 탐색"}
         </span>
       </header>
-      <div className={`workspace ${recentPlaces.items.length ? "has-recent-places" : ""} ${view === "route" ? `route-mode route-sheet-${sheet}` : ""}`}>
+      <div className={`workspace map-sheet-${sheet} ${recentPlaces.items.length ? "has-recent-places" : ""} ${view === "route" ? `route-mode route-sheet-${sheet}` : ""}`}>
         <section className="search-area" aria-label="장소 검색">
           <div className="search-intro">
             <span className="eyebrow">어디로 떠나볼까요?</span>
@@ -360,18 +374,7 @@ export default function App() {
               if (suggestion.kind === 'place') openPlace(suggestion.place, query);
               else {recentPlaces.remember(query);go(suggestion.station.location, `${suggestion.station.stationName} 주변`);select(suggestion.station);}
             }}/>
-          <div className="search-shortcuts">
-            {recentPlaces.items.length>0 && <div className="recommendation-row recent-places"><span>최근 장소</span>
-              {recentPlaces.items.slice(0,2).map(item=><button key={item.query} onClick={()=>{allowInitialLocation.current=false;setFocusedPlace(null);setText(item.query);setSubmitted(item.query);setSelectedId(null);setSheet("full");}}>{item.query}</button>)}
-              <button className="clear-recent" aria-label="최근 장소 지우기" onClick={recentPlaces.clear}><Icon name="close" size={12}/></button>
-            </div>}
-            <div className="recommendation-row subway-suggestions"><span>{reliableLocation?"내 주변역":"지도 주변역"}</span>
-              {subwaySuggestions.data?.map(place=><button key={place.name} title={place.address} onClick={()=>openPlace(place)}>{place.name.replace(/역(?:\s|[0-9]+호선).*$/,'역')}</button>)}
-              {subwaySuggestions.isFetching && !subwaySuggestions.data && <span>찾는 중…</span>}
-              {subwaySuggestions.isError && <span>주변역 조회 불가</span>}
-              {subwaySuggestions.data?.length===0 && <span>2km 안에 지하철역이 없어요</span>}
-            </div>
-          </div>
+          <div className="desktop-shortcuts">{searchShortcuts}</div>
         </section>
         <aside
           className={`station-sidebar sheet-${sheet}`}
@@ -480,6 +483,12 @@ export default function App() {
                 {forecastMinutes > 0 && <p role="status">{usePredictions
                   ? `${forecastMinutes}분 후 예상 기준 · 예측 없는 대여소는 마지막에 표시해요. 대여를 보장하지 않아요.`
                   : !forecastPath ? "예측 서비스 준비 중이에요. 현재 수량으로 표시해요." : forecasts.isFetching ? "예측을 확인하는 동안 현재 수량으로 표시해요." : "사용 가능한 예측이 없어 현재 수량으로 표시해요."}</p>}
+              </div>
+              <div className="mobile-map-info">
+                {searchShortcuts}
+                <details className="mobile-map-legend"><summary>지도 수량 표시 안내</summary>
+                  <p>파랑 4대 이상 · 노랑 1–3대 · 빨강 0대 · 회색 정보 없음</p>
+                </details>
               </div>
               <div className="list-filter">
                 <span>
