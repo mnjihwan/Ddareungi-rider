@@ -2,7 +2,7 @@ import {requestLocation, MAX_LOCATION_ACCURACY} from "../lib/location";
 import { useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { useQuery } from '@tanstack/react-query';
-import { api, planBikeRoute } from '../lib/api';
+import { api, planBikeRoute, reversePlace } from '../lib/api';
 import type { BikeRoute, Coordinates, Place, Station } from '../lib/types';
 import { distanceLabel, observationLabel } from '../lib/status';
 import { Icon } from './Icon';
@@ -53,6 +53,21 @@ export function RoutePlanner({userLocation, userLocationAccuracy, endpointSelect
   useEffect(() => {
     if (pickedOrigin) { invalidate(); clearPinned(); setPositionAccuracy(null); setOrigin({name:'지도에서 지정한 출발지',address:'',location:pickedOrigin.location}); }
   }, [pickedOrigin]);
+  useEffect(() => {
+    if (!origin || !['현재 위치', '지도에서 지정한 출발지'].includes(origin.name)) return;
+    const controller = new AbortController();
+    const selected = origin;
+    const fallback = () => setOrigin(current => current !== selected ? current : {
+      ...selected, name: `${selected.location.latitude.toFixed(5)}, ${selected.location.longitude.toFixed(5)}`,
+      address: '주소를 확인하지 못했어요. 선택한 좌표로 길찾기합니다.',
+    });
+    reversePlace(selected.location, controller.signal).then(place => {
+      if (controller.signal.aborted) return;
+      if (!place) { fallback(); return; }
+      setOrigin(current => current !== selected ? current : {...place, location: selected.location});
+    }).catch(() => {if (!controller.signal.aborted) fallback();});
+    return () => controller.abort();
+  }, [origin]);
   function clearPinned() { setPinned(null); }
   function invalidate() { request.current?.abort(); request.current = null; setPending(false); setError(''); onPlan(null); }
   function locate() {
@@ -91,7 +106,7 @@ export function RoutePlanner({userLocation, userLocationAccuracy, endpointSelect
       <Icon name="locate" size={15}/>{locating?'위치 확인 중…':'현재 위치를 출발지로'}
     </button>
     <button className="route-locate" onClick={()=>{invalidate();onPickOrigin();}}><Icon name="pin" size={15}/>지도에서 출발지 선택</button>
-    {origin?.name==='현재 위치' && positionAccuracy!==null && <p className="subtle-notice" role="status">브라우저 위치 정확도 약 {distanceLabel(positionAccuracy)}{positionAccuracy>100?' · 실제 위치와 다르면 출발 장소를 검색해 주세요.':''}</p>}
+    {origin && positionAccuracy!==null && <p className="subtle-notice" role="status">브라우저 위치 정확도 약 {distanceLabel(positionAccuracy)}{positionAccuracy>100?' · 실제 위치와 다르면 출발 장소를 검색해 주세요.':''}</p>}
     <PlaceInput label="목적지" center={searchCenter} selected={destination} onSearchStart={onSearchStart} onSelect={(place,query)=>{invalidate();setArrival(null);setDestination(place);if(place)onPlaceSelected(place,query);}} />
     {pinned && <div className="pinned-station"><span>출발 대여소 <b>{pinned.stationName}</b></span>
       <button onClick={()=>{invalidate();clearPinned();}}>자동 선택</button></div>}
