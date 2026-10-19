@@ -6,8 +6,8 @@ import type {Coordinates} from '../lib/types';
 import {Icon} from './Icon';
 import {searchMatchLabel} from '../lib/koreanSearch';
 
-export function LocationSearchBox({id, label, text, center, variant = 'main', onTextChange, onSubmit, onChoose}: {
-  id: string; label: string; text: string; center: Coordinates; variant?: 'main' | 'route';
+export function LocationSearchBox({id, label, text, center, variant = 'main', openOnFocus = true, onTextChange, onSubmit, onChoose}: {
+  id: string; label: string; text: string; center: Coordinates; variant?: 'main' | 'route'; openOnFocus?: boolean;
   onTextChange: (text: string) => void; onSubmit?: () => void;
   onChoose: (suggestion: SearchSuggestion, query: string) => void;
 }) {
@@ -51,7 +51,7 @@ export function LocationSearchBox({id, label, text, center, variant = 'main', on
       <input id={id} aria-label={accessibleLabel} placeholder={label} value={text} maxLength={100}
         role="combobox" aria-autocomplete="list" aria-expanded={visible} aria-controls={visible ? listId : undefined}
         aria-activedescendant={visible && active >= 0 && items[active] ? `${id}-option-${active}` : undefined}
-        autoComplete="off" onFocus={() => setOpen(true)}
+        autoComplete="off" onFocus={() => setOpen(openOnFocus)}
         onChange={event => {onTextChange(event.target.value);setOpen(true);}}
         onCompositionStart={() => setComposing(true)} onCompositionEnd={() => setComposing(false)}
         onKeyDown={event => {

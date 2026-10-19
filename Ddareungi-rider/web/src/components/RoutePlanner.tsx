@@ -1,16 +1,16 @@
 import {requestLocation, MAX_LOCATION_ACCURACY} from "../lib/location";
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import axios from 'axios';
 import { useQuery } from '@tanstack/react-query';
 import { api, nearby, planBikeRoute, reversePlace } from '../lib/api';
-import type { BikeRoute, Coordinates, Place, Station } from '../lib/types';
+import type { BikeRoute, Coordinates, Place, Station, RouteEndpointRole } from '../lib/types';
 import { availability, AVAILABILITY_LABEL, compareStations, distanceLabel, observationLabel } from '../lib/status';
 import { Icon } from './Icon';
 import { LocationSearchBox } from './LocationSearchBox';
 import { SwipeRow } from './SwipeRow';
 
 const minutes = (seconds: number) => `${Math.max(0, Math.ceil(seconds / 60))}분`;
-export function RoutePlanner({onPlanningChange, active, favoriteStations, favoritesLoading, favoritesError, userLocation, userLocationAccuracy, endpointSelection, pickedOrigin, plan, onPlan, onLocation, onSelectStation, onPickOrigin, onPlaceSelected, searchCenter, onSearchStart}: {
+export function RoutePlanner({onPlanningChange, active, favoriteStations, favoritesLoading, favoritesError, userLocation, userLocationAccuracy, endpointSelection, pickedEndpoint, plan, onPlan, onLocation, onSelectStation, onPickEndpoint, onPlaceSelected, searchCenter, onSearchStart}: {
   onPlanningChange: (pending: boolean) => void;
   active: boolean;
   favoriteStations: Station[];
@@ -20,13 +20,13 @@ export function RoutePlanner({onPlanningChange, active, favoriteStations, favori
   onSearchStart: () => void;
   userLocation: Coordinates | null;
   userLocationAccuracy: number | null;
-  pickedOrigin: {location:Coordinates;revision:number} | null;
+  pickedEndpoint: {role:RouteEndpointRole;location:Coordinates;revision:number} | null;
   endpointSelection: {role:"origin"|"destination";place:Place;station?:Station;revision:number} | null;
   plan: BikeRoute | null;
   onPlan: (plan: BikeRoute | null) => void;
   onLocation: (location: Coordinates, accuracy:number) => void;
   onSelectStation: (station: Station) => void;
-  onPickOrigin: () => void;
+  onPickEndpoint: (role:RouteEndpointRole) => void;
   onPlaceSelected: (place:Place,query?:string) => void;
 }) {
   const [origin, setOrigin] = useState<Place | null>(userLocation ? {name:'현재 위치', address:'', location:userLocation} : null);
@@ -34,14 +34,17 @@ export function RoutePlanner({onPlanningChange, active, favoriteStations, favori
   const [pending, setPending] = useState(false), [locating, setLocating] = useState(false), [error, setError] = useState('');
   const [pinned, setPinned] = useState<Station | null>(null);
   const [arrival, setArrival] = useState<Station | null>(null);
-  const [positionAccuracy, setPositionAccuracy] = useState<number | null>(userLocationAccuracy);
+  const [activeEndpoint, setActiveEndpoint] = useState<RouteEndpointRole>('origin');
+  const activeLabel = activeEndpoint === 'origin' ? '출발지' : '목적지';
+  const [accuracies, setAccuracies] = useState<Record<RouteEndpointRole,number|null>>({origin:userLocationAccuracy,destination:null});
+  const locationRequest = useRef(0);
   const previousLocation = useRef(userLocation);
   const request = useRef<AbortController | null>(null);
   const resultElement = useRef<HTMLDivElement>(null);
   const status = useQuery({queryKey:['routing-status'], queryFn: async ({signal}) =>
     (await api.get<{data:{configured:boolean}}>('/routes/status',{signal})).data.data,
     staleTime:30_000, retry:1});
-  const nearbyCenter = origin?.location ?? searchCenter;
+  const nearbyCenter = (activeEndpoint === 'origin' ? origin : destination)?.location ?? searchCenter;
   const nearbyStations = useQuery({
     queryKey: ['route-nearby', nearbyCenter],
     queryFn: ({signal}) => nearby(nearbyCenter, 1000, signal),
@@ -49,59 +52,64 @@ export function RoutePlanner({onPlanningChange, active, favoriteStations, favori
     staleTime: 30_000, refetchInterval: active && !plan ? 60_000 : false, retry: 1,
   });
   const suggestions = [...(nearbyStations.data ?? [])].sort(compareStations).slice(0, 3);
-  function chooseDeparture(station: Station) {
+  function assignEndpoint(role: RouteEndpointRole, place: Place | null, station: Station | null = null, accuracy: number | null = null) {
+    invalidate();
+    setAccuracies(current=>({...current,[role]:accuracy}));
+    if (role === 'origin') {setOrigin(place);setPinned(station);}
+    else {setDestination(place);setArrival(station);}
+  }
+  function chooseStation(station: Station) {
     const place = {name:station.stationName,address:station.address,location:station.location};
-    invalidate();setPositionAccuracy(null);setOrigin(place);setPinned(station);onPlaceSelected(place);
+    assignEndpoint(activeEndpoint,place,station);onPlaceSelected(place);
   }
   useEffect(() => { onPlanningChange(pending); }, [pending, onPlanningChange]);
   useEffect(() => () => request.current?.abort(), []);
   useEffect(() => { if(plan)resultElement.current?.scrollIntoView({block:'start'}); }, [plan]);
   useEffect(() => {
     if (!endpointSelection) return;
-    invalidate();
-    if (endpointSelection.role === 'origin') {
-      setOrigin(endpointSelection.place); setPinned(endpointSelection.station ?? null); setPositionAccuracy(null);
-    } else {
-      setDestination(endpointSelection.place); setArrival(endpointSelection.station ?? null);
-    }
+    setActiveEndpoint(endpointSelection.role);
+    assignEndpoint(endpointSelection.role,endpointSelection.place,endpointSelection.station ?? null);
   }, [endpointSelection]);
   useEffect(() => {
-    if (userLocation && userLocation !== previousLocation.current) { invalidate(); clearPinned(); setPositionAccuracy(userLocationAccuracy); setOrigin({name:'현재 위치',address:'',location:userLocation}); }
+    if (userLocation && userLocation !== previousLocation.current) {
+      assignEndpoint('origin',{name:'현재 위치',address:'',location:userLocation},null,userLocationAccuracy);
+    }
     previousLocation.current = userLocation;
   }, [userLocation]);
   useEffect(() => {
-    if (pickedOrigin) { invalidate(); clearPinned(); setPositionAccuracy(null); setOrigin({name:'지도에서 지정한 출발지',address:'',location:pickedOrigin.location}); }
-  }, [pickedOrigin]);
-  useEffect(() => {
-    if (!origin || !['현재 위치', '지도에서 지정한 출발지'].includes(origin.name)) return;
-    const controller = new AbortController();
-    const selected = origin;
-    const fallback = () => setOrigin(current => current !== selected ? current : {
-      ...selected, name: `${selected.location.latitude.toFixed(5)}, ${selected.location.longitude.toFixed(5)}`,
-      address: '주소를 확인하지 못했어요. 선택한 좌표로 길찾기합니다.',
-    });
-    reversePlace(selected.location, controller.signal).then(place => {
-      if (controller.signal.aborted) return;
-      if (!place) { fallback(); return; }
-      setOrigin(current => current !== selected ? current : {...place, location: selected.location});
-    }).catch(() => {if (!controller.signal.aborted) fallback();});
-    return () => controller.abort();
-  }, [origin]);
+    if (pickedEndpoint) {
+      setActiveEndpoint(pickedEndpoint.role);
+      assignEndpoint(pickedEndpoint.role,{name:pickedEndpoint.role==='origin'?'지도에서 지정한 출발지':'지도에서 지정한 목적지',address:'',location:pickedEndpoint.location});
+    }
+  }, [pickedEndpoint]);
+  useResolvedPlace(origin,setOrigin);
+  useResolvedPlace(destination,setDestination);
   function clearPinned() { setPinned(null); }
-  function invalidate() { request.current?.abort(); request.current = null; setPending(false); setError(''); onPlan(null); }
+  function invalidate() {
+    request.current?.abort(); request.current = null;
+    locationRequest.current++;setLocating(false);
+    setPending(false);setError('');onPlan(null);
+  }
   function locate() {
     invalidate();
-    if (!navigator.geolocation || !window.isSecureContext) { setError('현재 위치를 사용할 수 없어요. 출발 장소를 검색해 주세요.'); return; }
+    const role = activeEndpoint, label = activeLabel, revision = locationRequest.current;
+    if (!navigator.geolocation || !window.isSecureContext) { setError(`현재 위치를 사용할 수 없어요. ${label} 장소를 검색해 주세요.`); return; }
     setLocating(true);
     requestLocation(navigator.geolocation, ({coords}) => {
+      if (locationRequest.current !== revision) return;
       if (!Number.isFinite(coords.accuracy) || coords.accuracy > MAX_LOCATION_ACCURACY) {
-        setError('현재 위치 오차가 커서 출발지를 변경하지 않았어요. 출발 장소를 검색하거나 지도에서 지정해 주세요.');
+        setError(`현재 위치 오차가 커서 ${label}를 변경하지 않았어요. 장소를 검색하거나 지도에서 지정해 주세요.`);
         setLocating(false); return;
       }
       const location = {latitude:coords.latitude,longitude:coords.longitude};
-      clearPinned(); setPositionAccuracy(coords.accuracy);
-      setOrigin({name:'현재 위치',address:'',location}); onLocation(location,coords.accuracy); setLocating(false);
-    }, () => {setError('위치를 확인하지 못했어요. 출발 장소를 검색해 주세요.');setLocating(false);});
+      // Updating the shared current-location marker must not also replace the origin.
+      previousLocation.current = location;
+      assignEndpoint(role,{name:'현재 위치',address:'',location},null,coords.accuracy);
+      onLocation(location,coords.accuracy);
+    }, () => {
+      if(locationRequest.current !== revision)return;
+      setError(`위치를 확인하지 못했어요. ${label} 장소를 검색해 주세요.`);setLocating(false);
+    });
   }
   async function submit() {
     if (!origin || !destination || pending) return;
@@ -120,23 +128,26 @@ export function RoutePlanner({onPlanningChange, active, favoriteStations, favori
     <span className="eyebrow">도보 → 따릉이 → 도보</span>
     <h1>목적지까지 따릉이로</h1>
     <p className="route-intro">걸어서 대여하고, 목적지 근처에서 반납하세요.</p>
-    <PlaceInput label="출발지" center={searchCenter} selected={origin} onSearchStart={onSearchStart} onSelect={(place,query)=>{invalidate();clearPinned();setPositionAccuracy(null);setOrigin(place);if(place)onPlaceSelected(place,query);}} />
-    <div className="route-favorites">
-      <span className="route-favorites-label" id="route-favorites-label" role="img" aria-label="즐겨찾기" title="즐겨찾기"><Icon name="star" size={16}/></span>
-      {favoriteStations.length ? <SwipeRow labelId="route-favorites-label">
-        {favoriteStations.map(station=><button key={station.stationId} type="button"
-          aria-pressed={pinned?.stationId===station.stationId}
-          onClick={()=>chooseDeparture(station)}>{station.stationName.replace(/^\s*\d+\s*\.\s*/, '')}</button>)}
-      </SwipeRow> : <p className="route-favorites-empty" role="status">{favoritesLoading?'불러오는 중…':favoritesError?'즐겨찾기를 불러오지 못했어요':'저장된 대여소가 없어요'}</p>}
+    <PlaceInput label="출발지" active={activeEndpoint==='origin'} onActivate={()=>setActiveEndpoint('origin')} center={searchCenter} selected={origin} onSearchStart={onSearchStart} onSelect={(place,query)=>{assignEndpoint('origin',place);if(place)onPlaceSelected(place,query);}} />
+    <PlaceInput label="목적지" active={activeEndpoint==='destination'} onActivate={()=>setActiveEndpoint('destination')} center={searchCenter} selected={destination} onSearchStart={onSearchStart} onSelect={(place,query)=>{assignEndpoint('destination',place);if(place)onPlaceSelected(place,query);}} />
+    <div className="route-endpoint-tools" role="group" aria-label={`${activeLabel} 지정 도구`}>
+      <p className="route-tool-target" aria-live="polite">{activeLabel} 선택 중</p>
+      <div className="route-favorites">
+        <span className="route-favorites-label" id="route-favorites-label" role="img" aria-label="즐겨찾기" title="즐겨찾기"><Icon name="star" size={16}/></span>
+        {favoriteStations.length ? <SwipeRow labelId="route-favorites-label">
+          {favoriteStations.map(station=><button key={station.stationId} type="button"
+            aria-pressed={(activeEndpoint==='origin'?pinned:arrival)?.stationId===station.stationId}
+            onClick={()=>chooseStation(station)}>{station.stationName.replace(/^\s*\d+\s*\.\s*/, '')}</button>)}
+        </SwipeRow> : <p className="route-favorites-empty" role="status">{favoritesLoading?'불러오는 중…':favoritesError?'즐겨찾기를 불러오지 못했어요':'저장된 대여소가 없어요'}</p>}
+      </div>
+      <div className="route-origin-actions">
+        <button className="route-locate" onClick={locate} disabled={locating}>
+          <Icon name="locate" size={15}/>{locating?'확인 중…':'현재 위치'}
+        </button>
+        <button className="route-locate" onClick={()=>{invalidate();onPickEndpoint(activeEndpoint);}}><Icon name="pin" size={15}/>지도에서 선택</button>
+      </div>
+      {(activeEndpoint==='origin'?origin:destination) && accuracies[activeEndpoint]!==null && <p className="subtle-notice" role="status">브라우저 위치 정확도 약 {distanceLabel(accuracies[activeEndpoint]!)}{accuracies[activeEndpoint]!>100?' · 실제 위치와 다르면 장소를 검색해 주세요.':''}</p>}
     </div>
-    <div className="route-origin-actions">
-      <button className="route-locate" onClick={locate} disabled={locating}>
-        <Icon name="locate" size={15}/>{locating?'확인 중…':'현재 위치'}
-      </button>
-      <button className="route-locate" onClick={()=>{invalidate();onPickOrigin();}}><Icon name="pin" size={15}/>지도에서 선택</button>
-    </div>
-    {origin && positionAccuracy!==null && <p className="subtle-notice" role="status">브라우저 위치 정확도 약 {distanceLabel(positionAccuracy)}{positionAccuracy>100?' · 실제 위치와 다르면 출발 장소를 검색해 주세요.':''}</p>}
-    <PlaceInput label="목적지" center={searchCenter} selected={destination} onSearchStart={onSearchStart} onSelect={(place,query)=>{invalidate();setArrival(null);setDestination(place);if(place)onPlaceSelected(place,query);}} />
     {pinned && <div className="pinned-station"><span>출발 대여소 <b>{pinned.stationName}</b></span>
       <button onClick={()=>{invalidate();clearPinned();}}>자동 선택</button></div>}
     {arrival && <div className="pinned-station"><span>도착 대여소 <b>{arrival.stationName}</b></span>
@@ -147,19 +158,19 @@ export function RoutePlanner({onPlanningChange, active, favoriteStations, favori
     {status.data?.configured === false && <p className="subtle-notice" role="status">길찾기 연결을 준비하고 있어요. 장소와 대여소 조회는 계속 이용할 수 있어요.</p>}
     {error && <p className="error-notice" role="alert">{error}</p>}
     {!plan && <section className="route-nearby" aria-label="길찾기 주변 대여소">
-      <h2>{origin ? '출발지 주변 대여소' : '지도 주변 대여소'}</h2>
+      <h2>{(activeEndpoint==='origin'?origin:destination) ? `${activeLabel} 주변 대여소` : '지도 주변 대여소'}</h2>
       <p>1km 이내 · 대여 가능한 곳부터 · 직선거리순</p>
       {nearbyStations.isPending ? <p role="status">주변 대여소를 찾고 있어요…</p>
         : nearbyStations.isError ? <p role="status">대여소를 불러오지 못했어요. <button onClick={()=>void nearbyStations.refetch()}>다시 시도</button></p>
         : suggestions.length ? <div className="route-nearby-list">{suggestions.map(station=>{
           const state = availability(station);
           return <button key={station.stationId} className="route-nearby-station"
-            aria-pressed={pinned?.stationId===station.stationId} onClick={()=>chooseDeparture(station)}>
+            aria-pressed={(activeEndpoint==='origin'?pinned:arrival)?.stationId===station.stationId} onClick={()=>chooseStation(station)}>
             <span><b>{station.stationName.replace(/^\s*\d+\s*\.\s*/, '')}</b>
               <small>{distanceLabel(station.distanceMeters)} · {AVAILABILITY_LABEL[state]}</small></span>
-            <span className="route-nearby-stock">{state==='unknown'?'수량 미확인':`${station.availableBikeCount}대`}<small>출발지로 선택</small></span>
+            <span className="route-nearby-stock">{state==='unknown'?'수량 미확인':`${station.availableBikeCount}대`}<small>{activeLabel}로 선택</small></span>
           </button>;
-        })}</div> : <p>1km 이내에 대여소가 없어요. 다른 출발 장소를 검색해 주세요.</p>}
+        })}</div> : <p>1km 이내에 대여소가 없어요. 다른 장소를 검색해 주세요.</p>}
     </section>}
     {plan && <div className="route-result" aria-live="polite" ref={resultElement}>
       <div className="route-summary"><span>예상 이동 시간<strong>{minutes(plan.durationSeconds)}</strong></span><span>총 이동 거리<strong>{distanceLabel(plan.distanceMeters)}</strong></span></div>
@@ -181,15 +192,31 @@ export function RoutePlanner({onPlanningChange, active, favoriteStations, favori
   </section>;
 }
 
-function PlaceInput({label,selected,onSelect,center,onSearchStart}:{label:string;selected:Place|null;center:Coordinates;onSearchStart:()=>void;onSelect:(place:Place|null,query?:string)=>void}) {
+function PlaceInput({label,active,onActivate,selected,onSelect,center,onSearchStart}:{label:string;active:boolean;onActivate:()=>void;selected:Place|null;center:Coordinates;onSearchStart:()=>void;onSelect:(place:Place|null,query?:string)=>void}) {
   const [text,setText]=useState(selected?.name??'');
   useEffect(()=>{if(selected)setText(selected.name);},[selected]);
-  return <div className="route-place-input">
+  return <div className={`route-place-input ${active?'is-active':''}`} onFocusCapture={onActivate} onClick={onActivate}>
     <label htmlFor={`route-${label}`}>{label}</label>
-    <LocationSearchBox id={`route-${label}`} label={`${label} 장소 또는 주소 검색`} variant="route" text={text} center={center}
+    <LocationSearchBox id={`route-${label}`} label={`${label} 장소 또는 주소 검색`} variant="route" openOnFocus={!selected} text={text} center={center}
       onTextChange={value=>{setText(value);onSearchStart();onSelect(null);}} onSubmit={onSearchStart}
       onChoose={(suggestion,query)=>onSelect(suggestion.kind==='place'?suggestion.place:
         {name:suggestion.station.stationName,address:suggestion.station.address,location:suggestion.station.location},query)}/>
     {selected && <span className="route-place-selected">선택됨 {selected.address && `· ${selected.address}`}</span>}
   </div>;
+}
+
+function useResolvedPlace(place: Place | null, setPlace: Dispatch<SetStateAction<Place | null>>) {
+  useEffect(()=>{
+    if (!place || !['현재 위치','지도에서 지정한 출발지','지도에서 지정한 목적지'].includes(place.name)) return;
+    const controller = new AbortController(), selected = place;
+    const fallback = () => setPlace(current=>current!==selected ? current : {...selected,
+      name:`${selected.location.latitude.toFixed(5)}, ${selected.location.longitude.toFixed(5)}`,
+      address:'주소를 확인하지 못했어요. 선택한 좌표로 길찾기합니다.'});
+    reversePlace(selected.location,controller.signal).then(resolved=>{
+      if(controller.signal.aborted)return;
+      if(!resolved){fallback();return;}
+      setPlace(current=>current!==selected?current:{...resolved,location:selected.location});
+    }).catch(()=>{if(!controller.signal.aborted)fallback();});
+    return ()=>controller.abort();
+  },[place,setPlace]);
 }

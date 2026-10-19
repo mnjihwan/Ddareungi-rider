@@ -19,7 +19,7 @@ for(const width of [1440,390]) {
  if(path.endsWith('/routes/plan')){payload=route.request().postDataJSON();return route.fulfill({status:422,json:{message:'검증용 응답'}});}
  await route.fulfill({json:{data}});
  });
- await page.goto('http://localhost:5173/');
+ await page.goto(process.env.CHECK_BASE_URL || 'http://localhost:5173/');
  async function choosePlace(){await page.locator('.location-search-box.main input').fill('테스트 카페');await page.getByRole('option').filter({hasText:'테스트 카페'}).click();}
  await choosePlace();
  await page.getByRole('button',{name:'출발지로',exact:true}).click();
@@ -32,6 +32,7 @@ for(const width of [1440,390]) {
  await page.locator('.station-card-select').filter({hasText:'반납 테스트'}).click();
  assert(await page.getByRole('button',{name:'여기서 출발',exact:true}).filter({visible:true}).isDisabled());
  await page.getByRole('button',{name:'여기로 도착',exact:true}).filter({visible:true}).click();
+ await page.waitForFunction(expected=>document.querySelector('#route-목적지')?.value===expected,stations[1].stationName);
  assert.equal(await page.getByLabel('목적지',{exact:true}).inputValue(),stations[1].stationName);
  await page.getByRole('button',{name:'주변 대여소',exact:true}).click();
  await page.locator('.station-card-select').filter({hasText:'출발 테스트'}).click();

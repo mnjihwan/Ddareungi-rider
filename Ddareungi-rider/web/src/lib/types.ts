@@ -1,3 +1,5 @@
+export type RouteEndpointRole = "origin" | "destination";
+
 export interface Coordinates {
   latitude: number;
   longitude: number;
