@@ -4,7 +4,7 @@
 
 ## 활성화
 
-루트 `.env`에 `VITE_FORECAST_API_PATH=/stations/forecasts`를 설정하고 웹 서버를 재시작하거나 다시 빌드합니다. Axios 기본 경로가 `/api/v1`이므로 실제 요청은 `POST /api/v1/stations/forecasts`입니다. 운영 시 백엔드에서 이 경로를 제공하거나 AI 서비스로 프록시해야 합니다. 브라우저에 AI 서비스 비밀 키를 넣지 않습니다. 미설정 시 목록의 예측 선택 UI와 네트워크 요청은 비활성입니다.
+루트 `.env`에 `VITE_FORECAST_API_PATH=/stations/forecasts`를 설정하고 웹 서버를 재시작하거나 다시 빌드합니다. Axios 기본 경로가 `/api/v1`이므로 실제 요청은 `POST /api/v1/stations/forecasts`입니다. 운영 시 백엔드에서 이 경로를 제공하거나 AI 서비스로 프록시해야 합니다. 브라우저에 AI 서비스 비밀 키를 넣지 않습니다. 미설정 상태에서도 시간 선택 UI는 표시합니다. 예측 시간을 선택하면 서비스 준비 중 안내와 함께 현재 수량을 유지하며 예측 네트워크 요청은 보내지 않습니다.
 
 ## API 계약
 
