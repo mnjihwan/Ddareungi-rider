@@ -5,9 +5,16 @@ import type { Coordinates, Station, MapBounds, BikeRoute, Place } from "../lib/t
 import { availability, AVAILABILITY_LABEL } from "../lib/status";
 import { Icon } from "./Icon";
 import { MapMarker } from "./MapMarker";
+import { MapPlaceChoice } from "./MapPlaceChoice";
+import {mapPlaces} from "../lib/api";
+import {useQuery} from "@tanstack/react-query";
+import {placeKey, selectVisiblePlaces} from "../lib/mapPlaces";
 
 interface Props {
   theme?: "light" | "dark";
+  showPlaces?: boolean;
+  onSelectPlace?: () => void;
+  onChoosePlace?: (role: "origin" | "destination", place: Place) => void;
   stations: Station[];
   selectedId: string | null;
   focus: { location: Coordinates; revision: number };
@@ -26,6 +33,9 @@ interface Props {
 
 export function StationMap({
   theme = "light",
+  showPlaces = false,
+  onSelectPlace,
+  onChoosePlace,
   stations,
   selectedId,
   focus,
@@ -52,6 +62,34 @@ export function StationMap({
   );
   const [version, setVersion] = useState(0);
   const [retry, setRetry] = useState(0);
+  const [chosenPlace, setChosenPlace] = useState<Place | null>(null);
+  const [placeCenter, setPlaceCenter] = useState<Coordinates | null>(null);
+  const [placeLabels, setPlaceLabels] = useState<Place[]>([]);
+  useEffect(()=>setChosenPlace(null), [showPlaces, focus.revision]);
+  useEffect(()=>{
+    if (!showPlaces || state !== 'ready' || !mapRef.current || mapRef.current.getLevel() > 4) {
+      setPlaceCenter(null);return;
+    }
+    const timer = window.setTimeout(()=>{
+      if(mapRef.current) {
+        const center = coordinatesOf(mapRef.current.getCenter());
+        setPlaceCenter({latitude:Math.round(center.latitude*10000)/10000,longitude:Math.round(center.longitude*10000)/10000});
+      }
+    }, 600);
+    return ()=>window.clearTimeout(timer);
+  }, [showPlaces, state, version]);
+  const places = useQuery({queryKey:['map-places',placeCenter],
+    queryFn:({signal})=>mapPlaces(placeCenter!,signal),
+    enabled:showPlaces && placeCenter !== null, staleTime:60_000, refetchOnWindowFocus:false, retry:false});
+  useEffect(()=>{
+    const map=mapRef.current,sdk=window.kakao?.maps;
+    if(!showPlaces||state!=='ready'||!map||!sdk||!host.current||map.getLevel()>4) {setPlaceLabels([]);return;}
+    const projection=map.getProjection();
+    setPlaceLabels(selectVisiblePlaces((places.data??[]).map(place=>{
+      const point=projection.containerPointFromCoords(new sdk.LatLng(place.location.latitude,place.location.longitude));
+      return {place,x:point.x,y:point.y};
+    }),host.current.clientWidth,host.current.clientHeight));
+  },[places.data,showPlaces,state,version]);
   const [groups, setGroups] = useState<MarkerGroup[]>([]);
 
   useEffect(() => {
@@ -118,11 +156,12 @@ export function StationMap({
           setVersion((value) => value + 1);
         };
         dragEnd = () => {
+          setChosenPlace(null);
           callbacks.current.onUserPan(coordinatesOf(map.getCenter()));
         };
         sdk.event.addListener(map, "idle", idle);
         sdk.event.addListener(map, "dragend", dragEnd);
-        mapClick = () => callbacks.current.onDismissPlace?.();
+        mapClick = () => {setChosenPlace(null);callbacks.current.onDismissPlace?.();};
         sdk.event.addListener(map, "click", mapClick);
         observer = new ResizeObserver(() => {
           const center = map.getCenter();
@@ -344,7 +383,15 @@ export function StationMap({
           </svg>
         </div>
       )}
+      {showPlaces && chosenPlace && onChoosePlace && <MapPlaceChoice place={chosenPlace}
+        onClose={()=>setChosenPlace(null)} onChoose={(role,place)=>{setChosenPlace(null);onChoosePlace(role,place);}}/>}
       <div className="marker-layer">
+        {showPlaces && state==='ready' && mapRef.current && window.kakao?.maps && placeLabels.map(place=>
+          <MapMarker key={placeKey(place)} map={mapRef.current!} sdk={window.kakao!.maps} location={place.location} selected={chosenPlace!==null&&placeKey(place)===placeKey(chosenPlace)}>
+            <button className="map-place-marker" aria-label={`장소 선택: ${place.name}`}
+              aria-pressed={chosenPlace!==null&&placeKey(place)===placeKey(chosenPlace)}
+              onClick={()=>{setChosenPlace(place);onSelectPlace?.();}}><Icon name="pin" size={13}/><span>{place.name}</span></button>
+          </MapMarker>)}
         {focusedPlace && state==="ready" && mapRef.current && window.kakao?.maps &&
           <MapMarker map={mapRef.current} sdk={window.kakao.maps} location={focusedPlace.location} selected>
             <span className="search-place-pin" aria-label={`선택한 장소 ${focusedPlace.name}`}><Icon name="pin" size={15}/>

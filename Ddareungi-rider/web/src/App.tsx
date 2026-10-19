@@ -622,6 +622,9 @@ export default function App() {
         <section className={`map-region ${selected ? "has-detail" : ""}`} aria-label="지도에서 대여소 찾기">
           <StationMap
             theme={theme}
+            showPlaces={view === "route" && !hideStationMarkers && !pickingOrigin}
+            onSelectPlace={()=>{allowInitialLocation.current=false;setSelectedId(null);setSheet("peek");}}
+            onChoosePlace={chooseEndpoint}
             stations={hideStationMarkers ? [] : Array.from(merged.values())}
             selectedId={selectedId}
             focus={focus}
