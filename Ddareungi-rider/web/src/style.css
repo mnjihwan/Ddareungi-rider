@@ -1574,3 +1574,14 @@ p {
 .route-favorite-chips button[aria-pressed="true"] { border-color: #8da7ce; background: #eaf0f8; color: #203c60; font-weight: 700; }
 .route-favorite-chips button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .route-favorites-empty { margin: 0; padding: 8px 0; font-size: 12px; color: #52657c; }
+
+.route-nearby { margin-top: 28px; border-top: 1px solid var(--border); padding-top: 20px; }
+.route-nearby h2 { margin: 0; font-size: 15px; }
+.route-nearby > p { margin: 8px 0 12px; font-size: 11px; line-height: 1.7; color: #52657c; }
+.route-nearby > p button { color: var(--accent); text-decoration: underline; }
+.route-nearby-list { display: grid; gap: 8px; }
+.route-nearby-station { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 13px 12px; border: 1px solid #dce3ed; border-radius: 10px; text-align: left; background: #fff; }
+.route-nearby-station[aria-pressed="true"] { background: #eaf0f8; border-color: #8da7ce; }
+.route-nearby-station b { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.route-nearby-station small { display: block; margin-top: 4px; color: #52657c; font-size: 10px; font-weight: 400; }
+.route-nearby-stock { flex-shrink: 0; color: var(--accent); font-size: 14px; font-weight: 700; text-align: right; }
