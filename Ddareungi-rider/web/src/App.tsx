@@ -412,7 +412,9 @@ export default function App() {
           <div className="sidebar-content" ref={sidebar}>
             {selected && <div className="mobile-detail">{detail}</div>}
             <div hidden={view !== "route"} className={selected ? "route-planner-container mobile-hidden" : "route-planner-container"}>
-              <RoutePlanner userLocation={userLocation} endpointSelection={endpointSelection} plan={route}
+              <RoutePlanner favoriteStations={(saved.data ?? []).filter(station=>favorites.ids.includes(station.stationId))}
+                favoritesLoading={saved.isFetching} favoritesError={saved.isError}
+                userLocation={userLocation} endpointSelection={endpointSelection} plan={route}
                 onPlaceSelected={focusPlace}
                 searchCenter={center} onSearchStart={()=>setFocusedPlace(null)}
                 userLocationAccuracy={userLocationAccuracy} pickedOrigin={pickedOrigin}
