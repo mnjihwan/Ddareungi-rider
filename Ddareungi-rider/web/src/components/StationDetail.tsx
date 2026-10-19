@@ -18,6 +18,7 @@ export function StationDetail({
   onFavorite,
   onClose,
   onRoute,
+  onArrival,
 }: {
   station: Station;
   saved: boolean;
@@ -25,6 +26,7 @@ export function StationDetail({
   onFavorite: () => void;
   onClose: () => void;
   onRoute: () => void;
+  onArrival: () => void;
 }) {
   const [minutes, setMinutes] = useState(15);
   const state = availability(station);
@@ -164,10 +166,13 @@ export function StationDetail({
           </p>
         )}
       </div>
+      <div className="endpoint-actions">
       <button className="primary-button directions-button" onClick={onRoute}
         disabled={sample || state === "unknown" || state === "empty"}>
-        <Icon name="arrow" size={18} />여기서 대여해 길찾기
+        <Icon name="arrow" size={18} />여기서 출발
       </button>
+      <button className="primary-button directions-button" onClick={onArrival} disabled={sample || state === "unknown"}>여기로 도착</button>
+      </div>
     </section>
   );
 }

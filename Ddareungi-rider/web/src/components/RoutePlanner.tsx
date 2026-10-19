@@ -7,26 +7,26 @@ import { distanceLabel, observationLabel } from '../lib/status';
 import { Icon } from './Icon';
 import { LocationSearchBox } from './LocationSearchBox';
 
-const minutes = (seconds: number) => `${Math.max(1, Math.ceil(seconds / 60))}분`;
-export function RoutePlanner({userLocation, userLocationAccuracy, pinnedStation, pickedOrigin, plan, onPlan, onLocation, onSelectStation, onClearPinned, onPickOrigin, onPlaceSelected, searchCenter, onSearchStart}: {
+const minutes = (seconds: number) => `${Math.max(0, Math.ceil(seconds / 60))}분`;
+export function RoutePlanner({userLocation, userLocationAccuracy, endpointSelection, pickedOrigin, plan, onPlan, onLocation, onSelectStation, onPickOrigin, onPlaceSelected, searchCenter, onSearchStart}: {
   searchCenter: Coordinates;
   onSearchStart: () => void;
   userLocation: Coordinates | null;
   userLocationAccuracy: number | null;
   pickedOrigin: {location:Coordinates;revision:number} | null;
-  pinnedStation: Station | null;
+  endpointSelection: {role:"origin"|"destination";place:Place;station?:Station;revision:number} | null;
   plan: BikeRoute | null;
   onPlan: (plan: BikeRoute | null) => void;
   onLocation: (location: Coordinates, accuracy:number) => void;
   onSelectStation: (station: Station) => void;
-  onClearPinned: () => void;
   onPickOrigin: () => void;
   onPlaceSelected: (place:Place,query?:string) => void;
 }) {
   const [origin, setOrigin] = useState<Place | null>(userLocation ? {name:'현재 위치', address:'', location:userLocation} : null);
   const [destination, setDestination] = useState<Place | null>(null);
   const [pending, setPending] = useState(false), [locating, setLocating] = useState(false), [error, setError] = useState('');
-  const [pinned, setPinned] = useState(pinnedStation);
+  const [pinned, setPinned] = useState<Station | null>(null);
+  const [arrival, setArrival] = useState<Station | null>(null);
   const [positionAccuracy, setPositionAccuracy] = useState<number | null>(userLocationAccuracy);
   const previousLocation = useRef(userLocation);
   const request = useRef<AbortController | null>(null);
@@ -36,7 +36,15 @@ export function RoutePlanner({userLocation, userLocationAccuracy, pinnedStation,
     staleTime:30_000, retry:1});
   useEffect(() => () => request.current?.abort(), []);
   useEffect(() => { if(plan)resultElement.current?.scrollIntoView({block:'start'}); }, [plan]);
-  useEffect(() => { setPinned(pinnedStation); invalidate(); }, [pinnedStation]);
+  useEffect(() => {
+    if (!endpointSelection) return;
+    invalidate();
+    if (endpointSelection.role === 'origin') {
+      setOrigin(endpointSelection.place); setPinned(endpointSelection.station ?? null); setPositionAccuracy(null);
+    } else {
+      setDestination(endpointSelection.place); setArrival(endpointSelection.station ?? null);
+    }
+  }, [endpointSelection]);
   useEffect(() => {
     if (userLocation && userLocation !== previousLocation.current) { invalidate(); clearPinned(); setPositionAccuracy(userLocationAccuracy); setOrigin({name:'현재 위치',address:'',location:userLocation}); }
     previousLocation.current = userLocation;
@@ -44,7 +52,7 @@ export function RoutePlanner({userLocation, userLocationAccuracy, pinnedStation,
   useEffect(() => {
     if (pickedOrigin) { invalidate(); clearPinned(); setPositionAccuracy(null); setOrigin({name:'지도에서 지정한 출발지',address:'',location:pickedOrigin.location}); }
   }, [pickedOrigin]);
-  function clearPinned() { setPinned(null); onClearPinned(); }
+  function clearPinned() { setPinned(null); }
   function invalidate() { request.current?.abort(); request.current = null; setPending(false); setError(''); onPlan(null); }
   function locate() {
     invalidate();
@@ -61,7 +69,7 @@ export function RoutePlanner({userLocation, userLocationAccuracy, pinnedStation,
     const controller = new AbortController(); request.current?.abort(); request.current = controller;
     setPending(true); setError(''); onPlan(null);
     try {
-      const result = await planBikeRoute(origin.location, destination.location, pinned?.stationId, controller.signal);
+      const result = await planBikeRoute(origin.location, destination.location, pinned?.stationId, controller.signal, arrival?.stationId);
       if (request.current === controller && !controller.signal.aborted) onPlan(result);
     } catch (failure) {
       if (!controller.signal.aborted) setError(axios.isAxiosError(failure)
@@ -79,9 +87,11 @@ export function RoutePlanner({userLocation, userLocationAccuracy, pinnedStation,
     </button>
     <button className="route-locate" onClick={()=>{invalidate();onPickOrigin();}}><Icon name="pin" size={15}/>지도에서 출발지 선택</button>
     {origin?.name==='현재 위치' && positionAccuracy!==null && <p className="subtle-notice" role="status">브라우저 위치 정확도 약 {distanceLabel(positionAccuracy)}{positionAccuracy>100?' · 실제 위치와 다르면 출발 장소를 검색해 주세요.':''}</p>}
-    <PlaceInput label="목적지" center={searchCenter} selected={destination} onSearchStart={onSearchStart} onSelect={(place,query)=>{invalidate();setDestination(place);if(place)onPlaceSelected(place,query);}} />
-    {pinned && <div className="pinned-station"><span>지정 대여소 <b>{pinned.stationName}</b></span>
+    <PlaceInput label="목적지" center={searchCenter} selected={destination} onSearchStart={onSearchStart} onSelect={(place,query)=>{invalidate();setArrival(null);setDestination(place);if(place)onPlaceSelected(place,query);}} />
+    {pinned && <div className="pinned-station"><span>출발 대여소 <b>{pinned.stationName}</b></span>
       <button onClick={()=>{invalidate();clearPinned();}}>자동 선택</button></div>}
+    {arrival && <div className="pinned-station"><span>도착 대여소 <b>{arrival.stationName}</b></span>
+      <button onClick={()=>{invalidate();setArrival(null);}}>자동 선택</button></div>}
     <button className="primary-button route-submit" onClick={()=>void submit()} disabled={!origin||!destination||pending||locating}>
       <Icon name={pending?'refresh':'arrow'} size={18}/>{pending?'이동 경로를 비교하고 있어요…':plan?'수량 확인하고 다시 검색':'따릉이 경로 찾기'}
     </button>

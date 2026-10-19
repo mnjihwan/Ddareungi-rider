@@ -113,6 +113,24 @@ class PlanBikeRouteTest {
         assertThat(planner.execute(origin,remote,null).destination()).isEqualTo(remote);
         verify(provider).directions("foot-walking",remote,remote);
     }
+    @Test void explicitlyPinnedReturnStationAcceptsZeroBikes() {
+        when(stations.findByIds(List.of("a1"),destination)).thenReturn(List.of(a1));
+        var plan = planner.execute(origin,destination,null,"a1");
+        assertThat(plan.arrivalStation().stationId()).isEqualTo("a1");
+        assertThat(plan.arrivalStation().availableBikeCount()).isZero();
+        verify(stations,never()).findNearby(destination,1000);
+    }
+    @Test void missingPinnedReturnStationDoesNotFallBack() {
+        when(stations.findByIds(List.of("missing"),destination)).thenReturn(List.of());
+        assertThatThrownBy(()->planner.execute(origin,destination,null,"missing"))
+            .isInstanceOfSatisfying(RouteException.class,e->assertThat(e.code).isEqualTo("PINNED_STATION_NOT_FOUND"));
+        verify(provider,never()).forRequest();
+    }
+    @Test void stalePinnedReturnStationIsRejected() {
+        when(stations.findByIds(List.of("a1"),destination)).thenReturn(List.of(station("a1",a1.location(),0,Instant.now().minusSeconds(301))));
+        assertThatThrownBy(()->planner.execute(origin,destination,null,"a1"))
+            .isInstanceOfSatisfying(RouteException.class,e->assertThat(e.code).isEqualTo("STATION_STATUS_UNAVAILABLE"));
+    }
     private void assertCode(String code) { assertThatThrownBy(()->planner.execute(origin,destination,null))
             .isInstanceOfSatisfying(RouteException.class,e->assertThat(e.code).isEqualTo(code)); }
     private static Station station(String id,Location location,Integer stock,Instant time) {

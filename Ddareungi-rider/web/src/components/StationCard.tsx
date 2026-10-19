@@ -9,12 +9,16 @@ import { Icon } from "./Icon";
 
 export function StationCard({
   station,
+  forecastMinutes = 0,
+  predictedCount = null,
   selected,
   saved,
   onSelect,
   onFavorite,
 }: {
   station: Station;
+  forecastMinutes?: number;
+  predictedCount?: number | null;
   selected: boolean;
   saved: boolean;
   onSelect: () => void;
@@ -45,6 +49,7 @@ export function StationCard({
             <small>대</small>
           </span>
         </div>
+        {forecastMinutes > 0 && <p className="station-prediction">{forecastMinutes}분 후 예상 · {predictedCount === null ? "예측 정보 없음" : `약 ${predictedCount}대`} <small>(위 수량은 현재 기준)</small></p>}
         <p>{station.address || "주소 정보 없음"}</p>
         <div className="station-card-footer">
           <span>

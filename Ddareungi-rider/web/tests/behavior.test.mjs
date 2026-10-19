@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { availability, forecastAt } from "../src/lib/status.ts";
+import { availability, forecastAt, compareStations, stationOutlook, compareOutlooks } from "../src/lib/status.ts";
 import { parseFavorites } from "../src/lib/favoriteStorage.ts";
 import { clusterPoints, separateMarkerGroups } from "../src/lib/clusters.ts";
 const now = Date.parse("2026-10-06T10:00:00Z");
@@ -92,4 +92,29 @@ test("close zoom preserves every station and separates overlapping labels with t
     const a=layout[i],b=layout[j];
     assert(Math.abs(a.x+a.offsetX-b.x-b.offsetX)>=76 || Math.abs(a.y+a.offsetY-b.y-b.offsetY)>=52);
   }
+});
+
+test("station lists prioritize rentable stock, then zero stock, then unknown, by distance within each group", () => {
+  const make = (id, count, distance, updatedAt = station.updatedAt) => ({
+    stationId: id, availableBikeCount: count, distanceMeters: distance, updatedAt,
+  });
+  const items = [make('missing-near', null, 10), make('empty-far', 0, 80),
+    make('available-far', 10, 500), make('low-near', 1, 100),
+    make('stale', 20, 30, new Date(now - 301000).toISOString()),
+    make('empty-near', 0, 20), make('missing-far', null, 200)];
+  assert.deepEqual(items.sort((a,b)=>compareStations(a,b,now)).map(s=>s.stationId),
+    ['low-near','available-far','empty-near','empty-far','missing-near','stale','missing-far']);
+});
+
+test("forecast ranking uses future stock and leaves missing or stale predictions last", () => {
+  const make = (id, count, distance) => ({...station, stationId:id, availableBikeCount:count, distanceMeters:distance});
+  const items=[make('empty-now',0,300),make('available-now',10,100),make('missing',5,10),make('stale',5,20)];
+  const forecast=(id,count,time=now)=>({stationId:id,baseTime:new Date(time).toISOString(),dataStatus:'fresh',predictions:[{targetTime:new Date(now+15*60000).toISOString(),expectedBikes:count}]});
+  const forecasts=new Map([['empty-now',forecast('empty-now',3)],['available-now',forecast('available-now',0)],['stale',forecast('stale',8,now-601000)]]);
+  assert.deepEqual([...items].sort((a,b)=>compareOutlooks(a,b,forecasts,15,now)).map(s=>s.stationId),['empty-now','available-now','missing','stale']);
+  assert.equal(stationOutlook(items[0],forecasts.get('empty-now'),0,now).count,0);
+  assert.equal(stationOutlook(items[0],forecasts.get('empty-now'),15,now).count,3);
+  assert.equal(stationOutlook(items[0],forecast('other',3),15,now).count,null);
+  assert.equal(stationOutlook(items[0],forecast('empty-now',-1),15,now).count,null);
+  assert.equal(stationOutlook(items[0],forecast('empty-now',3),60,now).count,null);
 });

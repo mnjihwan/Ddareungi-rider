@@ -21,10 +21,14 @@ public class PlanBikeRoute {
     public boolean configured() { return enabled && provider.configured(); }
 
     public Plan execute(Location origin, Location destination, String departureStationId) {
+        return execute(origin, destination, departureStationId, null);
+    }
+
+    public Plan execute(Location origin, Location destination, String departureStationId, String arrivalStationId) {
         if (origin == null || destination == null) throw new IllegalArgumentException("출발지와 목적지를 선택해 주세요.");
         if (!configured()) throw new RouteException(HttpStatus.SERVICE_UNAVAILABLE, "ROUTING_NOT_CONFIGURED", "길찾기 연결을 준비하고 있어요. 장소와 대여소 조회는 계속 이용할 수 있어요.");
         var departures = candidates(origin, true, departureStationId);
-        var arrivals = candidates(destination, false, null);
+        var arrivals = candidates(destination, false, arrivalStationId);
         if (departures.isEmpty()) throw new RouteException(HttpStatus.NOT_FOUND, "NO_RENTAL_STATION", "출발지 1km 안에 대여 가능한 자전거가 확인된 대여소가 없어요. 출발지나 지정 대여소를 변경해 주세요.");
         if (arrivals.isEmpty()) throw new RouteException(HttpStatus.NOT_FOUND, "NO_RETURN_STATION", "목적지 1km 안에 최근 정보가 확인된 대여소가 없어요. 목적지를 변경해 주세요.");
         var starts = departures.stream().map(Station::location).toList();
@@ -60,7 +64,7 @@ public class PlanBikeRoute {
                     .filter(s -> s.stationId().equals(pinnedId)).findFirst()
                     .orElseThrow(() -> new RouteException(HttpStatus.NOT_FOUND, "PINNED_STATION_NOT_FOUND", "지정한 대여소를 찾지 못했어요. 자동 선택하거나 다른 대여소를 지정해 주세요."));
             if (!fresh(pinned)) throw new RouteException(HttpStatus.SERVICE_UNAVAILABLE, "STATION_STATUS_UNAVAILABLE", "지정한 대여소의 최신 수량을 확인하지 못했어요. 잠시 후 다시 검색하거나 다른 대여소를 선택해 주세요.");
-            if (pinned.availableBikeCount() == 0) throw new RouteException(HttpStatus.CONFLICT, "PINNED_STATION_EMPTY", "지정한 대여소에 대여 가능한 자전거가 없어요. 자동 선택하거나 다른 대여소를 지정해 주세요.");
+            if (rental && pinned.availableBikeCount() == 0) throw new RouteException(HttpStatus.CONFLICT, "PINNED_STATION_EMPTY", "지정한 대여소에 대여 가능한 자전거가 없어요. 자동 선택하거나 다른 대여소를 지정해 주세요.");
             return List.of(pinned);
         }
         var nearby = stations.findNearby(location, 1000);
