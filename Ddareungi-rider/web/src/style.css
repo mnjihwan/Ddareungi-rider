@@ -1567,10 +1567,10 @@ p {
 
 .route-origin-actions { display: flex; align-items: center; gap: 20px; }
 .route-origin-actions .route-locate { min-height: 44px; white-space: nowrap; }
-.route-favorites { min-width: 0; margin-top: 14px; }
-.route-favorites-label { display: flex; align-items: center; gap: 5px; margin-bottom: 8px; font-size: 12px; color: #52657c; }
-.route-favorite-chips { display: flex; gap: 8px; overflow-x: auto; overscroll-behavior-x: contain; padding: 3px 2px 7px; scrollbar-width: thin; }
-.route-favorite-chips button { flex: 0 0 auto; min-height: 44px; padding: 8px 12px; border: 1px solid #cdd7e5; border-radius: 8px; background: #fff; color: #52657c; font-size: 12px; white-space: nowrap; }
+.route-favorites { display: flex; align-items: center; gap: 8px; min-width: 0; margin-top: 10px; }
+.route-favorites-label { display: flex; align-items: center; flex-shrink: 0; color: #52657c; }
+.route-favorite-chips { display: flex; flex: 1; min-width: 0; gap: 6px; overflow-x: auto; overscroll-behavior-x: contain; padding: 3px 2px; scrollbar-width: thin; }
+.route-favorite-chips button { flex: 0 0 auto; min-height: 32px; padding: 5px 9px; border: 1px solid #cdd7e5; border-radius: 8px; background: #fff; color: #52657c; font-size: 12px; white-space: nowrap; }
 .route-favorite-chips button[aria-pressed="true"] { border-color: #8da7ce; background: #eaf0f8; color: #203c60; font-weight: 700; }
 .route-favorite-chips button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .route-favorites-empty { margin: 0; padding: 8px 0; font-size: 12px; color: #52657c; }

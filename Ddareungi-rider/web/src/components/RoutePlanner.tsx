@@ -106,7 +106,7 @@ export function RoutePlanner({favoriteStations, favoritesLoading, favoritesError
     <p className="route-intro">걸어서 대여하고, 목적지 근처에서 반납하세요.</p>
     <PlaceInput label="출발지" center={searchCenter} selected={origin} onSearchStart={onSearchStart} onSelect={(place,query)=>{invalidate();clearPinned();setPositionAccuracy(null);setOrigin(place);if(place)onPlaceSelected(place,query);}} />
     <div className="route-favorites">
-      <span className="route-favorites-label" id="route-favorites-label"><Icon name="star" size={15}/>즐겨찾기</span>
+      <span className="route-favorites-label" id="route-favorites-label" role="img" aria-label="즐겨찾기" title="즐겨찾기"><Icon name="star" size={16}/></span>
       {favoriteStations.length ? <div className="route-favorite-chips" role="group" aria-labelledby="route-favorites-label" tabIndex={0}>
         {favoriteStations.map(station=><button key={station.stationId} type="button"
           aria-pressed={pinned?.stationId===station.stationId}
