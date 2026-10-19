@@ -38,7 +38,7 @@ try {
     assert.equal(await page.locator('.route-endpoint').count(),4);
     await page.screenshot({path:fileURLToPath(new URL(`.local/origin-${name}-route.png`,root)),fullPage:true});
     await page.getByRole('button',{name:'현재 위치를 출발지로',exact:true}).click();
-    await page.getByText(/브라우저 위치 정확도 약 50\.0km/).waitFor();
+    await page.getByText('현재 위치 오차가 커서 출발지를 변경하지 않았어요. 출발 장소를 검색하거나 지도에서 지정해 주세요.').waitFor();
     const geoOptions=await page.evaluate(async()=>{
       const getPosition=navigator.geolocation.getCurrentPosition.bind(navigator.geolocation);
       window.__geoOptions=null;

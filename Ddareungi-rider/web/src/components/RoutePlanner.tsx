@@ -1,3 +1,4 @@
+import {requestLocation, MAX_LOCATION_ACCURACY} from "../lib/location";
 import { useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { useQuery } from '@tanstack/react-query';
@@ -58,11 +59,15 @@ export function RoutePlanner({userLocation, userLocationAccuracy, endpointSelect
     invalidate();
     if (!navigator.geolocation || !window.isSecureContext) { setError('현재 위치를 사용할 수 없어요. 출발 장소를 검색해 주세요.'); return; }
     setLocating(true);
-    navigator.geolocation.getCurrentPosition(({coords}) => {
+    requestLocation(navigator.geolocation, ({coords}) => {
+      if (!Number.isFinite(coords.accuracy) || coords.accuracy > MAX_LOCATION_ACCURACY) {
+        setError('현재 위치 오차가 커서 출발지를 변경하지 않았어요. 출발 장소를 검색하거나 지도에서 지정해 주세요.');
+        setLocating(false); return;
+      }
       const location = {latitude:coords.latitude,longitude:coords.longitude};
       clearPinned(); setPositionAccuracy(coords.accuracy);
       setOrigin({name:'현재 위치',address:'',location}); onLocation(location,coords.accuracy); setLocating(false);
-    }, () => {setError('위치를 확인하지 못했어요. 출발 장소를 검색해 주세요.');setLocating(false);}, {enableHighAccuracy:true,timeout:15_000,maximumAge:0});
+    }, () => {setError('위치를 확인하지 못했어요. 출발 장소를 검색해 주세요.');setLocating(false);});
   }
   async function submit() {
     if (!origin || !destination || pending) return;
