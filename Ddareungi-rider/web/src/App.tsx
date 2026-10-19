@@ -8,11 +8,12 @@ import {
   searchStations,
   viewportStations,
   nearbySubways,
+  forecastPath, loadForecasts,
 } from "./lib/api";
 import { INITIAL_LOCATION, type Coordinates, type Station, type MapBounds, type BikeRoute, type Place } from "./lib/types";
 import {useRecentPlaces} from './lib/useRecentPlaces';
 import { useFavorites } from "./lib/useFavorites";
-import { availability } from "./lib/status";
+import { availability, compareOutlooks, stationOutlook } from "./lib/status";
 import { StationMap } from "./components/StationMap";
 import { StationCard } from "./components/StationCard";
 import { StationDetail } from "./components/StationDetail";
@@ -42,9 +43,19 @@ export default function App() {
   const [message, setMessage] = useState(""),
     [locating, setLocating] = useState(false),
     [, tick] = useState(0);
-  const drag = useRef(0);
+  const drag = useRef<number | null>(null);
+  const initialLocationRequested = useRef(false);
+  const allowInitialLocation = useRef(true);
+  const locationRequest = useRef(0);
+  useEffect(() => {
+    if (initialLocationRequested.current) return;
+    initialLocationRequested.current = true;
+    locate(true);
+  }, []);
+  const [forecastMinutes, setForecastMinutes] = useState(0);
   const [route, setRoute] = useState<BikeRoute | null>(null);
-  const [pinnedStation, setPinnedStation] = useState<Station | null>(null);
+  const [endpointSelection, setEndpointSelection] = useState<{role:"origin"|"destination";place:Place;station?:Station;revision:number} | null>(null);
+  const [searchPlace, setSearchPlace] = useState<Place | null>(null);
   const [userLocationAccuracy, setUserLocationAccuracy] = useState<number | null>(null);
   const [pickingOrigin, setPickingOrigin] = useState(false);
   const [pickedOrigin, setPickedOrigin] = useState<{location:Coordinates;revision:number} | null>(null);
@@ -152,13 +163,26 @@ export default function App() {
         ? (saved.data ?? [])
         : []
       : (stations.data ?? []);
-  const filteredList = baseList.filter(
-    (s) => !filter || ["available", "low"].includes(availability(s)),
-  ).sort((a, b) => (submitted ? bestSearchScore(a.stationName, a.address, submitted) - bestSearchScore(b.stationName, b.address, submitted) : 0)
-    || a.distanceMeters - b.distanceMeters);
+  const forecastIds = [...new Set(baseList.map(station=>station.stationId))].sort();
+  const forecasts = useQuery({
+    queryKey: ["list-forecasts", forecastIds],
+    queryFn: ({signal})=>loadForecasts(forecastIds, signal),
+    enabled: !!forecastPath && forecastMinutes > 0 && forecastIds.length > 0 && view !== "route",
+    staleTime: 60_000, refetchInterval: 60_000, retry: false,
+  });
+  const forecastMap = new Map((forecasts.data ?? []).map(value=>[value.stationId,value]));
+  const forecastNow = Date.now();
+  const usePredictions = forecastMinutes > 0 && !forecasts.isError && baseList.some(station=>
+    stationOutlook(station,forecastMap.get(station.stationId),forecastMinutes,forecastNow).count !== null);
+  const effectiveMinutes = usePredictions ? forecastMinutes : 0;
+  const filteredList = baseList.filter(s=>!filter || ["available","low"].includes(
+    stationOutlook(s,forecastMap.get(s.stationId),effectiveMinutes,forecastNow).state))
+    .sort((a,b)=>compareOutlooks(a,b,forecastMap,effectiveMinutes,forecastNow));
   const list = !submitted && view === "nearby" && nearbyLimit !== null ? filteredList.slice(0, nearbyLimit) : filteredList;
   function go(location: Coordinates, title: string, fromLocation = false) {
+    allowInitialLocation.current = false;
     setFocusedPlace(null);
+    setSearchPlace(null);
     setCenter(location);
     setRadius(500);
     setNearbyLimit(fromLocation ? 5 : null);
@@ -172,6 +196,7 @@ export default function App() {
     setMessage("");
   }
   function focusPlace(place:Place, query?:string) {
+    allowInitialLocation.current = false;
     setCenter(place.location);
     setFocus(previous=>({location:place.location,revision:previous.revision+1}));
     setFocusedPlace(place);
@@ -184,15 +209,24 @@ export default function App() {
   function openPlace(place:Place, query?:string) {
     go(place.location,`${place.name} 주변`);
     focusPlace(place,query);
+    setSearchPlace(place);
+  }
+  function chooseEndpoint(role:"origin"|"destination", place:Place, station?:Station) {
+    allowInitialLocation.current = false;
+    setEndpointSelection(previous=>({role,place,station,revision:(previous?.revision??0)+1}));
+    setRoute(null); setPickingOrigin(false); setView("route"); setSelectedId(null); setSheet("full");
+    setFocusedPlace(place);
   }
   function select(station: Station) {
+    allowInitialLocation.current = false;
     setFocusedPlace(null);
     if (submitted && view !== "route") recentPlaces.remember(submitted);
     setSelectedId(station.stationId);
     setFocus((f) => ({ location: station.location, revision: f.revision + 1 }));
     setSheet("mid");
   }
-  function locate() {
+  function locate(initial = false) {
+    const requestId = ++locationRequest.current;
     if (!window.isSecureContext || !navigator.geolocation) {
       setMessage(
         "현재 위치를 사용할 수 없어요. 장소 검색이나 지도 이동으로 찾아주세요. 모바일 위치 기능은 HTTPS 연결이 필요해요.",
@@ -202,6 +236,10 @@ export default function App() {
     setLocating(true);
     navigator.geolocation.getCurrentPosition(
       ({ coords }) => {
+        if (requestId !== locationRequest.current) return;
+        setLocating(false);
+        // A delayed permission response must not replace a place the user already chose.
+        if (initial && !allowInitialLocation.current) return;
         const location = {
           latitude: coords.latitude,
           longitude: coords.longitude,
@@ -212,10 +250,16 @@ export default function App() {
         if (coords.accuracy > 100) setMessage(`브라우저 위치 오차가 약 ${Math.round(coords.accuracy)}m예요. 실제 위치와 다르면 장소 검색이나 지도에서 출발 위치를 지정해 주세요.`);
         setLocating(false);
       },
-      () => {
-        setMessage(
-          "위치를 확인하지 못했어요. 장소 검색과 지도는 계속 사용할 수 있어요.",
-        );
+      (error) => {
+        if (requestId !== locationRequest.current) return;
+        setLocating(false);
+        if (initial && !allowInitialLocation.current) return;
+        const reason = error.code === 1
+          ? "위치 접근이 차단됐어요. 브라우저의 사이트 위치 권한과 운영체제 위치 설정을 확인해 주세요."
+          : error.code === 3
+            ? "위치 확인 시간이 초과됐어요. 현재 위치 버튼으로 다시 시도해 주세요."
+            : "브라우저가 현재 위치를 제공하지 못했어요. 운영체제 위치 서비스와 네트워크 연결을 확인해 주세요.";
+        setMessage(reason + (initial ? " 현재는 강남역 주변을 보여드려요." : " 장소 검색은 계속 사용할 수 있어요."));
         setLocating(false);
       },
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
@@ -229,7 +273,8 @@ export default function App() {
       saved={favorites.ids.includes(selected.stationId)}
       onFavorite={() => favorites.toggle(selected.stationId)}
       onClose={() => setSelectedId(null)}
-      onRoute={() => { setPinnedStation(selected); setView("route"); setSelectedId(null); setSheet("full"); }}
+      onRoute={() => chooseEndpoint("origin", {name:selected.stationName,address:selected.address,location:selected.location}, selected)}
+      onArrival={() => chooseEndpoint("destination", {name:selected.stationName,address:selected.address,location:selected.location}, selected)}
     />
   );
   return (
@@ -246,7 +291,7 @@ export default function App() {
         </a>
         <nav aria-label="대여소 보기">
           <button className={view === "route" ? "active" : ""}
-            onClick={() => {setView("route");setSelectedId(null);setSheet(route ? "mid" : "full");}}>
+            onClick={() => {allowInitialLocation.current=false;setView("route");setSelectedId(null);setSheet(route ? "mid" : "full");}}>
             <Icon name="arrow" size={17} />길찾기
           </button>
           <button
@@ -263,6 +308,7 @@ export default function App() {
           <button
             className={view === "favorites" ? "active" : ""}
             onClick={() => {
+              allowInitialLocation.current=false;
               setView("favorites");
               setSubmitted("");
               setSelectedId(null);
@@ -289,7 +335,7 @@ export default function App() {
             <h1>가까운 따릉이를 찾아보세요</h1>
           </div>
           <LocationSearchBox id="main-place-search" label="장소, 주소 또는 대여소 검색" text={text} center={center}
-            onTextChange={value => {setText(value);setSubmitted('');setFocusedPlace(null);}}
+            onTextChange={value => {allowInitialLocation.current=false;setText(value);setSubmitted('');setFocusedPlace(null);}}
             onSubmit={() => {
               setFocusedPlace(null);
               if (text.trim().length < 2) {
@@ -307,7 +353,7 @@ export default function App() {
             }}/>
           <div className="search-shortcuts">
             {recentPlaces.items.length>0 && <div className="recommendation-row recent-places"><span>최근 장소</span>
-              {recentPlaces.items.slice(0,2).map(item=><button key={item.query} onClick={()=>{setFocusedPlace(null);setText(item.query);setSubmitted(item.query);setSelectedId(null);setSheet("full");}}>{item.query}</button>)}
+              {recentPlaces.items.slice(0,2).map(item=><button key={item.query} onClick={()=>{allowInitialLocation.current=false;setFocusedPlace(null);setText(item.query);setSubmitted(item.query);setSelectedId(null);setSheet("full");}}>{item.query}</button>)}
               <button className="clear-recent" aria-label="최근 장소 지우기" onClick={recentPlaces.clear}><Icon name="close" size={12}/></button>
             </div>}
             <div className="recommendation-row subway-suggestions"><span>{reliableLocation?"내 주변역":"지도 주변역"}</span>
@@ -324,43 +370,40 @@ export default function App() {
         >
           <div
             className="sheet-handle"
-            onPointerDown={(e) => {
-              if ((e.target as HTMLElement).closest('button')) return;
-              drag.current = e.clientY;
+            role="slider" tabIndex={0} aria-label="목록 높이"
+            aria-orientation="vertical" aria-valuemin={0} aria-valuemax={2}
+            aria-valuenow={sheet === "peek" ? 0 : sheet === "mid" ? 1 : 2}
+            aria-valuetext={sheet === "peek" ? "접힘" : sheet === "mid" ? "중간" : "펼쳐짐"}
+            onKeyDown={e=>{
+              if (!["ArrowUp","ArrowDown","Home","End"].includes(e.key)) return;
+              e.preventDefault();
+              setSheet(current=>e.key === "Home" ? "peek" : e.key === "End" ? "full" :
+                e.key === "ArrowUp" ? (current === "peek" ? "mid" : "full") : (current === "full" ? "mid" : "peek"));
+            }}
+            onPointerDown={e=>{
+              if (!e.isPrimary || e.button !== 0) return;
+              drag.current=e.clientY;
               e.currentTarget.setPointerCapture(e.pointerId);
             }}
-            onPointerUp={(e) => {
-              if ((e.target as HTMLElement).closest('button')) return;
-              const delta = e.clientY - drag.current;
-              if (Math.abs(delta) > 30)
-                setSheet(
-                  delta < 0 ? "full" : sheet === "full" ? "mid" : "peek",
-                );
+            onPointerUp={e=>{
+              if (drag.current === null) return;
+              const delta=e.clientY-drag.current;
+              drag.current=null;
+              if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+              if (Math.abs(delta)>30) setSheet(current=>delta<0 ? (current === "peek" ? "mid" : "full") : (current === "full" ? "mid" : "peek"));
             }}
+            onPointerCancel={()=>{drag.current=null;}}
+            onLostPointerCapture={()=>{drag.current=null;}}
           >
-            <span />
-            <div>
-              {(["peek", "mid", "full"] as const).map((value, i) => (
-                <button
-                  key={value}
-                  aria-label={
-                    ["목록 접기", "목록 중간 높이", "목록 전체 펼치기"][i]
-                  }
-                  aria-pressed={sheet === value}
-                  onClick={() => setSheet(value)}
-                >
-                  {["접기", "중간", "펼치기"][i]}
-                </button>
-              ))}
-            </div>
+            <span aria-hidden="true" />
           </div>
           <div className="sidebar-content" ref={sidebar}>
             {selected && <div className="mobile-detail">{detail}</div>}
             <div hidden={view !== "route"} className={selected ? "route-planner-container mobile-hidden" : "route-planner-container"}>
-              <RoutePlanner userLocation={userLocation} pinnedStation={pinnedStation} plan={route}
+              <RoutePlanner userLocation={userLocation} endpointSelection={endpointSelection} plan={route}
                 onPlaceSelected={focusPlace}
                 searchCenter={center} onSearchStart={()=>setFocusedPlace(null)}
-                userLocationAccuracy={userLocationAccuracy} pickedOrigin={pickedOrigin} onClearPinned={()=>setPinnedStation(null)}
+                userLocationAccuracy={userLocationAccuracy} pickedOrigin={pickedOrigin}
                 onPickOrigin={()=>{setRoute(null);setSelectedId(null);setPickingOrigin(true);setSheet("peek");}}
                 onPlan={plan => {setRoute(plan);if(plan)setSheet("mid");}} onLocation={(location,accuracy)=>{setUserLocation(location);setUserLocationAccuracy(accuracy);}} onSelectStation={select} />
             </div>
@@ -370,6 +413,14 @@ export default function App() {
                 selected ? "list-content mobile-hidden" : "list-content"
               }
             >
+              {!submitted && view === "nearby" && searchPlace && <section className="searched-place" aria-label="검색한 장소">
+                <span className="eyebrow">선택한 장소</span>
+                <b>{searchPlace.name}</b><p>{searchPlace.address}</p>
+                <div className="endpoint-actions">
+                  <button className="primary-button" onClick={()=>chooseEndpoint("origin",searchPlace)}>출발지로</button>
+                  <button className="primary-button" onClick={()=>chooseEndpoint("destination",searchPlace)}>도착지로</button>
+                </div>
+              </section>}
               <div className="list-heading">
                 <div>
                   <span className="eyebrow">
@@ -412,11 +463,20 @@ export default function App() {
                   ))}
                 </div>
               )}
+              {forecastPath && <div className="forecast-list-controls">
+                <label>수량 기준 <select value={forecastMinutes} onChange={e=>setForecastMinutes(Number(e.target.value))}>
+                  <option value={0}>현재 수량</option>
+                  {[5,10,15,30,60].map(minutes=><option key={minutes} value={minutes}>{minutes}분 후 예상</option>)}
+                </select></label>
+                {forecastMinutes > 0 && <p role="status">{usePredictions
+                  ? `${forecastMinutes}분 후 예상 기준 · 예측 없는 대여소는 마지막에 표시해요. 대여를 보장하지 않아요.`
+                  : forecasts.isFetching ? "예측을 확인하는 동안 현재 수량으로 표시해요." : "사용 가능한 예측이 없어 현재 수량으로 표시해요."}</p>}
+              </div>}
               <div className="list-filter">
                 <span>
                   {view === "favorites" && !submitted
                     ? "이 브라우저에 저장돼요"
-                    : nearbyLimit !== null && !submitted ? "가까운 5곳 · 직선거리 기준" : "가까운 순 · 직선거리 기준"}
+                    : nearbyLimit !== null && !submitted ? "대여 가능 우선 · 5곳 · 그룹 내 거리순" : "대여 가능 → 0대 → 정보 없음 · 그룹 내 거리순"}
                 </span>
                 <label>
                   <input
@@ -424,7 +484,7 @@ export default function App() {
                     checked={filter}
                     onChange={(e) => setFilter(e.target.checked)}
                   />
-                  대여 가능만
+                  {usePredictions ? "예상 대여 가능만" : "대여 가능만"}
                 </label>
               </div>
               {mode.data === "sample" && (
@@ -495,6 +555,8 @@ export default function App() {
                 <StationCard
                   key={station.stationId}
                   station={station}
+                  forecastMinutes={effectiveMinutes}
+                  predictedCount={stationOutlook(station,forecastMap.get(station.stationId),effectiveMinutes,forecastNow).count}
                   selected={selectedId === station.stationId}
                   saved={favorites.ids.includes(station.stationId)}
                   onSelect={() => select(station)}
@@ -558,6 +620,7 @@ export default function App() {
             onSelect={select}
             onViewport={setViewport}
             onUserPan={location => {
+              allowInitialLocation.current=false;
               setCenter(location);
               setLabel("지도 중심 주변");
               setNearbyLimit(5);
@@ -583,7 +646,7 @@ export default function App() {
           <button
             className="location-button"
             aria-label="현재 위치에서 대여소 찾기"
-            onClick={locate}
+            onClick={()=>locate()}
             disabled={locating}
           >
             <Icon name={locating ? "refresh" : "locate"} size={21} />

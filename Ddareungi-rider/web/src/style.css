@@ -1359,19 +1359,8 @@ p {
     background: #d7dce3;
     border-radius: 10px;
   }
-  .sheet-handle > div {
-    display: flex;
-    gap: 18px;
-  }
-  .sheet-handle button {
-    font-size: 8px;
-    padding: 3px 8px;
-    color: #96a0ad;
-    min-width: 42px;
-  }
-  .sheet-handle button[aria-pressed="true"] {
-    color: #485c78;
-  }
+  .sheet-handle { cursor: ns-resize; user-select: none; justify-content: center; padding-top: 0; }
+  .sheet-handle:focus-visible { outline: 2px solid #2864a8; outline-offset: -4px; border-radius: 22px 22px 0 0; }
   .sidebar-content {
     height: calc(100% - 37px);
     overscroll-behavior: contain;
@@ -1535,3 +1524,15 @@ p {
     display: none;
   }
 }
+
+.endpoint-actions { display:flex; gap:8px; }
+.endpoint-actions > button { flex:1; min-width:0; }
+.searched-place { padding:14px; margin:0 0 18px; border:1px solid #d8e1ed; border-radius:12px; background:#f6f8fb; }
+.searched-place p { font-size:12px; color:#68788f; margin:6px 0 12px; }
+
+.searched-place > .eyebrow { display:block; margin-bottom:8px; }
+.searched-place { margin-bottom:24px; }
+
+.forecast-list-controls { margin-bottom: 14px; font-size: 12px; }
+.forecast-list-controls select { margin-left: 8px; padding: 6px; border: 1px solid #d7dce3; border-radius: 6px; background: white; }
+.forecast-list-controls p { color: #68788f; line-height: 1.5; }

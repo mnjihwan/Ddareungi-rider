@@ -15,7 +15,7 @@ try {
     page.on('pageerror',error=>errors.push(error.message));
     await page.goto('http://localhost:5173/',{waitUntil:'networkidle'});
     await page.locator('.station-card-select').first().click();
-    await page.getByRole('button',{name:'여기서 대여해 길찾기',exact:true}).filter({visible:true}).click();
+    await page.getByRole('button',{name:'여기서 출발',exact:true}).filter({visible:true}).click();
     await page.locator('.pinned-station').waitFor();
     await page.getByLabel('출발지',{exact:true}).fill('서울대입구역');
     assert.equal(await page.locator('.pinned-station').count(),0,'Changing origin must clear the previous station');
