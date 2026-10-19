@@ -1,0 +1,4 @@
+[submodule "bikeseoul_data"]
+	path = bikeseoul_data
+	url = https://github.com/mnjihwan/bikeseoul_data.git
+	branch = develop
