@@ -463,15 +463,15 @@ export default function App() {
                   ))}
                 </div>
               )}
-              {forecastPath && <div className="forecast-list-controls">
+              <div className="forecast-list-controls">
                 <label>수량 기준 <select value={forecastMinutes} onChange={e=>setForecastMinutes(Number(e.target.value))}>
                   <option value={0}>현재 수량</option>
                   {[5,10,15,30,60].map(minutes=><option key={minutes} value={minutes}>{minutes}분 후 예상</option>)}
                 </select></label>
                 {forecastMinutes > 0 && <p role="status">{usePredictions
                   ? `${forecastMinutes}분 후 예상 기준 · 예측 없는 대여소는 마지막에 표시해요. 대여를 보장하지 않아요.`
-                  : forecasts.isFetching ? "예측을 확인하는 동안 현재 수량으로 표시해요." : "사용 가능한 예측이 없어 현재 수량으로 표시해요."}</p>}
-              </div>}
+                  : !forecastPath ? "예측 서비스 준비 중이에요. 현재 수량으로 표시해요." : forecasts.isFetching ? "예측을 확인하는 동안 현재 수량으로 표시해요." : "사용 가능한 예측이 없어 현재 수량으로 표시해요."}</p>}
+              </div>
               <div className="list-filter">
                 <span>
                   {view === "favorites" && !submitted
