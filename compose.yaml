@@ -32,6 +32,10 @@ services:
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
       SEOUL_API_KEY: ${SEOUL_API_KEY:-}
       SEOUL_API_BASE_URL: ${SEOUL_API_BASE_URL:-http://openapi.seoul.go.kr:8088}
+      # Prepared for roadmap R1/R2 (collector writes realtime Redis). The current collector does not read these
+      # yet, so they are inert; depends_on redis is added when the collector actually uses Redis.
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
       FLOW_CSV_INPUT_DIR: /data/oa-21229
       COLLECTOR_CRON: ${COLLECTOR_CRON:-0 */5 * * * *}
       EXTENDED_COLLECTION_ENABLED: ${EXTENDED_COLLECTION_ENABLED:-true}
