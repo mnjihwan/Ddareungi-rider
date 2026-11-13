@@ -26,7 +26,7 @@ fail() { printf '[start-local] ERROR: %s\n' "$*" >&2; exit 1; }
 # Load only known variables from .env. Values are never evaluated as shell code or printed.
 ALLOWED_VARS=" SEOUL_API_KEY SEOUL_API_BASE_URL KAKAO_MAPS_REST_API_KEY KAKAO_MAPS_JAVASCRIPT_KEY ORS_API_KEY 
  MYSQL_DATABASE MYSQL_USER MYSQL_PASSWORD MYSQL_ROOT_PASSWORD MYSQL_HOST MYSQL_PORT EXTERNAL_MYSQL 
- EXTERNAL_REDIS REDIS_HOST REDIS_PORT VITE_FORECAST_API_PATH MANAGEMENT_SERVER_PORT 
+ EXTERNAL_REDIS REDIS_HOST REDIS_PORT REALTIME_REDIS_READ_MODE VITE_FORECAST_API_PATH MANAGEMENT_SERVER_PORT 
  COLLECTOR_CRON EXTENDED_COLLECTION_ENABLED OD_DOWNLOAD_ENABLED "
 load_env() {
     [[ -f "$ENV_FILE" ]] || return 0
@@ -172,7 +172,10 @@ infra)
     MYSQL_JDBC="jdbc:mysql://$MYSQL_TARGET/${MYSQL_DATABASE:-ddareungi}?serverTimezone=Asia/Seoul&characterEncoding=UTF-8"
     port_in_use 8081 && fail "Port 8081 (collector) is already in use."
     # Collector owns the schema (Flyway). Start it first and wait until migrations finished.
+    # REDIS_HOST/REDIS_PORT prepare roadmap R1/R2 (collector writes realtime Redis); the current collector does
+    # not read them yet, so passing them is harmless. Same target as the backend below.
     MYSQL_URL="$MYSQL_JDBC&rewriteBatchedStatements=true" MYSQL_USER="${MYSQL_USER:-ddareungi}" \
+        REDIS_HOST="$REDIS_TARGET_HOST" REDIS_PORT="$REDIS_TARGET_PORT" \
         FLOW_CSV_INPUT_DIR="$COLLECTOR/data/oa-21229" USAGE_CSV_INPUT_DIR="$COLLECTOR/data/usage" \
         start_bg collector "$COLLECTOR" java -jar "$COLLECTOR_JAR"
     wait_url "http://127.0.0.1:8081/actuator/health" 180

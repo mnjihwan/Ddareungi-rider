@@ -8,6 +8,13 @@ spring:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6380}
 
+realtime:
+  redis:
+    # auto (default): versioned layout when station:realtime:current exists, else legacy per-station hashes.
+    # legacy: only station:realtime:{stationId}. versioned: only current + station:realtime:v{n} (no fallback).
+    # Key names/value JSON are a design proposal (API spec v5 21.2) until the collector implements R2.
+    read-mode: ${REALTIME_REDIS_READ_MODE:auto}
+
 management:
   endpoint:
     health:

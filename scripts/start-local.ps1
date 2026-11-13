@@ -55,6 +55,8 @@ try {
 } finally { Pop-Location }
 
 if ($Mode -eq 'Real') {
+    # The collector runs only inside Docker Compose here; compose.yaml passes it REDIS_HOST/REDIS_PORT
+    # (prepared for roadmap R1/R2, not read by the current collector). No host-side collector process to configure.
     $envFile = Join-Path $root '.env'
     if (-not (Test-Path -LiteralPath $envFile)) { throw 'Copy .env.example to .env and set the credentials.' }
     $keyLine = Get-Content -LiteralPath $envFile | Where-Object { $_ -match '^SEOUL_API_KEY\s*=' } | Select-Object -First 1
