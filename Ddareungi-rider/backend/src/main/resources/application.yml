@@ -39,6 +39,11 @@ server:
     mime-types: application/json
     min-response-size: 2KB
 
+logging:
+  pattern:
+    # Inserted into Boot's default console/file patterns; the request id comes from RequestIdFilter (MDC).
+    correlation: "[%X{requestId:-}] "
+
 routing:
   provider: kakao
   enabled: true
