@@ -72,7 +72,12 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(ApiException.class)
     public ResponseEntity<Object> handleApi(ApiException exception, WebRequest request) {
         if (exception.errorCode().status().is5xxServerError()) {
-            log.warn("API error {} (requestId={})", exception.errorCode(), requestId(request), exception);
+            // ApiException messages are already sanitized; a stack trace only helps when there is a cause.
+            if (exception.getCause() != null) {
+                log.warn("API error {} (requestId={})", exception.errorCode(), requestId(request), exception);
+            } else {
+                log.warn("API error {} (requestId={})", exception.errorCode(), requestId(request));
+            }
         }
         return respond(exception.errorCode(), exception.getReason(), exception.details(), exception.getHeaders(), request);
     }
