@@ -1,6 +1,10 @@
 spring:
   application:
     name: ddareungrider
+  # Request threads mostly block on Redis/MySQL/Kakao I/O; virtual threads avoid pool exhaustion.
+  threads:
+    virtual:
+      enabled: true
   profiles:
     default: local
   http:
@@ -21,6 +25,11 @@ management:
 
 server:
   port: ${SERVER_PORT:8080}
+  # Viewport/nearby responses can contain thousands of stations; gzip cuts payload size several-fold.
+  compression:
+    enabled: true
+    mime-types: application/json
+    min-response-size: 2KB
 
 routing:
   provider: kakao

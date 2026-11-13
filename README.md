@@ -157,6 +157,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-local.ps1 -M
 PC: http://localhost:5173. API: http://localhost:8080/actuator/health.
 샘플 모드는 강남역 주변 가상 대여소 3건이며 실제 수량이 아닙니다.
 
+## Linux / macOS 실행 (bash)
+
+명세 대비 구현 분석, 성능 개선 내역, 필요한 키 목록은 [분석 문서](docs/analysis-2026-11-13.md)를 참고하세요.
+
+```bash
+git submodule update --init --recursive
+cp .env.example .env
+scripts/start-local.sh sample   # 키·Docker 불필요
+scripts/start-local.sh infra    # Docker MySQL/Redis + 호스트 JVM 수집기·백엔드 (SEOUL_API_KEY 필요)
+scripts/start-local.sh real     # 전체 Docker Compose (SEOUL_API_KEY 필요)
+scripts/stop-local.sh
+```
+
+지도 표시는 `KAKAO_MAPS_JAVASCRIPT_KEY`, 장소 검색·길찾기는 `KAKAO_MAPS_REST_API_KEY`가 필요합니다. 키가 없어도 대여소 목록·대여소 검색은 동작합니다.
+
 ## 실제 데이터 실행
 
 1. Windows 재시작 후 Docker Desktop을 실행합니다.

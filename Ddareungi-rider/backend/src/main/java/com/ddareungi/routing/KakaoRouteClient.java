@@ -10,12 +10,22 @@ import org.springframework.web.client.RestClientResponseException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
 
 @Component
 @ConditionalOnProperty(name = "routing.provider", havingValue = "kakao", matchIfMissing = true)
 public class KakaoRouteClient implements RouteProvider {
+    // Kakao has no matrix endpoint, so each candidate pair is one directions call.
+    // Run them concurrently but cap in-flight requests to stay within provider quotas.
+    private static final int MAX_PARALLEL_CALLS = 6;
+
     private final RestClient client;
     private final JsonMapper mapper;
     private final String key;
@@ -32,19 +42,40 @@ public class KakaoRouteClient implements RouteProvider {
     // This object exists only for one planning request. No cross-request cache or storage.
     @Override public RouteProvider forRequest() {
         return new RouteProvider() {
-            private final HashMap<Pair, Leg> legs = new HashMap<>();
+            // A future per pair lets concurrent matrix tasks share one in-flight call.
+            // A completed null value means the provider confirmed there is no road route.
+            private final ConcurrentHashMap<Pair, CompletableFuture<Leg>> legs = new ConcurrentHashMap<>();
             @Override public boolean configured() { return KakaoRouteClient.this.configured(); }
             @Override public String attribution() { return KakaoRouteClient.this.attribution(); }
             @Override public Leg directions(String profile, Location from, Location to) {
                 var pair = new Pair(profile, from, to);
-                if (!legs.containsKey(pair)) {
-                    try { legs.put(pair, KakaoRouteClient.this.directions(profile, from, to)); }
-                    catch (RouteException error) {
-                        if (!error.code.equals("NO_ROAD_ROUTE")) throw error;
-                        legs.put(pair, null);
+                var created = new CompletableFuture<Leg>();
+                var existing = legs.putIfAbsent(pair, created);
+                if (existing == null) {
+                    existing = created;
+                    try {
+                        created.complete(KakaoRouteClient.this.directions(profile, from, to));
+                    } catch (RouteException error) {
+                        if (!error.code.equals("NO_ROAD_ROUTE")) {
+                            // Transient failures are not cached; a later lookup may retry.
+                            legs.remove(pair, created);
+                            created.completeExceptionally(error);
+                            throw error;
+                        }
+                        created.complete(null);
+                    } catch (RuntimeException error) {
+                        legs.remove(pair, created);
+                        created.completeExceptionally(error);
+                        throw error;
+                    } finally {
+                        // Never leave other waiters blocked, even on an Error.
+                        if (!created.isDone()) {
+                            legs.remove(pair, created);
+                            created.completeExceptionally(new IllegalStateException("Route lookup aborted"));
+                        }
                     }
                 }
-                var leg = legs.get(pair);
+                var leg = join(existing);
                 if (leg == null) throw noRoad();
                 return leg;
             }
@@ -54,16 +85,70 @@ public class KakaoRouteClient implements RouteProvider {
         };
     }
     private record Pair(String profile, Location from, Location to) {}
+    private record Cell(int row, int column, Future<Double> duration) {}
+
     @Override public Double[][] durations(String profile, List<Location> sources, List<Location> destinations) {
         return matrix(this, profile, sources, destinations);
     }
+
     private static Double[][] matrix(RouteProvider provider, String profile, List<Location> sources, List<Location> destinations) {
         var result = new Double[sources.size()][destinations.size()];
-        for (int i = 0; i < sources.size(); i++) for (int j = 0; j < destinations.size(); j++) {
-            try { result[i][j] = provider.directions(profile, sources.get(i), destinations.get(j)).durationSeconds(); }
-            catch (RouteException error) { if (!error.code.equals("NO_ROAD_ROUTE")) throw error; }
+        int total = sources.size() * destinations.size();
+        if (total == 0) return result;
+        if (total == 1) {
+            result[0][0] = duration(provider, profile, sources.getFirst(), destinations.getFirst());
+            return result;
+        }
+        var permits = new Semaphore(MAX_PARALLEL_CALLS);
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var cells = new ArrayList<Cell>(total);
+            for (int i = 0; i < sources.size(); i++) for (int j = 0; j < destinations.size(); j++) {
+                var from = sources.get(i);
+                var to = destinations.get(j);
+                cells.add(new Cell(i, j, executor.submit(() -> {
+                    permits.acquire();
+                    try { return duration(provider, profile, from, to); }
+                    finally { permits.release(); }
+                })));
+            }
+            try {
+                for (var cell : cells) result[cell.row()][cell.column()] = await(cell.duration());
+            } catch (RuntimeException error) {
+                // Quota/auth/upstream failures abort the whole comparison, as in the sequential version.
+                cells.forEach(cell -> cell.duration().cancel(true));
+                throw error;
+            }
         }
         return result;
+    }
+
+    private static Double duration(RouteProvider provider, String profile, Location from, Location to) {
+        try { return provider.directions(profile, from, to).durationSeconds(); }
+        catch (RouteException error) {
+            if (!error.code.equals("NO_ROAD_ROUTE")) throw error;
+            return null;
+        }
+    }
+
+    private static Double await(Future<Double> future) {
+        try { return future.get(); }
+        catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw unavailable();
+        } catch (ExecutionException error) {
+            throw rethrow(error.getCause());
+        }
+    }
+
+    private static Leg join(CompletableFuture<Leg> future) {
+        try { return future.join(); }
+        catch (CompletionException error) { throw rethrow(error.getCause()); }
+    }
+
+    private static RuntimeException rethrow(Throwable cause) {
+        if (cause instanceof RouteException routeError) return routeError;
+        if (cause instanceof IllegalArgumentException argumentError) return argumentError;
+        return unavailable();
     }
 
     @Override public Leg directions(String profile, Location from, Location to) {
