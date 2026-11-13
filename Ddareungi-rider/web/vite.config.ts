@@ -18,7 +18,11 @@ export default defineConfig(({ mode }) => {
       strictPort: true,
       proxy: {
         "/api": { target: "http://127.0.0.1:8080", changeOrigin: true },
-        "/actuator": { target: "http://127.0.0.1:8080", changeOrigin: true },
+        // Actuator listens on the backend's internal management port (MANAGEMENT_SERVER_PORT, default 8090).
+        "/actuator": {
+          target: `http://127.0.0.1:${env.MANAGEMENT_SERVER_PORT || "8090"}`,
+          changeOrigin: true,
+        },
       },
     },
   };

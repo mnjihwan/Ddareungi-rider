@@ -8,6 +8,15 @@ spring:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6380}
 
+management:
+  endpoint:
+    health:
+      group:
+        readiness:
+          # Redis is intentionally excluded: when it is down the API keeps serving (degraded), so
+          # taking the instance out of rotation would turn a partial outage into a full one.
+          include: readinessState,db
+
 seoul-bike:
   api:
     base-url: ${SEOUL_API_BASE_URL:http://openapi.seoul.go.kr:8088}

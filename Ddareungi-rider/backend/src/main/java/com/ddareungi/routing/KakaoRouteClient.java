@@ -1,6 +1,8 @@
 package com.ddareungi.routing;
 
+import com.ddareungi.global.http.KakaoHttpClientProperties;
 import com.ddareungi.station.domain.Location;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpStatus;
@@ -35,6 +37,13 @@ public class KakaoRouteClient implements RouteProvider {
         this.client = builder.baseUrl("https://dapi.kakao.com").build();
         this.mapper = mapper;
         this.key = key.trim();
+    }
+
+    // Production wiring: Kakao-specific connect/read timeouts instead of the global HTTP client defaults.
+    @Autowired
+    public KakaoRouteClient(RestClient.Builder builder, JsonMapper mapper,
+            @Value("${kakao.maps.rest-api-key:}") String key, KakaoHttpClientProperties http) {
+        this(builder.requestFactory(http.requestFactory()), mapper, key);
     }
     @Override public boolean configured() { return !key.isBlank(); }
     @Override public String attribution() { return "경로 제공 · Kakao Maps"; }

@@ -68,13 +68,16 @@ services:
       KAKAO_MAPS_REST_API_KEY: ${KAKAO_MAPS_REST_API_KEY:-}
       SEOUL_API_KEY: ${SEOUL_API_KEY:-}
       SEOUL_API_BASE_URL: ${SEOUL_API_BASE_URL:-http://openapi.seoul.go.kr:8088}
+      # Fixed inside the container so it always matches the healthcheck below.
+      MANAGEMENT_SERVER_PORT: "8090"
       TZ: Asia/Seoul
+    # Only the API port is published. Actuator listens on the internal management port 8090 (not published).
     ports: ["127.0.0.1:8080:8080"]
     depends_on:
       collector: { condition: service_healthy }
       redis: { condition: service_healthy }
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/actuator/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8090/actuator/health/readiness"]
       interval: 10s
       timeout: 5s
       retries: 30

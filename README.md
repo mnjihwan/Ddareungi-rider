@@ -154,7 +154,7 @@ REST 키는 서버에만 전달하고 웹 빌드에 포함하지 않습니다.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-local.ps1 -Mode Sample
 ```
 
-PC: http://localhost:5173. API: http://localhost:8080/actuator/health.
+PC: http://localhost:5173. API: http://localhost:8080/api/v1. 상태 확인(Actuator, 내부 관리 포트): http://localhost:8090/actuator/health/readiness.
 샘플 모드는 강남역 주변 가상 대여소 3건이며 실제 수량이 아닙니다.
 
 ## Linux / macOS 실행 (bash)
@@ -187,6 +187,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-local.ps1 -M
 통합 Compose가 MySQL/Redis, Flyway migration, 수집기, 실제 검색 API를 시작합니다.
 수집기는 시작 시 대여소 마스터와 현재 수량을 수집하며 이후 마스터는 매일 03:20, 수량 스냅샷은 매 5분에 수집합니다. 상세 정보·OD 파일·이용 통계는 매일 04:10에 처리합니다.
 백엔드는 시작 시 및 매분 Redis 수량을 갱신합니다. 수집 실패 또는 캐시 만료 시 수량은 `null`이며 화면에서 '수량 확인 불가'로 표시합니다. 수량 미확인을 0대로 처리하지 않습니다.
+백엔드 컨테이너의 Actuator는 관리 포트 8090에서만 응답하며 호스트로 publish하지 않습니다. Compose healthcheck가 컨테이너 내부에서 `/actuator/health/readiness`(MySQL 포함, Redis 제외)를 확인합니다.
 서버 준비 상태가 정상이어도 외부 API 인증/수집 성공까지 보장하지는 않습니다. 로그와 대여소 표시를 확인하세요.
 
 ```powershell
@@ -240,6 +241,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\collect-data-once.
 - `KAKAO_MAPS_JAVASCRIPT_KEY`: 웹지도 SDK의 공개 키. JavaScript SDK 도메인에 포트를 포함한 `http://localhost:5173`, `http://127.0.0.1:5173` 및 사용하는 LAN/배포 주소를 등록합니다.
 - `KAKAO_MAPS_REST_API_KEY`: 서버의 장소/주소 검색과 도보·자전거 길찾기에 사용합니다. 브라우저에 전달하지 않으며 VITE 접두사를 붙이지 않습니다. 네이버 인증키는 현재 실행 경로에서 사용하지 않습니다.
 - `VITE_FORECAST_API_PATH`: 선택 사항. 제공된 기획서의 stationIds/horizons 요청 및 data 배열 응답 계약을 사용하는 예측 서비스의 경로입니다. 미설정이면 예측 준비 안내를 표시합니다. `ai/`의 오프라인 수요 모델과 이 잔여 수량 예측 API는 서로 다른 출력이며, 호환되는 예측 서버 연결은 아직 없습니다.
+
+백엔드 운영 설정(환경변수, 모두 선택). `KAKAO_HTTP_*`, `APP_CORS_ALLOWED_ORIGINS`는 백엔드 프로세스(jar 실행·배포 환경)에 직접 전달해야 하며, 현재 `compose.yaml`과 `scripts/start-local.sh`는 이 값을 전달하지 않아 기본값으로 동작합니다(배포 구성은 Phase 3 O7에서 정의):
+
+- `MANAGEMENT_SERVER_PORT`: Actuator 관리 포트. 기본 `8090`이며 API 포트(8080)와 분리됩니다. `/actuator/health/liveness`, `/actuator/health/readiness`를 제공합니다. `infra` 프로필의 readiness는 `readinessState`와 MySQL(`db`)만 포함하고 Redis는 제외합니다(Redis 장애 시 수량을 null로 응답하며 서비스는 계속 동작). 로컬 실행 스크립트와 Vite `/actuator` 프록시가 이 값을 따르며, Compose 컨테이너는 항상 8090을 사용하고 이 포트를 호스트로 publish하지 않습니다.
+- `KAKAO_HTTP_CONNECT_TIMEOUT`(`kakao.http.connect-timeout`, 기본 `2s`), `KAKAO_HTTP_READ_TIMEOUT`(`kakao.http.read-timeout`, 기본 `5s`): 카카오 Local·길찾기 API 호출의 연결/응답 타임아웃. `500ms`, `3s` 같은 Duration 형식입니다.
+- `APP_CORS_ALLOWED_ORIGINS`(`app.cors.allowed-origins`): `/api/**`에 브라우저 cross-origin 호출을 허용할 origin 목록. 쉼표로 구분한 정확한 `scheme://host[:port]` 값만 허용하며(예: `https://ddareungi.example.com,https://admin.example.com`), 와일드카드는 거부합니다. 기본값은 비어 있어 cross-origin 요청을 허용하지 않습니다. 로컬 개발은 Vite 프록시를 통한 same-origin 호출이므로 설정하지 않아도 됩니다.
 
 Vite는 최상위 `.env`를 읽습니다. 키 변경 후 웹 서버를 재시작합니다. 서버 REST 키는 `scripts/start-local.ps1` 또는 Compose를 통해 전달됩니다. 두 키는 같은 카카오 Developers 앱에서 발급합니다. 지도 연결 실패 시 명확히 표시한 도식 미리보기를 제공하며 실제 지도·경로나 예측값을 생성하지 않습니다.
 

@@ -1,6 +1,8 @@
 package com.ddareungi.place;
 
+import com.ddareungi.global.http.KakaoHttpClientProperties;
 import com.ddareungi.global.response.ApiResponse;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.ddareungi.station.domain.Location;
 import com.ddareungi.station.domain.StationSearchPort;
 import com.ddareungi.station.domain.KoreanSearch;
@@ -28,6 +30,14 @@ public class PlaceSearchController {
             @Value("${kakao.maps.rest-api-key:}") String key, StationSearchPort stations) {
         this.client = builder.baseUrl("https://dapi.kakao.com").build();
         this.mapper = mapper; this.key = key.trim(); this.stations = stations;
+    }
+
+    // Production wiring: Kakao-specific connect/read timeouts instead of the global HTTP client defaults.
+    @Autowired
+    public PlaceSearchController(RestClient.Builder builder, JsonMapper mapper,
+            @Value("${kakao.maps.rest-api-key:}") String key, StationSearchPort stations,
+            KakaoHttpClientProperties http) {
+        this(builder.requestFactory(http.requestFactory()), mapper, key, stations);
     }
 
     @GetMapping("/reverse")

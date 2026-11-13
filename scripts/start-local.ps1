@@ -12,12 +12,16 @@ if (Test-Path -LiteralPath $localEnvFile) {
     foreach ($line in Get-Content -LiteralPath $localEnvFile) {
         if ($line -match '^([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$') {
             $variableName = $Matches[1]
-            if ($variableName -in @('SEOUL_API_KEY', 'SEOUL_API_BASE_URL', 'ORS_API_KEY', 'KAKAO_MAPS_REST_API_KEY')) {
+            if ($variableName -in @('SEOUL_API_KEY', 'SEOUL_API_BASE_URL', 'ORS_API_KEY', 'KAKAO_MAPS_REST_API_KEY', 'MANAGEMENT_SERVER_PORT')) {
                 [Environment]::SetEnvironmentVariable($variableName, $Matches[2].Trim().Trim('"').Trim("'"), 'Process')
             }
         }
     }
 }
+
+# Actuator runs on a separate internal management port (backend MANAGEMENT_SERVER_PORT, default 8090).
+$managementPort = if ($env:MANAGEMENT_SERVER_PORT) { [int]$env:MANAGEMENT_SERVER_PORT } else { 8090 }
+$env:MANAGEMENT_SERVER_PORT = "$managementPort"
 
 function Wait-Url([string]$Url, [int]$Seconds = 90) {
     $deadline = (Get-Date).AddSeconds($Seconds)
@@ -40,7 +44,7 @@ function Save-Process($Process, [string]$Name) {
 }
 
 Assert-FreePort 5173
-if ($Mode -eq 'Sample') { Assert-FreePort 8080 }
+if ($Mode -eq 'Sample') { Assert-FreePort 8080; Assert-FreePort $managementPort }
 if (-not (Get-Command java -ErrorAction SilentlyContinue)) { throw 'Java 21 is required.' }
 if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) { throw 'Node.js and npm are required.' }
 Push-Location $web
@@ -74,7 +78,8 @@ if ($Mode -eq 'Real') {
     Save-Process $backendProcess 'backend'
 }
 
-Wait-Url 'http://localhost:8080/actuator/health'
+# Real mode: the management port is not published; `compose up --wait` already waited for the container healthcheck.
+if ($Mode -eq 'Sample') { Wait-Url "http://localhost:$managementPort/actuator/health/readiness" }
 $webProcess = Start-Process -FilePath $env:ComSpec -ArgumentList '/d /c npm.cmd run dev' -WorkingDirectory $web -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $stateDirectory 'web.log') -RedirectStandardError (Join-Path $stateDirectory 'web-error.log')
 Save-Process $webProcess 'web'
 Wait-Url 'http://localhost:5173'

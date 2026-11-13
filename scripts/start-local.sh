@@ -6,6 +6,7 @@
 #   scripts/start-local.sh real     # everything (MySQL, Redis, collector, backend) in Docker Compose
 #
 # Web UI: http://localhost:5173  /  API: http://localhost:8080/api/v1
+# Actuator (internal management port): http://localhost:8090/actuator/health/readiness (MANAGEMENT_SERVER_PORT)
 set -euo pipefail
 
 MODE="${1:-sample}"
@@ -25,7 +26,7 @@ fail() { printf '[start-local] ERROR: %s\n' "$*" >&2; exit 1; }
 # Load only known variables from .env. Values are never evaluated as shell code or printed.
 ALLOWED_VARS=" SEOUL_API_KEY SEOUL_API_BASE_URL KAKAO_MAPS_REST_API_KEY KAKAO_MAPS_JAVASCRIPT_KEY ORS_API_KEY 
  MYSQL_DATABASE MYSQL_USER MYSQL_PASSWORD MYSQL_ROOT_PASSWORD MYSQL_HOST MYSQL_PORT EXTERNAL_MYSQL 
- EXTERNAL_REDIS REDIS_HOST REDIS_PORT VITE_FORECAST_API_PATH 
+ EXTERNAL_REDIS REDIS_HOST REDIS_PORT VITE_FORECAST_API_PATH MANAGEMENT_SERVER_PORT 
  COLLECTOR_CRON EXTENDED_COLLECTION_ENABLED OD_DOWNLOAD_ENABLED "
 load_env() {
     [[ -f "$ENV_FILE" ]] || return 0
@@ -111,11 +112,17 @@ check_node() {
 }
 
 load_env
+MANAGEMENT_PORT="${MANAGEMENT_SERVER_PORT:-8090}"
+[[ "$MANAGEMENT_PORT" =~ ^[1-9][0-9]{0,4}$ ]] && (( MANAGEMENT_PORT <= 65535 )) || fail "MANAGEMENT_SERVER_PORT must be a port number (1-65535)."
+# Not exported globally: the collector (also Spring Boot) would inherit it and move its own actuator port.
+# It is passed only to the backend and web processes below.
+unset MANAGEMENT_SERVER_PORT
 check_java
 check_node
 command -v curl >/dev/null || fail "curl is required."
 port_in_use 5173 && fail "Port 5173 is already in use. Run scripts/stop-local.sh first."
 [[ "$MODE" != "real" ]] && port_in_use 8080 && fail "Port 8080 is already in use. Run scripts/stop-local.sh first."
+[[ "$MODE" != "real" ]] && port_in_use "$MANAGEMENT_PORT" && fail "Port $MANAGEMENT_PORT (backend management) is already in use. Run scripts/stop-local.sh first or set MANAGEMENT_SERVER_PORT."
 
 log "Installing web dependencies (if needed) and type-checking"
 ( cd "$WEB" && { [[ -d node_modules ]] || npm ci --no-audit --no-fund; } && npm run --silent typecheck )
@@ -129,7 +136,8 @@ fi
 
 case "$MODE" in
 sample)
-    start_bg backend "$RIDER" java -jar "$BACKEND_JAR" --spring.profiles.active=local
+    MANAGEMENT_SERVER_PORT="$MANAGEMENT_PORT" \
+        start_bg backend "$RIDER" java -jar "$BACKEND_JAR" --spring.profiles.active=local
     ;;
 infra)
     # The collector refuses to start without a Seoul Open API key (station master + realtime data).
@@ -169,7 +177,7 @@ infra)
         start_bg collector "$COLLECTOR" java -jar "$COLLECTOR_JAR"
     wait_url "http://127.0.0.1:8081/actuator/health" 180
     MYSQL_URL="$MYSQL_JDBC" MYSQL_USER="${MYSQL_USER:-ddareungi}" REDIS_HOST="$REDIS_TARGET_HOST" REDIS_PORT="$REDIS_TARGET_PORT" \
-        start_bg backend "$RIDER" java -jar "$BACKEND_JAR" --spring.profiles.active=infra
+        MANAGEMENT_SERVER_PORT="$MANAGEMENT_PORT" start_bg backend "$RIDER" java -jar "$BACKEND_JAR" --spring.profiles.active=infra
     ;;
 real)
     require_docker
@@ -180,12 +188,18 @@ real)
     ;;
 esac
 
-wait_url "http://127.0.0.1:8080/actuator/health" 180
-log "Backend is healthy: http://localhost:8080/actuator/health"
+if [[ "$MODE" == "real" ]]; then
+    # The management port is not published from the container; `compose up --wait` above already waited
+    # for the backend healthcheck (actuator readiness on 8090 inside the container).
+    log "Backend is healthy (container healthcheck passed): http://localhost:8080/api/v1"
+else
+    wait_url "http://127.0.0.1:$MANAGEMENT_PORT/actuator/health/readiness" 180
+    log "Backend is ready: http://localhost:$MANAGEMENT_PORT/actuator/health/readiness"
+fi
 [[ -n "${KAKAO_MAPS_JAVASCRIPT_KEY:-}" ]] || log "WARNING: KAKAO_MAPS_JAVASCRIPT_KEY is empty. The map area shows an unavailable notice; lists/search still work."
 [[ -n "${KAKAO_MAPS_REST_API_KEY:-}" ]] || log "WARNING: KAKAO_MAPS_REST_API_KEY is empty. Place search and routing return 503."
 
-start_bg web "$WEB" npm run dev
+MANAGEMENT_SERVER_PORT="$MANAGEMENT_PORT" start_bg web "$WEB" npm run dev
 wait_url "http://127.0.0.1:5173" 90
 log "Started $MODE mode: http://localhost:5173"
 log "Stop with: scripts/stop-local.sh"

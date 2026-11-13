@@ -18,10 +18,18 @@ spring:
         enabled: false
 
 management:
+  # Actuator runs on a separate internal port; only the API port (8080) is published.
+  server:
+    port: ${MANAGEMENT_SERVER_PORT:8090}
   endpoints:
     web:
       exposure:
         include: health,info
+  endpoint:
+    health:
+      # /actuator/health/liveness and /actuator/health/readiness
+      probes:
+        enabled: true
 
 server:
   port: ${SERVER_PORT:8080}
