@@ -23,8 +23,9 @@ log() { printf '[start-local] %s\n' "$*"; }
 fail() { printf '[start-local] ERROR: %s\n' "$*" >&2; exit 1; }
 
 # Load only known variables from .env. Values are never evaluated as shell code or printed.
-ALLOWED_VARS=" SEOUL_API_KEY SEOUL_API_BASE_URL KAKAO_MAPS_REST_API_KEY KAKAO_MAPS_JAVASCRIPT_KEY ORS_API_KEY
- MYSQL_DATABASE MYSQL_USER MYSQL_PASSWORD MYSQL_ROOT_PASSWORD MYSQL_PORT REDIS_PORT VITE_FORECAST_API_PATH
+ALLOWED_VARS=" SEOUL_API_KEY SEOUL_API_BASE_URL KAKAO_MAPS_REST_API_KEY KAKAO_MAPS_JAVASCRIPT_KEY ORS_API_KEY 
+ MYSQL_DATABASE MYSQL_USER MYSQL_PASSWORD MYSQL_ROOT_PASSWORD MYSQL_HOST MYSQL_PORT EXTERNAL_MYSQL 
+ REDIS_PORT VITE_FORECAST_API_PATH 
  COLLECTOR_CRON EXTENDED_COLLECTION_ENABLED OD_DOWNLOAD_ENABLED "
 load_env() {
     [[ -f "$ENV_FILE" ]] || return 0
@@ -102,15 +103,26 @@ sample)
 infra)
     command -v docker >/dev/null || fail "Docker is required for infra mode."
     # The collector refuses to start without a Seoul Open API key (station master + realtime data).
-    require_env SEOUL_API_KEY MYSQL_PASSWORD MYSQL_ROOT_PASSWORD
+    require_env SEOUL_API_KEY MYSQL_PASSWORD
     [[ -f "$COLLECTOR/build.gradle" ]] || fail "Collector submodule missing. Run: git submodule update --init --recursive"
-    log "Starting MySQL and Redis containers"
-    docker compose --env-file "$ENV_FILE" -f "$ROOT/compose.yaml" up -d --wait mysql redis
+    if [[ "${EXTERNAL_MYSQL:-false}" == "true" ]]; then
+        # Use an existing MySQL server (see scripts/mysql/create-ddareungi-db.sql); only Redis runs in Docker.
+        log "Using external MySQL at ${MYSQL_HOST:-127.0.0.1}:${MYSQL_PORT:-3306}; starting Redis container"
+        # Compose validates every service's variables; the unused mysql service only needs placeholders.
+        MYSQL_PASSWORD="${MYSQL_PASSWORD}" MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-unused-external-mysql}" \
+            docker compose --env-file "$ENV_FILE" -f "$ROOT/compose.yaml" up -d --wait redis
+    else
+        require_env MYSQL_ROOT_PASSWORD
+        log "Starting MySQL and Redis containers"
+        docker compose --env-file "$ENV_FILE" -f "$ROOT/compose.yaml" up -d --wait mysql redis
+    fi
     log "Building collector jar"
     ( cd "$COLLECTOR" && sed -i.bak 's/\r$//' gradlew && rm -f gradlew.bak && sh gradlew bootJar --no-daemon -q )
     COLLECTOR_JAR="$(latest_jar "$COLLECTOR/build/libs")"
     [[ -n "$COLLECTOR_JAR" ]] || fail "Collector jar not found."
-    MYSQL_JDBC="jdbc:mysql://127.0.0.1:${MYSQL_PORT:-3307}/${MYSQL_DATABASE:-ddareungi}?serverTimezone=Asia/Seoul&characterEncoding=UTF-8"
+    if [[ "${EXTERNAL_MYSQL:-false}" == "true" ]]; then MYSQL_TARGET="${MYSQL_HOST:-127.0.0.1}:${MYSQL_PORT:-3306}"
+    else MYSQL_TARGET="127.0.0.1:${MYSQL_PORT:-3307}"; fi
+    MYSQL_JDBC="jdbc:mysql://$MYSQL_TARGET/${MYSQL_DATABASE:-ddareungi}?serverTimezone=Asia/Seoul&characterEncoding=UTF-8"
     port_in_use 8081 && fail "Port 8081 (collector) is already in use."
     # Collector owns the schema (Flyway). Start it first and wait until migrations finished.
     MYSQL_URL="$MYSQL_JDBC&rewriteBatchedStatements=true" MYSQL_USER="${MYSQL_USER:-ddareungi}" \
