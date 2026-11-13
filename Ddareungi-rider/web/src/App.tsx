@@ -11,8 +11,9 @@ import {
   viewportStations,
   nearbySubways,
   forecastPath, loadForecasts,
+  unwrap, type ApiEnvelope,
 } from "./lib/api";
-import { INITIAL_LOCATION, type Coordinates, type Station, type MapBounds, type BikeRoute, type Place, type RouteEndpointRole } from "./lib/types";
+import { INITIAL_LOCATION, stationLocation, type Coordinates, type Station, type MapBounds, type BikeRoute, type Place, type RouteEndpointRole } from "./lib/types";
 import {useRecentPlaces} from './lib/useRecentPlaces';
 import { useFavorites } from "./lib/useFavorites";
 import { availability, compareOutlooks, stationOutlook } from "./lib/status";
@@ -86,7 +87,7 @@ export default function App() {
   const mode = useQuery({
     queryKey: ["mode"],
     queryFn: async ({ signal }) =>
-      (await api.get("/status", { signal })).data.data.mode,
+      unwrap((await api.get<ApiEnvelope<{ mode: string }>>("/status", { signal })).data).mode,
     staleTime: Infinity,
   });
   const stations = useQuery({
@@ -234,12 +235,12 @@ export default function App() {
     setFocusedPlace(place);
   }
   function select(station: Station) {
-    saveMapLocation(station.location, `${station.stationName} 주변`);
+    saveMapLocation(stationLocation(station), `${station.stationName} 주변`);
     allowInitialLocation.current = false;
     setFocusedPlace(null);
     if (submitted && view !== "route") recentPlaces.remember(submitted);
     setSelectedId(station.stationId);
-    setFocus((f) => ({ location: station.location, revision: f.revision + 1 }));
+    setFocus((f) => ({ location: stationLocation(station), revision: f.revision + 1 }));
     setSheet("mid");
   }
   function locate(initial = false) {
@@ -307,8 +308,8 @@ export default function App() {
       saved={favorites.ids.includes(selected.stationId)}
       onFavorite={() => favorites.toggle(selected.stationId)}
       onClose={() => setSelectedId(null)}
-      onRoute={() => chooseEndpoint("origin", {name:selected.stationName,address:selected.address,location:selected.location}, selected)}
-      onArrival={() => chooseEndpoint("destination", {name:selected.stationName,address:selected.address,location:selected.location}, selected)}
+      onRoute={() => chooseEndpoint("origin", {name:selected.stationName,address:selected.address ?? "",location:stationLocation(selected)}, selected)}
+      onArrival={() => chooseEndpoint("destination", {name:selected.stationName,address:selected.address ?? "",location:stationLocation(selected)}, selected)}
     />
   );
   return (
@@ -373,7 +374,7 @@ export default function App() {
             }}
             onChoose={(suggestion,query) => {
               if (suggestion.kind === 'place') openPlace(suggestion.place, query);
-              else {recentPlaces.remember(query);go(suggestion.station.location, `${suggestion.station.stationName} 주변`);select(suggestion.station);}
+              else {recentPlaces.remember(query);go(stationLocation(suggestion.station), `${suggestion.station.stationName} 주변`);select(suggestion.station);}
             }}/>
           <div className="desktop-shortcuts">{searchShortcuts}</div>
         </section>

@@ -45,7 +45,7 @@ export function StationCard({
         <div className="station-card-title">
           <h3>{station.stationName}</h3>
           <span className={`station-count ${state}`}>
-            {state === "unknown" ? "—" : station.availableBikeCount}
+            {state === "unknown" ? "—" : station.parkingBikeTotCnt}
             <small>대</small>
           </span>
         </div>
@@ -57,7 +57,7 @@ export function StationCard({
             {observationLabel(station)}
           </span>
           <span>
-            거치대 {station.rackTotalCount}개<Icon name="chevron" size={14} />
+            거치대 {station.rackTotCnt ?? "—"}개<Icon name="chevron" size={14} />
           </span>
         </div>
       </button>

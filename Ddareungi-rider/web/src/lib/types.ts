@@ -29,15 +29,28 @@ export interface MapBounds {
   west: number;
   east: number;
 }
+/** Public station object (API spec 11.0, source field names since phase 1 / X1). */
 export interface Station {
   stationId: string;
   stationName: string;
-  address: string;
-  location: Coordinates;
-  rackTotalCount: number;
-  availableBikeCount: number | null;
+  stationLatitude: number;
+  stationLongitude: number;
+  /** Rack count; null when the source omits it. Not a return-availability count. */
+  rackTotCnt: number | null;
+  /** Rentable bikes at the last successful collection; null while unknown (phase 1). */
+  parkingBikeTotCnt: number | null;
+  /** Source occupancy ratio (%); always null until A3. */
+  shared: number | null;
+  /** When the realtime values were collected (not when bikes changed). */
+  realtimeUpdatedAt: string | null;
   distanceMeters: number;
-  updatedAt: string | null;
+  /** Extension field (not in spec 11.0); may be null. */
+  address: string | null;
+}
+
+/** Station coordinates as the shared Coordinates shape used by maps, routing and storage. */
+export function stationLocation(station: Pick<Station, "stationLatitude" | "stationLongitude">): Coordinates {
+  return { latitude: station.stationLatitude, longitude: station.stationLongitude };
 }
 export interface Place {
   name: string;

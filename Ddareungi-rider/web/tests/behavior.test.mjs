@@ -5,30 +5,30 @@ import { parseFavorites } from "../src/lib/favoriteStorage.ts";
 import { clusterPoints, separateMarkerGroups } from "../src/lib/clusters.ts";
 const now = Date.parse("2026-10-06T10:00:00Z");
 const station = {
-  updatedAt: new Date(now).toISOString(),
-  availableBikeCount: 0,
+  realtimeUpdatedAt: new Date(now).toISOString(),
+  parkingBikeTotCnt: 0,
 };
 test("zero, low, available and missing quantities remain distinct", () => {
   assert.equal(availability(station, now), "empty");
-  assert.equal(availability({ ...station, availableBikeCount: 3 }, now), "low");
+  assert.equal(availability({ ...station, parkingBikeTotCnt: 3 }, now), "low");
   assert.equal(
-    availability({ ...station, availableBikeCount: 4 }, now),
+    availability({ ...station, parkingBikeTotCnt: 4 }, now),
     "available",
   );
   assert.equal(
-    availability({ ...station, availableBikeCount: null }, now),
+    availability({ ...station, parkingBikeTotCnt: null }, now),
     "unknown",
   );
   assert.equal(
     availability(
-      { ...station, updatedAt: new Date(now - 301000).toISOString() },
+      { ...station, realtimeUpdatedAt: new Date(now - 301000).toISOString() },
       now,
     ),
     "unknown",
   );
   assert.equal(
     availability(
-      { ...station, updatedAt: new Date(now + 60000).toISOString() },
+      { ...station, realtimeUpdatedAt: new Date(now + 60000).toISOString() },
       now,
     ),
     "unknown",
@@ -51,7 +51,7 @@ test("favorites deduplicate, discard cached station values, and reject corrupt s
   const item = {
     stationId: "ST-001",
     addedAt: new Date(now).toISOString(),
-    availableBikeCount: 99,
+    parkingBikeTotCnt: 99,
   };
   assert.deepEqual(
     parseFavorites(
@@ -95,8 +95,8 @@ test("close zoom preserves every station and separates overlapping labels with t
 });
 
 test("station lists prioritize rentable stock, then zero stock, then unknown, by distance within each group", () => {
-  const make = (id, count, distance, updatedAt = station.updatedAt) => ({
-    stationId: id, availableBikeCount: count, distanceMeters: distance, updatedAt,
+  const make = (id, count, distance, realtimeUpdatedAt = station.realtimeUpdatedAt) => ({
+    stationId: id, parkingBikeTotCnt: count, distanceMeters: distance, realtimeUpdatedAt,
   });
   const items = [make('missing-near', null, 10), make('empty-far', 0, 80),
     make('available-far', 10, 500), make('low-near', 1, 100),
@@ -107,7 +107,7 @@ test("station lists prioritize rentable stock, then zero stock, then unknown, by
 });
 
 test("forecast ranking uses future stock and leaves missing or stale predictions last", () => {
-  const make = (id, count, distance) => ({...station, stationId:id, availableBikeCount:count, distanceMeters:distance});
+  const make = (id, count, distance) => ({...station, stationId:id, parkingBikeTotCnt:count, distanceMeters:distance});
   const items=[make('empty-now',0,300),make('available-now',10,100),make('missing',5,10),make('stale',5,20)];
   const forecast=(id,count,time=now)=>({stationId:id,baseTime:new Date(time).toISOString(),dataStatus:'fresh',predictions:[{targetTime:new Date(now+15*60000).toISOString(),expectedBikes:count}]});
   const forecasts=new Map([['empty-now',forecast('empty-now',3)],['available-now',forecast('available-now',0)],['stale',forecast('stale',8,now-601000)]]);

@@ -69,7 +69,7 @@ export function StationDetail({
         <div>
           <span>{sample ? '샘플 대여 수량 · 실제 데이터 아님' : '지금 대여 가능한 자전거'}</span>
           <strong>
-            {state === "unknown" ? "—" : station.availableBikeCount}
+            {state === "unknown" ? "—" : station.parkingBikeTotCnt}
             <small>{state === "unknown" ? "정보 없음" : "대"}</small>
           </strong>
         </div>
@@ -100,7 +100,7 @@ export function StationDetail({
         <div>
           <Icon name="bike" />
           <span>
-            거치대<strong>{station.rackTotalCount}개</strong>
+            거치대<strong>{station.rackTotCnt ?? "—"}개</strong>
           </span>
         </div>
       </div>
