@@ -13,12 +13,14 @@ import java.util.List;
 @Service
 public class PlanBikeRoute {
     private final StationSearchPort stations;
-    private final RouteProvider provider;
+    private final WalkingRouteProvider walking;
+    private final BicycleRouteProvider bicycle;
     private final boolean enabled;
-    public PlanBikeRoute(StationSearchPort stations, RouteProvider provider, @Value("${routing.enabled:true}") boolean enabled) {
-        this.stations = stations; this.provider = provider; this.enabled = enabled;
+    public PlanBikeRoute(StationSearchPort stations, WalkingRouteProvider walking, BicycleRouteProvider bicycle,
+                         @Value("${routing.enabled:true}") boolean enabled) {
+        this.stations = stations; this.walking = walking; this.bicycle = bicycle; this.enabled = enabled;
     }
-    public boolean configured() { return enabled && provider.configured(); }
+    public boolean configured() { return enabled && walking.configured() && bicycle.configured(); }
 
     public Plan execute(Location origin, Location destination, String departureStationId) {
         return execute(origin, destination, departureStationId, null);
@@ -33,10 +35,11 @@ public class PlanBikeRoute {
         if (arrivals.isEmpty()) throw new RouteException(HttpStatus.NOT_FOUND, "NO_RETURN_STATION", "목적지 1km 안에 최근 정보가 확인된 대여소가 없어요. 목적지를 변경해 주세요.");
         var starts = departures.stream().map(Station::location).toList();
         var ends = arrivals.stream().map(Station::location).toList();
-        var routes = provider.forRequest();
-        var first = routes.durations("foot-walking", List.of(origin), starts);
-        var last = routes.durations("foot-walking", ends, List.of(destination));
-        var cycle = routes.durations("cycling-regular", starts, ends);
+        var walk = walking.forRequest();
+        var ride = bicycle.forRequest();
+        var first = walk.durations(List.of(origin), starts);
+        var last = walk.durations(ends, List.of(destination));
+        var cycle = ride.durations(starts, ends);
         int startIndex = -1, endIndex = -1; double best = Double.POSITIVE_INFINITY;
         for (int i = 0; i < starts.size(); i++) for (int j = 0; j < ends.size(); j++) {
             if (departures.get(i).stationId().equals(arrivals.get(j).stationId())) continue;
@@ -46,9 +49,9 @@ public class PlanBikeRoute {
         }
         if (startIndex < 0) throw new RouteException(HttpStatus.UNPROCESSABLE_ENTITY, "NO_CONNECTED_ROUTE", "주변 대여소를 연결하는 도보·자전거 경로를 찾지 못했어요. 출발지나 목적지를 변경해 주세요.");
         var departure = departures.get(startIndex); var arrival = arrivals.get(endIndex);
-        var legs = List.of(routes.directions("foot-walking", origin, departure.location()),
-                routes.directions("cycling-regular", departure.location(), arrival.location()),
-                routes.directions("foot-walking", arrival.location(), destination));
+        var legs = List.of(walk.route(origin, departure.location()),
+                ride.route(departure.location(), arrival.location()),
+                walk.route(arrival.location(), destination));
         // Check again after external routing calls, when stock may have changed.
         departure = stations.findByIds(List.of(departure.stationId()), origin).stream()
                 .filter(s -> fresh(s) && s.availableBikeCount() > 0).findFirst()
@@ -56,7 +59,11 @@ public class PlanBikeRoute {
         return new Plan(origin, destination, departure, arrival, legs,
                 legs.stream().mapToDouble(RouteProvider.Leg::distanceMeters).sum(),
                 legs.stream().mapToDouble(RouteProvider.Leg::durationSeconds).sum(), Instant.now(),
-                routes.attribution());
+                attribution(walk.attribution(), ride.attribution()));
+    }
+    // Same engine for both segments yields one credit; different providers are both credited.
+    private static String attribution(String walking, String cycling) {
+        return walking.equals(cycling) ? walking : walking + " / " + cycling;
     }
     private List<Station> candidates(Location location, boolean rental, String pinnedId) {
         if (pinnedId != null && !pinnedId.isBlank()) {
