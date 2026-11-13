@@ -25,7 +25,7 @@ fail() { printf '[start-local] ERROR: %s\n' "$*" >&2; exit 1; }
 # Load only known variables from .env. Values are never evaluated as shell code or printed.
 ALLOWED_VARS=" SEOUL_API_KEY SEOUL_API_BASE_URL KAKAO_MAPS_REST_API_KEY KAKAO_MAPS_JAVASCRIPT_KEY ORS_API_KEY 
  MYSQL_DATABASE MYSQL_USER MYSQL_PASSWORD MYSQL_ROOT_PASSWORD MYSQL_HOST MYSQL_PORT EXTERNAL_MYSQL 
- REDIS_PORT VITE_FORECAST_API_PATH 
+ EXTERNAL_REDIS REDIS_HOST REDIS_PORT VITE_FORECAST_API_PATH 
  COLLECTOR_CRON EXTENDED_COLLECTION_ENABLED OD_DOWNLOAD_ENABLED "
 load_env() {
     [[ -f "$ENV_FILE" ]] || return 0
@@ -73,6 +73,15 @@ start_bg() {
 require_env() {
     local name
     for name in "$@"; do [[ -n "${!name:-}" ]] || fail "Set $name in $ENV_FILE (copy .env.example first)."; done
+}
+
+require_docker() {
+    command -v docker >/dev/null || fail "Docker is required. Install Docker Desktop, or set EXTERNAL_MYSQL=true and EXTERNAL_REDIS=true in .env."
+    docker info >/dev/null 2>&1 || fail "Docker engine is not running. Start Docker Desktop and wait until it shows 'Engine running', then retry."
+}
+
+tcp_open() {
+    (exec 3<>"/dev/tcp/$1/$2") 2>/dev/null
 }
 
 latest_jar() {
@@ -123,27 +132,35 @@ sample)
     start_bg backend "$RIDER" java -jar "$BACKEND_JAR" --spring.profiles.active=local
     ;;
 infra)
-    command -v docker >/dev/null || fail "Docker is required for infra mode."
     # The collector refuses to start without a Seoul Open API key (station master + realtime data).
     require_env SEOUL_API_KEY MYSQL_PASSWORD
     [[ -f "$COLLECTOR/build.gradle" ]] || fail "Collector submodule missing. Run: git submodule update --init --recursive"
-    if [[ "${EXTERNAL_MYSQL:-false}" == "true" ]]; then
-        # Use an existing MySQL server (see scripts/mysql/create-ddareungi-db.sql); only Redis runs in Docker.
-        log "Using external MySQL at ${MYSQL_HOST:-127.0.0.1}:${MYSQL_PORT:-3306}; starting Redis container"
-        # Compose validates every service's variables; the unused mysql service only needs placeholders.
+    EXTERNAL_MYSQL="${EXTERNAL_MYSQL:-false}"
+    EXTERNAL_REDIS="${EXTERNAL_REDIS:-false}"
+    containers=()
+    [[ "$EXTERNAL_MYSQL" == "true" ]] || containers+=(mysql)
+    [[ "$EXTERNAL_REDIS" == "true" ]] || containers+=(redis)
+    if (( ${#containers[@]} > 0 )); then
+        require_docker
+        [[ "$EXTERNAL_MYSQL" == "true" ]] || require_env MYSQL_ROOT_PASSWORD
+        log "Starting containers: ${containers[*]}"
+        # Compose validates every service's variables; services that are not started only need placeholders.
         MYSQL_PASSWORD="${MYSQL_PASSWORD}" MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-unused-external-mysql}" \
-            docker compose --env-file "$ENV_FILE" -f "$ROOT/compose.yaml" up -d --wait redis
+            docker compose --env-file "$ENV_FILE" -f "$ROOT/compose.yaml" up -d --wait "${containers[@]}"
     else
-        require_env MYSQL_ROOT_PASSWORD
-        log "Starting MySQL and Redis containers"
-        docker compose --env-file "$ENV_FILE" -f "$ROOT/compose.yaml" up -d --wait mysql redis
+        log "Using external MySQL and Redis; Docker is not used"
     fi
+    if [[ "$EXTERNAL_MYSQL" == "true" ]]; then MYSQL_TARGET="${MYSQL_HOST:-127.0.0.1}:${MYSQL_PORT:-3306}"
+    else MYSQL_TARGET="127.0.0.1:${MYSQL_PORT:-3307}"; fi
+    if [[ "$EXTERNAL_REDIS" == "true" ]]; then REDIS_TARGET_HOST="${REDIS_HOST:-127.0.0.1}"; REDIS_TARGET_PORT="${REDIS_PORT:-6379}"
+    else REDIS_TARGET_HOST=127.0.0.1; REDIS_TARGET_PORT="${REDIS_PORT:-6380}"; fi
+    log "MySQL: $MYSQL_TARGET / Redis: $REDIS_TARGET_HOST:$REDIS_TARGET_PORT"
+    tcp_open "${MYSQL_TARGET%:*}" "${MYSQL_TARGET##*:}" || fail "Cannot reach MySQL at $MYSQL_TARGET. Start MySQL or check MYSQL_HOST/MYSQL_PORT."
+    tcp_open "$REDIS_TARGET_HOST" "$REDIS_TARGET_PORT" || fail "Cannot reach Redis at $REDIS_TARGET_HOST:$REDIS_TARGET_PORT. Start Redis or check REDIS_HOST/REDIS_PORT."
     log "Building collector jar"
     ( cd "$COLLECTOR" && sed -i.bak 's/\r$//' gradlew && rm -f gradlew.bak && sh gradlew bootJar --no-daemon -q )
     COLLECTOR_JAR="$(latest_jar "$COLLECTOR/build/libs")"
     [[ -n "$COLLECTOR_JAR" ]] || fail "Collector jar not found."
-    if [[ "${EXTERNAL_MYSQL:-false}" == "true" ]]; then MYSQL_TARGET="${MYSQL_HOST:-127.0.0.1}:${MYSQL_PORT:-3306}"
-    else MYSQL_TARGET="127.0.0.1:${MYSQL_PORT:-3307}"; fi
     MYSQL_JDBC="jdbc:mysql://$MYSQL_TARGET/${MYSQL_DATABASE:-ddareungi}?serverTimezone=Asia/Seoul&characterEncoding=UTF-8"
     port_in_use 8081 && fail "Port 8081 (collector) is already in use."
     # Collector owns the schema (Flyway). Start it first and wait until migrations finished.
@@ -151,11 +168,11 @@ infra)
         FLOW_CSV_INPUT_DIR="$COLLECTOR/data/oa-21229" USAGE_CSV_INPUT_DIR="$COLLECTOR/data/usage" \
         start_bg collector "$COLLECTOR" java -jar "$COLLECTOR_JAR"
     wait_url "http://127.0.0.1:8081/actuator/health" 180
-    MYSQL_URL="$MYSQL_JDBC" MYSQL_USER="${MYSQL_USER:-ddareungi}" REDIS_HOST=127.0.0.1 REDIS_PORT="${REDIS_PORT:-6380}" \
+    MYSQL_URL="$MYSQL_JDBC" MYSQL_USER="${MYSQL_USER:-ddareungi}" REDIS_HOST="$REDIS_TARGET_HOST" REDIS_PORT="$REDIS_TARGET_PORT" \
         start_bg backend "$RIDER" java -jar "$BACKEND_JAR" --spring.profiles.active=infra
     ;;
 real)
-    command -v docker >/dev/null || fail "Docker is required for real mode."
+    require_docker
     require_env SEOUL_API_KEY MYSQL_PASSWORD MYSQL_ROOT_PASSWORD
     [[ -f "$COLLECTOR/Dockerfile" ]] || fail "Collector submodule missing. Run: git submodule update --init --recursive"
     log "Starting Docker Compose profile 'real' (first build can take several minutes)"
