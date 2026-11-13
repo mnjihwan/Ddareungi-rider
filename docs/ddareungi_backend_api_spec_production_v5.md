@@ -376,10 +376,12 @@ Breaking Change가 필요한 경우:
 - Redis 값의 필드명도 같은 원천 필드명으로 맞춘다(21.2, R2).
 - 운영 공개 이후의 Breaking Change에는 이 예외를 적용하지 않고 5장·32장 원칙을 따른다.
 
-**후속 확인**
+**후속 확인 — 2026-11-13 Phase 1(A1) 결과**
 
-- `mobile/` 코드의 변환 필드명(`availableBikeCount` 등) 사용 여부와 전환 범위 포함 여부.
-- 명세에 없는 `address` 등 확장 필드의 유지 여부. 유지하면 11.0 공통 필드 표에 nullable 확장 필드로 추가하고, 아니면 전환 시 제거한다.
+- `mobile/`: 전환 범위에서 제외한다(보관용 PoC, CI 제외). 해당 코드는 옛 필드명(`availableBikeCount` 등)과 옛 `{data}` 응답을 계속 가정하므로 다시 사용하려면 전환이 필요하다.
+- `address`: nullable 확장 필드로 유지하고 11.0 표에 추가했다.
+- A1에서 대여소 응답 필드는 `stationId`, `stationName`, `stationLatitude`, `stationLongitude`, `rackTotCnt`, `parkingBikeTotCnt`, `shared`, `realtimeUpdatedAt`, `distanceMeters`, `address`로 전환했다. 장소 응답(`name`, `address`, `location{latitude, longitude}`, `sourceUrl`, `categoryGroupCode`)과 경로 응답(`origin`, `destination`, `departureStation`, `arrivalStation`, `legs`, …)은 구조를 유지하고, 경로의 대여소만 위 대여소 형식으로 바꿨다.
+- **Phase 1 한시 차이(A3에서 해소)**: `shared`는 항상 null, `realtimeStatus`·`realtimeAgeSeconds`는 아직 제공하지 않는다. `parkingBikeTotCnt`·`realtimeUpdatedAt`은 수량을 확인하지 못한 대여소에서 null일 수 있다(11.0의 nullable 불가 규칙과 다름). `rackTotCnt`는 MySQL 경로에서 원천 누락이 0으로 바뀔 수 있다. 주변 조회 응답은 아직 `data`가 대여소 배열이다(`center`/`radiusMeters`/`items` 래퍼는 A5).
 
 ---
 
@@ -569,6 +571,24 @@ GET /api/client-config
 | `MAINTENANCE_MODE` | 503 | 서비스 점검 중 |
 | `INTERNAL_SERVER_ERROR` | 500 | 서버 내부 오류 |
 
+### 10.1 확장 코드 (2026-11-13 Phase 1 결정)
+
+위 표에 없지만 구현이 사용하는 코드다. 응답 형식은 8.2와 같다.
+
+| Code | HTTP | 설명 |
+|---|:---:|---|
+| `RENTAL_STOCK_CHANGED` | 409 | 경로 계산 뒤 재확인에서 출발 대여소 수량이 바뀜. 경로 계약 재정의(A6)에서 다시 다룬다 |
+| `METHOD_NOT_ALLOWED` | 405 | 경로는 있으나 지원하지 않는 HTTP 메서드. `Allow` 헤더를 함께 반환 |
+| `RESOURCE_NOT_FOUND` | 404 | 존재하지 않는 API 경로 |
+
+### 10.2 코드 결정 규칙 (Phase 1 구현)
+
+- 검증 오류: 위반 필드가 모두 좌표(`latitude`/`longitude`)이면 `INVALID_COORDINATE`, 모두 `radiusMeters`이면 `INVALID_RADIUS`, 그 밖은 `INVALID_PARAMETER`. Query·JSON Body 검증에 같은 규칙을 적용한다. `details[].field`는 경로의 마지막 이름(`origin.latitude` → `latitude`)이며 입력값은 반영하지 않는다.
+- 파라미터 누락·형식 불일치, 읽을 수 없는 JSON은 `INVALID_PARAMETER`. 단, JSON 역직렬화가 좌표 범위 오류로 실패하면 `INVALID_COORDINATE`.
+- 경로 오류의 기존 내부 코드는 위 표의 코드로 변환한다(예: 출발 후보 없음·지정 출발 대여소 0대 → `422 NO_AVAILABLE_ORIGIN_STATION`, 연결 경로 없음 → `404 ROUTE_NOT_FOUND`, 길찾기 미설정 → `503 SERVICE_UNAVAILABLE`). 경로 Provider 장애는 도보·자전거 Provider 분리(E2) 전까지 임시로 `502 BIKE_ROUTE_PROVIDER_ERROR`로 보고한다.
+- 저장소(MySQL/Redis) 접근 장애는 `503 SERVICE_UNAVAILABLE`, 장소 Provider 키 미설정은 `503 SERVICE_UNAVAILABLE`, 장소 Provider 실패는 `502 PLACE_PROVIDER_ERROR`, 그 밖의 예외는 `500 INTERNAL_SERVER_ERROR`. 내부 정보는 requestId와 함께 로그에만 남긴다.
+- `204`, Actuator 응답, CORS 거부(`403`, Spring 기본 처리)는 envelope을 적용하지 않는다. 관리 포트의 존재하지 않는 경로 404는 관리 child context가 같은 예외 처리기를 상속하므로 envelope 형식(`requestId`는 null)으로 응답한다(알려진 차이).
+
 ---
 
 # 11. Station API
@@ -585,6 +605,7 @@ GET /api/client-config
 | `realtimeStatus` | Enum / 불가 | 공개 Station 응답은 `FRESH`, `STALE`; `UNAVAILABLE`은 내부 집계용 |
 | `realtimeUpdatedAt` | DateTime / 불가 | 공개 스냅샷을 성공 수집한 원래 시각 |
 | `realtimeAgeSeconds` | Integer / 불가 | 응답 시각에서 원래 수집 시각까지의 경과 초(내림, 최솟값 0) |
+| `address` | String / 가능 | **확장 필드**(원천 표준 필드 아님, 2026-11-13 유지 결정). 대여소 주소 |
 
 `bikeList`에 원천 관측 시각이 없으므로 `realtimeUpdatedAt`을 실제 자전거 상태가 변경된 시각으로 표현하지 않는다. 최신성은 **수집 성공 시점 기준**이며 원천 자체 지연은 보장할 수 없다.
 
@@ -871,7 +892,7 @@ GET /api/v1/stations/realtime?stationIds=ST-123,ST-124,ST-125
 
 ### 장소 검색 입력·결과 계약
 
-`query`는 앞뒤 공백 제거 후 1~100 Unicode 코드 포인트(제안 제한)다. 누락/공백이면 `400 PLACE_QUERY_REQUIRED`, 길이 초과이면 `400 INVALID_PARAMETER`다. `limit`는 1~20의 정수(제안 제한)이며 기본 10이다. Provider가 지원하는 결과 수가 더 작으면 가능한 만큼만 반환한다.
+`query`는 앞뒤 공백 제거 후 1~100 Unicode 코드 포인트(제안 제한)다. 누락/공백이면 `400 PLACE_QUERY_REQUIRED`, 길이 초과이면 `400 INVALID_PARAMETER`다. **현재 구현 차이(2026-11-13 결정)**: 최소 길이는 2자를 유지하며 1자 검색어는 `400 INVALID_PARAMETER`다. 현재 구현 응답은 위 예시의 `query`/`items` 래퍼·`placeId`·`category` 대신 장소 배열(`name`, `address`, `location`, `sourceUrl`, `categoryGroupCode`)이다. `limit`는 1~20의 정수(제안 제한)이며 기본 10이다. Provider가 지원하는 결과 수가 더 작으면 가능한 만큼만 반환한다.
 
 좌표는 둘 다 생략하거나 둘 다 제공한다. 한쪽만 제공하면 `400 INVALID_PARAMETER`, 범위 오류는 `400 INVALID_COORDINATE`다. 좌표는 검색 우선순위 힌트이고, 결과의 `distanceMeters`는 그 좌표로부터의 직선거리이며 좌표가 없으면 null이다. 결과가 없으면 `200`과 `items: []`를 반환한다.
 
