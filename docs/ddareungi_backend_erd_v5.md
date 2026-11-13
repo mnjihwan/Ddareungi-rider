@@ -8,6 +8,10 @@
 
 > **사용자 결정 반영**: 공개 조회는 폐쇄·불완전 대여소 제외, FRESH·0대는 정상값, Redis 우선/MySQL fallback으로 확정한다. 이를 위해 최신 스냅샷과 출처 메타데이터 보존은 필수 기능으로 반영했다. ID 매핑은 검증 완료 행만 채택한다.
 
+> **변경 이력 — 2026-11-13 결정 반영(X1~X4, 사용자 승인)**: 명세서 상단 변경 이력과 같다. 이 ERD에서는 X2(Elasticsearch 보류 → 백엔드 메모리 카탈로그, 1·4·6·7·8장), X3(TTL 900초·제공 상한 600초 확정 초기값, 6장), X4(Collector가 Redis 갱신 전담·백엔드 읽기 전용, 1·6장)를 반영했다. X1(원천 필드명 유지)은 기존 컬럼·Redis 값 필드명과 이미 일치한다.
+>
+> **결정(확정)과 설계안(제안)의 구분**: 사용자 확정 사항은 X1 원천 필드명, X2 Elasticsearch 보류, X3 120/600/900초 임계값, X4 Collector 전담·백엔드 읽기 전용·백엔드 스케줄러 ShedLock 대안 기각·Collector `spring-data-redis` 추가뿐이다. 6장의 Redis 키 이름(`station:realtime:v{n}`/`current`), 단일 Hash + 포인터 교체, 이월 규칙, 60초 job, TTL 적용 단위, 메모리 카탈로그 구조는 **설계안(R2/R3 구현 시 확정)**이다.
+
 ## 1. 저장소별 책임
 
 | 저장소 | 관리 대상 | 기준 |
@@ -15,8 +19,9 @@
 | MySQL | 대여소 기준정보, 최신 스냅샷, 원천 식별자 매핑, 시간별 이력 | 영구 보존 및 Redis 실패/누락 시 fallback |
 | MySQL / Raw 저장소 | 필수 출처 메타데이터와 분리된 원문 본체 | 메타데이터는 참조 중 보존, 원문은 별도 보존 정책 |
 | MySQL / 분석 저장소 | 대여·반납 흐름 | OA-21229 스키마 검증 후 선택 도입 |
-| Redis | 현재 대여소 수량, 수집 상태, 선택적 장소/예측 캐시 | MySQL 대여소 기준정보에 결합 |
-| Elasticsearch | 대여소 검색용 Document와 geo_point | MySQL에서 파생, 재생성 가능 |
+| Redis | 현재 대여소 수량, 수집 상태, 선택적 장소/예측 캐시 | MySQL 대여소 기준정보에 결합. 실시간 값은 Collector가 기록하고 백엔드는 읽기 전용(X4) |
+| 백엔드 인스턴스 메모리 | 대여소 Geo 카탈로그 + 격자 인덱스, 실시간 스냅샷 캐시 | MySQL·Redis에서 파생, 재적재로 재생성 가능(X2, 6장) |
+| Elasticsearch — 보류(향후 옵션) | 대여소 검색용 Document와 geo_point | 2026-11-13 X2로 도입 보류. 도입 시 MySQL에서 파생, 재생성 가능 |
 | 설정 저장소 | 앱 최소/최신 버전, 점검, 지원 API 버전 | 파일/설정 서비스로도 가능. DB 관리 시 5장의 선택 ERD 사용 |
 | 모델 아티팩트/설정 | Global Model, 모델 버전·지원 범위·confidence 규칙 | Prediction Service의 책임. 사용자별/대여소별 모델 테이블 불필요 |
 
@@ -273,7 +278,7 @@ raw_payload와 object_uri 중 정확히 하나를 사용한다. 파일 공유 �
 | 테이블 | 제약/인덱스 | 목적 |
 |---|---|---|
 | station | PK(station_id) | 영구 식별자 |
-| station | INDEX(updated_at, station_id) — 선택 | Elasticsearch 증분 동기화 |
+| station | INDEX(updated_at, station_id) — 선택 | 메모리 카탈로그 증분 재적재(Elasticsearch 도입 시 증분 동기화에도 사용) |
 | station_identifier_mapping | UNIQUE(source_dataset, identifier_kind, source_station_identifier, valid_from) | 동일 원천 식별자의 시작 시각 중복 차단 |
 | station_identifier_mapping | INDEX(station_id) | 대여소 기준 역조회 |
 | ingestion_run | INDEX(source_dataset, started_at) | 최근 실행 및 장애 추적 |
@@ -378,23 +383,44 @@ erDiagram
 
 `forceUpdate`, `updateAvailable`은 요청 appVersion과 설정을 비교하는 계산 결과이므로 저장하지 않는다. `appVersion`, `buildNumber` 같은 방문 클라이언트 정보도 이 설정 테이블에 저장하지 않는다. 점검 설정의 캐시 무효화와 실제 서버 기능 차단을 함께 적용한다.
 
-## 6. Redis / Elasticsearch 모델
+## 6. Redis / 메모리 카탈로그 모델 (Elasticsearch 보류)
 
 이 항목은 관계형 ERD의 FK가 아닌 **동일 stationId를 사용하는 논리 연결**이다.
 
 ### Redis
 
+결정(확정, X4): 실시간 키는 Collector만 기록하고 백엔드는 읽기만 한다. 아래 키 이름·구조·이월 규칙은 설계안이며, 키 이름·값 직렬화의 최종 형태는 R2 구현에서 Collector·백엔드가 함께 확정한다(명세서 21.2).
+
 | Key / 용도 | 값 | 수명 및 정합성 |
 |---|---|---|
-| station:realtime:{stationId} | 원천 필드명 + realtimeUpdatedAt + snapshotVersion + operationStatus/publicationEligible | 제안 TTL 900초, 제공 상한 600초. 미조회 시 MySQL fallback |
-| station:realtime:last-success-at | 마지막 전체 수집 성공 시각 | 별도 보존; 개별 데이터가 만료해도 이력이 사라지지 않도록 함 |
-| station:realtime:last-attempt-at | 마지막 수집 시도 시각 | 성공 시각과 분리 |
+| station:realtime:v{n} (설계안) | Hash. field=stationId, value=원천 필드명 + realtimeUpdatedAt + snapshotVersion + operationStatus/publicationEligible JSON | 버전 Hash TTL 900초(X3 확정 초기값, Collector 설정). 제공 상한 600초는 백엔드가 조회 시 판정(X3 확정). 이월 상한은 별도 설정(설계안). field 누락 또는 버전 키 만료 시 MySQL fallback |
+| station:realtime:current (설계안) | 현재 공개 버전 n. n = snapshotVersion(`station_latest_snapshot.snapshot_version`) 권장 | TTL 없음. 새 버전 Hash 기록 완료 후 더 큰 n일 때만 원자적으로 교체. 인스턴스 스냅샷 캐시의 재적재 트리거 |
+| station:realtime:last-success-at | 마지막 전체 수집 성공 시각 | 별도 보존; 개별 데이터가 만료해도 이력이 사라지지 않도록 함. 상태 API(명세서 15장) 전용이며 캐시 재적재 트리거로 쓰지 않음. 전환·롤백 중 이전 백엔드 스케줄러와 겹쳐 쓰기 주의(명세서 21.2) |
+| station:realtime:last-attempt-at | 마지막 수집 시도 시각 | 성공 시각과 분리. 전환·롤백 중 겹쳐 쓰기 주의는 위와 같음 |
 | 예측 캐시(선택) | stationId + targetAt + modelVersion + featureSnapshotVersion 및 예측 응답 | 입력·모델 갱신에 따른 무효화/유효기간 필요 |
 | 장소 캐시(선택) | Provider·검색어·위치 힌트·limit·언어 조건별 결과 | Provider 약관과 위치정보 보존 정책 준수 |
 
-실시간 값이 Redis String JSON이면 MGET, Hash이면 Pipeline을 사용한다. `realtimeStatus`와 `realtimeAgeSeconds`는 응답 시각으로 계산하는 값이므로 저장된 상태를 그대로 믿지 않는다. 오래된 수량을 공개에서 제외하고 MySQL fallback을 시도할 시점과 키 물리 만료 시점은 다르다. 갱신 시 값+TTL을 원자적으로 처리하고 이전 수집 결과가 최신 결과를 덮어쓰지 못하게 한다.
+설계안: 실시간 값은 `GET station:realtime:current`로 버전을 읽은 뒤 해당 버전 Hash에 `HMGET`(전체 재적재는 `HGETALL`)으로 조회하거나 두 단계를 Lua 1회로 묶으며, 대여소별 개별 키를 사용하지 않는다. 포인터에는 TTL이 없으므로 Collector가 버전 Hash TTL(900초)보다 오래 중단되면 포인터가 만료된 Hash를 가리켜 전부 miss가 되고, 백엔드는 전체 ID를 MySQL fallback으로 처리한다. 실패·누락 ID는 직전 버전의 마지막 유효값을 원래 수집 시각 그대로 새 버전에 이월하되, 원래 수집 시각 기준 age가 이월 상한(기본 900초, 버전 Hash TTL과 별개 설정)을 넘은 값은 이월하지 않는다. 이 경우 한 값이 Redis에 물리적으로 남는 최대 시간은 약 이월 상한 + TTL(약 1,800초)이고, 60초 주기면 동시 버전 Hash는 최대 약 15~16개(값 1건 약 300바이트 가정 시 약 15MB 내외, 추정)다. 포인터 교체 후 이전 버전 TTL을 단축하는 방안은 검토 항목이다(명세서 21.2). 인스턴스 스냅샷 캐시는 `current` 버전이 바뀔 때만 재적재한다. `realtimeStatus`와 `realtimeAgeSeconds`는 응답 시각으로 계산하는 값이므로 저장된 상태를 그대로 믿지 않는다. 오래된 수량을 공개에서 제외하고 MySQL fallback을 시도할 시점과 키 물리 만료 시점은 다르다. 갱신 시 값+TTL을 원자적으로 처리하고 이전 수집 결과가 최신 결과를 덮어쓰지 못하게 한다.
 
-### Elasticsearch
+### 백엔드 메모리 카탈로그 (X2 결정에 따른 현재 기준, 구조는 설계안 — R3 구현 시 확정)
+
+각 백엔드 인스턴스가 MySQL `station`에서 공개 대상 대여소(검증된 ACTIVE, 유효한 ID·이름·좌표)를 적재하고 좌표 기반 격자 인덱스를 만든다. 별도 영구 저장소나 테이블이 아니며 재적재로 언제든 재생성한다.
+
+| 필드 | 논리 타입 | 출처 | 용도 |
+|---|---|---|---|
+| stationId | String | station.station_id | 식별자, 실시간 스냅샷 결합 키 |
+| stationName | String | station.station_name | 이름 정렬·표시 후보(최종 표시값은 선택된 스냅샷 기준, 명세서 11.0) |
+| address | String, nullable | station.address | 확장 필드 유지 여부는 명세서 5.1 후속 확인 |
+| stationLatitude / stationLongitude | Decimal | station.station_latitude / station.station_longitude | 격자 셀 배정, 1차 직선거리 필터 |
+| operationStatus | Enum | station.operation_status | 적재 대상 선별(ACTIVE만) |
+| updatedAt | DateTime | station.updated_at | 증분 재적재 기준(4장 선택 인덱스) |
+| gridCell | 계산값 | 좌표에서 계산 | 격자 인덱스 키. 저장하지 않음 |
+
+현재 자전거 수를 카탈로그의 기준값으로 두지 않는다. 반경을 덮는 격자 셀의 전체 후보에 Redis 우선/MySQL fallback 스냅샷을 결합한 뒤 공개 gate·최종 좌표 반경을 확인하고 필터·정렬·limit를 적용한다. 폐쇄/기준정보 무효화는 다음 재적재에서 반영하며, 그 전에도 스냅샷의 공개 gate로 제외한다. 재적재 주기·트리거는 후속 확인이다.
+
+### Elasticsearch — 보류(향후 옵션, 2026-11-13 X2)
+
+아래 모델은 명세서 2.1의 재검토 트리거로 Elasticsearch를 도입할 때 사용한다. 현재 구현 범위가 아니다.
 
 Index 예시 이름은 `stations`이며 Document ID는 `stationId`다.
 
@@ -409,14 +435,14 @@ Index 예시 이름은 `stations`이며 Document ID는 `stationId`다.
 
 좌표·이름이 유효하고 노출 정책을 만족하는 대여소만 검색 대상에 포함한다. geo_point 객체는 `{ "lat": ..., "lon": ... }`를 사용해 순서 혼동을 줄인다. 사용자 API의 `distanceMeters`는 요청 좌표에 대한 계산값이다.
 
-현재 자전거 수를 검색 인덱스의 영구 기준값으로 두지 않는다. 반경 후보에 Redis 우선/MySQL fallback 스냅샷을 결합한 뒤 공개 gate·최종 좌표 반경을 확인하고 필터·정렬·limit를 적용한다. DB 변경과 Elasticsearch 반영은 하나의 원자 트랜잭션이 아니므로 재시도·주기적 대사·재색인 정책이 필요하다. Outbox/CDC가 필요하면 별도 운영 테이블을 추가할 수 있으나 이 ERD의 필수 범위에는 포함하지 않았다.
+도입하는 경우에도 현재 자전거 수를 검색 인덱스의 영구 기준값으로 두지 않는다. 반경 후보에 Redis 우선/MySQL fallback 스냅샷을 결합한 뒤 공개 gate·최종 좌표 반경을 확인하고 필터·정렬·limit를 적용한다. DB 변경과 Elasticsearch 반영은 하나의 원자 트랜잭션이 아니므로 재시도·주기적 대사·재색인 정책이 필요하다. Outbox/CDC가 필요하면 별도 운영 테이블을 추가할 수 있으나 이 ERD의 필수 범위에는 포함하지 않았다.
 
 ## 7. API와 데이터 모델 연결
 
 | API | 영구 데이터 | 실시간/계산/외부 데이터 |
 |---|---|---|
 | GET /api/client-config | 선택: client_config 및 지원 버전 | 요청 앱 버전 비교 |
-| GET /api/v1/stations/nearby | station, station_latest_snapshot | Elasticsearch 후보 + Redis 우선/MySQL fallback + 최종 거리 계산 |
+| GET /api/v1/stations/nearby | station, station_latest_snapshot | 메모리 카탈로그(격자 인덱스) 후보 + Redis 우선/MySQL fallback + 최종 거리 계산 |
 | GET /api/v1/stations/{stationId} | station, station_latest_snapshot | 공개 gate + Redis 우선/MySQL fallback, age/status 계산 |
 | GET /api/v1/stations/realtime | station, station_latest_snapshot | Batch fallback, 미존재/정책 제외/조회 불가 ID 분리 |
 | GET /api/v1/places/search | 필수 테이블 없음 | PlaceSearchProvider, 선택 캐시 |
@@ -434,9 +460,10 @@ Index 예시 이름은 `stations`이며 Document ID는 `stationId`다.
 1. 원천별 대여소 식별자 및 매핑의 실제 유효기간, 시간 필드·단위·파일 헤더. 검증 대기는 source_record에 남기고 채택 매핑 테이블에는 넣지 않는다.
 2. Raw 보존 저장소와 보존 기간, 실시간 원문 저장 여부, 실패/정정 감사 기록 정책.
 3. 같은 시간의 여러 원천 중 Canonical 선택 우선순위 및 재처리 규칙.
-4. 확정된 폐쇄·불완전 대여소 제외 정책의 Redis gate/검색 인덱스 동기화·재시도 절차.
+4. 확정된 폐쇄·불완전 대여소 제외 정책의 Redis gate 동기화·재시도 절차와 메모리 카탈로그 재적재 주기·트리거(Elasticsearch 도입 시 검색 인덱스 동기화 포함).
 5. 흐름 데이터의 실제 집계 차원과 시간 단위. 확인 전 station_flow 물리 스키마 확정 금지.
 6. Client Config의 설정 파일/DB 관리 방식과 변경 반영 절차.
 7. 이력 데이터 증가량에 따른 인덱스·보관·분석 저장소 전략. 파티셔닝 선택 시 PK/UNIQUE/FK 제약을 해당 DB 버전에서 별도 검증.
+8. Collector 60초 실시간 job(설계안)의 `station_latest_snapshot`·`source_record`·`ingestion_run` 기록 범위, Redis 키 이름·값 직렬화·이월 상한·이전 버전 TTL 단축 여부 최종안(X4/R2, Collector 스키마 확정과 함께). 확정 전까지 MySQL 저장 후 Redis 반영의 기존 순서를 기본으로 한다(명세서 21.2).
 
 관계·키·null 규칙은 이 문서의 설계안이며 DDL 적용이나 MySQL에서의 실행 검증까지 완료된 상태는 아니다.
