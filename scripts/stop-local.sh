@@ -6,9 +6,19 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE="$ROOT/.local"
 ENV_FILE="$ROOT/.env"
 
+IS_WINDOWS=false
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=true ;; esac
+
 # Stop a process and all of its descendants (npm -> sh -> node, nohup -> java).
 kill_tree() {
-    local parent="$1" signal="$2" child
+    local parent="$1" signal="$2" child winpid
+    if [[ "$IS_WINDOWS" == "true" ]]; then
+        # Git Bash has no pgrep; native children (java.exe, node.exe) are stopped via the Windows process tree.
+        winpid="$(cat "/proc/$parent/winpid" 2>/dev/null)"
+        [[ -n "$winpid" ]] && taskkill //F //T //PID "$winpid" >/dev/null 2>&1
+        kill "-$signal" "$parent" 2>/dev/null
+        return 0
+    fi
     for child in $(pgrep -P "$parent" 2>/dev/null); do kill_tree "$child" "$signal"; done
     kill "-$signal" "$parent" 2>/dev/null
 }

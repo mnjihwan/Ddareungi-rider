@@ -79,9 +79,31 @@ latest_jar() {
     find "$1" -maxdepth 1 -name '*.jar' ! -name '*-plain.jar' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-
 }
 
+# Prefer JAVA_HOME so Gradle's toolchain lookup and the launched JVMs use the same JDK.
+if [[ -n "${JAVA_HOME:-}" && -x "$JAVA_HOME/bin/java" ]]; then export PATH="$JAVA_HOME/bin:$PATH"; fi
+
+check_java() {
+    command -v java >/dev/null || fail "Java 21 is required. Install JDK 21 (e.g. Eclipse Temurin 21) and set JAVA_HOME."
+    local version major
+    version="$(java -version 2>&1 | grep -m1 -Eo 'version "[^"]+"' | cut -d'"' -f2)"
+    major="${version%%.*}"
+    [[ "$major" == "1" ]] && major="$(cut -d. -f2 <<< "$version")"
+    [[ "$major" == "21" ]] || fail "JDK 21 is required (found: ${version:-unknown} at $(command -v java)). Install JDK 21 and set JAVA_HOME to it, e.g. export JAVA_HOME=\"/c/Program Files/Eclipse Adoptium/jdk-21...\""
+}
+
+check_node() {
+    command -v node >/dev/null && command -v npm >/dev/null || fail "Node.js 22 LTS (or 20.19+) and npm are required."
+    local version major minor
+    version="$(node -v)"; version="${version#v}"
+    major="${version%%.*}"; minor="$(cut -d. -f2 <<< "$version")"
+    # Vite 8 / rolldown require ^20.19.0 || >=22.12.0.
+    if (( major > 22 )) || (( major == 22 && minor >= 12 )) || (( major == 20 && minor >= 19 )); then return 0; fi
+    fail "Node.js $version is too old for Vite 8 (needs 20.19+ or 22.12+). Install Node.js 22 LTS."
+}
+
 load_env
-command -v java >/dev/null || fail "Java 21 is required."
-command -v npm >/dev/null || fail "Node.js 20+ and npm are required."
+check_java
+check_node
 command -v curl >/dev/null || fail "curl is required."
 port_in_use 5173 && fail "Port 5173 is already in use. Run scripts/stop-local.sh first."
 [[ "$MODE" != "real" ]] && port_in_use 8080 && fail "Port 8080 is already in use. Run scripts/stop-local.sh first."
