@@ -1,25 +1,29 @@
 import axios from "axios";
 import type { Coordinates, Forecast, Place, Station, MapBounds, BikeRoute } from "./types";
+import { unwrap, type ApiEnvelope } from "./apiEnvelope";
+
+export { unwrap, apiError, apiErrorMessage } from "./apiEnvelope";
+export type { ApiEnvelope, ApiErrorEnvelope, ApiMeta } from "./apiEnvelope";
 
 export const api = axios.create({ baseURL: "/api/v1", timeout: 10_000 });
 export async function planBikeRoute(origin: Coordinates, destination: Coordinates, departureStationId?: string, signal?: AbortSignal, arrivalStationId?: string): Promise<BikeRoute> {
-  return (await api.post<{data: BikeRoute}>("/routes/plan", {origin, destination, departureStationId, arrivalStationId},
-    {signal, timeout: 90_000})).data.data;
+  return unwrap((await api.post<ApiEnvelope<BikeRoute>>("/routes/plan", {origin, destination, departureStationId, arrivalStationId},
+    {signal, timeout: 90_000})).data);
 }
 export async function nearby(
   center: Coordinates,
   radius: number,
   signal?: AbortSignal,
 ): Promise<Station[]> {
-  return (
-    await api.get<{ data: Station[] }>("/stations/nearby", {
+  return unwrap((
+    await api.get<ApiEnvelope<Station[]>>("/stations/nearby", {
       params: { ...center, radiusMeters: radius },
       signal,
     })
-  ).data.data;
+  ).data);
 }
 export async function viewportStations(bounds: MapBounds, signal?: AbortSignal): Promise<Station[]> {
-  return (await api.get<{data: Station[]}>("/stations/viewport", {params: bounds, signal})).data.data;
+  return unwrap((await api.get<ApiEnvelope<Station[]>>("/stations/viewport", {params: bounds, signal})).data);
 }
 export async function favoriteStations(
   ids: string[],
@@ -27,40 +31,40 @@ export async function favoriteStations(
   signal?: AbortSignal,
 ): Promise<Station[]> {
   if (!ids.length) return [];
-  return (
-    await api.post<{ data: Station[] }>(
+  return unwrap((
+    await api.post<ApiEnvelope<Station[]>>(
       "/stations/batch",
       { stationIds: ids, ...center },
       { signal },
     )
-  ).data.data;
+  ).data);
 }
 export async function searchPlaces(
   query: string,
   signal?: AbortSignal,
   center?: Coordinates,
 ): Promise<Place[]> {
-  return (
-    await api.get<{ data: Place[] }>("/places/search", {
+  return unwrap((
+    await api.get<ApiEnvelope<Place[]>>("/places/search", {
       params: { query, ...center },
       signal,
     })
-  ).data.data;
+  ).data);
 }
 export async function nearbySubways(center:Coordinates,signal?:AbortSignal):Promise<Place[]> {
-  return (await api.get<{data:Place[]}>('/places/nearby-subways',{params:center,signal})).data.data;
+  return unwrap((await api.get<ApiEnvelope<Place[]>>('/places/nearby-subways',{params:center,signal})).data);
 }
 export async function searchStations(
   query: string,
   center: Coordinates,
   signal?: AbortSignal,
 ): Promise<Station[]> {
-  return (
-    await api.get<{ data: Station[] }>("/stations/search", {
+  return unwrap((
+    await api.get<ApiEnvelope<Station[]>>("/stations/search", {
       params: { query, ...center },
       signal,
     })
-  ).data.data;
+  ).data);
 }
 export const forecastPath = import.meta.env.VITE_FORECAST_API_PATH as
   string | undefined;
@@ -85,5 +89,5 @@ export async function loadForecast(stationId: string, signal?: AbortSignal): Pro
 }
 
 export async function reversePlace(location: Coordinates, signal?: AbortSignal): Promise<Place | null> {
-  return (await api.get<{data: Place | null}>("/places/reverse", {params: location, signal})).data.data;
+  return unwrap((await api.get<ApiEnvelope<Place | null>>("/places/reverse", {params: location, signal})).data);
 }

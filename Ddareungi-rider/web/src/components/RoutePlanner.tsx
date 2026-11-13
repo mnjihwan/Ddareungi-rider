@@ -2,8 +2,8 @@ import {requestLocation, MAX_LOCATION_ACCURACY} from "../lib/location";
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import axios from 'axios';
 import { useQuery } from '@tanstack/react-query';
-import { api, nearby, planBikeRoute, reversePlace } from '../lib/api';
-import type { BikeRoute, Coordinates, Place, Station, RouteEndpointRole } from '../lib/types';
+import { api, apiErrorMessage, nearby, planBikeRoute, reversePlace, unwrap, type ApiEnvelope } from '../lib/api';
+import { stationLocation, type BikeRoute, type Coordinates, type Place, type Station, type RouteEndpointRole } from '../lib/types';
 import { availability, AVAILABILITY_LABEL, compareStations, distanceLabel, observationLabel } from '../lib/status';
 import { Icon } from './Icon';
 import { LocationSearchBox } from './LocationSearchBox';
@@ -43,7 +43,7 @@ export function RoutePlanner({onStationSelectionChange, onPlanningChange, active
   const request = useRef<AbortController | null>(null);
   const resultElement = useRef<HTMLDivElement>(null);
   const status = useQuery({queryKey:['routing-status'], queryFn: async ({signal}) =>
-    (await api.get<{data:{configured:boolean}}>('/routes/status',{signal})).data.data,
+    unwrap((await api.get<ApiEnvelope<{configured:boolean}>>('/routes/status',{signal})).data),
     staleTime:30_000, retry:1});
   const nearbyCenter = (activeEndpoint === 'origin' ? origin : destination)?.location ?? searchCenter;
   const nearbyStations = useQuery({
@@ -60,7 +60,7 @@ export function RoutePlanner({onStationSelectionChange, onPlanningChange, active
     else {setDestination(place);setArrival(station);}
   }
   function chooseStation(station: Station) {
-    const place = {name:station.stationName,address:station.address,location:station.location};
+    const place = {name:station.stationName,address:station.address ?? '',location:stationLocation(station)};
     assignEndpoint(activeEndpoint,place,station);onPlaceSelected(place);
   }
   useEffect(() => { onPlanningChange(pending); }, [pending, onPlanningChange]);
@@ -123,8 +123,9 @@ export function RoutePlanner({onStationSelectionChange, onPlanningChange, active
       const result = await planBikeRoute(origin.location, destination.location, pinned?.stationId, controller.signal, arrival?.stationId);
       if (request.current === controller && !controller.signal.aborted) onPlan(result);
     } catch (failure) {
+      // Failure envelope (spec 8.2): show error.message; responses without one keep the previous fallbacks.
       if (!controller.signal.aborted) setError(axios.isAxiosError(failure)
-        ? failure.response?.data?.message || '경로를 가져오지 못했어요. 잠시 후 다시 검색해 주세요.'
+        ? apiErrorMessage(failure, '경로를 가져오지 못했어요. 잠시 후 다시 검색해 주세요.')
         : '길찾기 연결을 확인해 주세요.');
     } finally { if (request.current === controller) {setPending(false);request.current=null;} }
   }
@@ -172,7 +173,7 @@ export function RoutePlanner({onStationSelectionChange, onPlanningChange, active
             aria-pressed={(activeEndpoint==='origin'?pinned:arrival)?.stationId===station.stationId} onClick={()=>chooseStation(station)}>
             <span><b>{station.stationName.replace(/^\s*\d+\s*\.\s*/, '')}</b>
               <small>{distanceLabel(station.distanceMeters)} · {AVAILABILITY_LABEL[state]}</small></span>
-            <span className="route-nearby-stock">{state==='unknown'?'수량 미확인':`${station.availableBikeCount}대`}<small>{activeLabel}로 선택</small></span>
+            <span className="route-nearby-stock">{state==='unknown'?'수량 미확인':`${station.parkingBikeTotCnt}대`}<small>{activeLabel}로 선택</small></span>
           </button>;
         })}</div> : <p>1km 이내에 대여소가 없어요. 다른 장소를 검색해 주세요.</p>}
     </section>}
@@ -185,7 +186,7 @@ export function RoutePlanner({onStationSelectionChange, onPlanningChange, active
           <p>{index===0?origin?.name:index===1?plan.departureStation.stationName:plan.arrivalStation.stationName}<span> → </span>{index===0?plan.departureStation.stationName:index===1?plan.arrivalStation.stationName:destination?.name}</p>
           {index<2 && <button className="route-station" onClick={()=>onSelectStation(index===0?plan.departureStation:plan.arrivalStation)}>
             <b>{index===0?'대여':'반납'} · {index===0?plan.departureStation.stationName:plan.arrivalStation.stationName}</b>
-            <small>{index===0?`조회 시 ${plan.departureStation.availableBikeCount}대 · ${observationLabel(plan.departureStation)}`:'현장에서 반납 가능 여부를 확인해 주세요.'}</small>
+            <small>{index===0?`조회 시 ${plan.departureStation.parkingBikeTotCnt}대 · ${observationLabel(plan.departureStation)}`:'현장에서 반납 가능 여부를 확인해 주세요.'}</small>
           </button>}
           {leg.steps.length>0 && <details className="route-steps"><summary>구간별 안내</summary><ol>{leg.steps.map((step,i)=><li key={i}>{step.instruction} <small>{distanceLabel(step.distanceMeters)}</small></li>)}</ol></details>}
         </li>)}
@@ -204,7 +205,7 @@ function PlaceInput({label,active,onActivate,selected,onSelect,center,onSearchSt
     <LocationSearchBox id={`route-${label}`} label={`${label} 장소 또는 주소 검색`} variant="route" openOnFocus={!selected} text={text} center={center}
       onTextChange={value=>{setText(value);onSearchStart();onSelect(null);}} onSubmit={onSearchStart}
       onChoose={(suggestion,query)=>onSelect(suggestion.kind==='place'?suggestion.place:
-        {name:suggestion.station.stationName,address:suggestion.station.address,location:suggestion.station.location},query)}/>
+        {name:suggestion.station.stationName,address:suggestion.station.address ?? '',location:stationLocation(suggestion.station)},query)}/>
     {selected && <span className="route-place-selected">선택됨 {selected.address && `· ${selected.address}`}</span>}
   </div>;
 }

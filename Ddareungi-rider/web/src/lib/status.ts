@@ -9,8 +9,8 @@ export const AVAILABILITY_LABEL: Record<Availability, string> = {
 };
 
 export function availability(station: Station, now = Date.now()): Availability {
-  const updated = station.updatedAt ? Date.parse(station.updatedAt) : NaN;
-  const count = station.availableBikeCount;
+  const updated = station.realtimeUpdatedAt ? Date.parse(station.realtimeUpdatedAt) : NaN;
+  const count = station.parkingBikeTotCnt;
   if (
     !Number.isFinite(updated) ||
     now - updated > 5 * 60_000 ||
@@ -37,8 +37,8 @@ export function distanceLabel(meters: number): string {
 }
 
 export function observationLabel(station: Station, now = Date.now()): string {
-  if (!station.updatedAt) return "수량 정보 없음";
-  const age = Math.floor((now - Date.parse(station.updatedAt)) / 60_000);
+  if (!station.realtimeUpdatedAt) return "수량 정보 없음";
+  const age = Math.floor((now - Date.parse(station.realtimeUpdatedAt)) / 60_000);
   if (!Number.isFinite(age) || age < -1) return "갱신 시각 확인 중";
   if (age > 5) return "갱신 지연";
   return age <= 0 ? "방금 업데이트" : `${age}분 전 업데이트`;
@@ -85,7 +85,7 @@ export function forecastAt(
 export function stationOutlook(station: Station, forecast: import("./types").Forecast | undefined, minutes: number, now = Date.now()) {
   if (minutes === 0) {
     const state = availability(station, now);
-    return {state, count: state === "unknown" ? null : station.availableBikeCount};
+    return {state, count: state === "unknown" ? null : station.parkingBikeTotCnt};
   }
   const prediction = forecast?.stationId === station.stationId ? forecastAt(forecast, minutes, now) : null;
   const count = prediction?.count ?? null;

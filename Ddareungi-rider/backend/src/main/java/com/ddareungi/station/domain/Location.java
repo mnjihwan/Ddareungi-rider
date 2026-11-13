@@ -2,9 +2,14 @@ package com.ddareungi.station.domain;
 
 public record Location(double latitude, double longitude) {
     public Location {
-        if (!Double.isFinite(latitude) || !Double.isFinite(longitude)) throw new IllegalArgumentException("좌표는 유한한 숫자여야 합니다.");
-        if (latitude < -90 || latitude > 90) throw new IllegalArgumentException("latitude 범위가 올바르지 않습니다.");
-        if (longitude < -180 || longitude > 180) throw new IllegalArgumentException("longitude 범위가 올바르지 않습니다.");
+        if (!Double.isFinite(latitude) || !Double.isFinite(longitude)) throw new InvalidCoordinateException("좌표는 유한한 숫자여야 합니다.");
+        if (latitude < -90 || latitude > 90) throw new InvalidCoordinateException("latitude 범위가 올바르지 않습니다.");
+        if (longitude < -180 || longitude > 180) throw new InvalidCoordinateException("longitude 범위가 올바르지 않습니다.");
+    }
+
+    /** Out-of-range or non-finite WGS84 coordinate; still an IllegalArgumentException for existing callers. */
+    public static class InvalidCoordinateException extends IllegalArgumentException {
+        public InvalidCoordinateException(String message) { super(message); }
     }
 
     public double distanceTo(Location other) {

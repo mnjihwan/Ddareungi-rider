@@ -22,11 +22,11 @@ export function buildSearchSuggestions(places: Place[], stations: Station[], que
   const others = distinct.filter(place => !matchingSubway(place));
   const asSuggestion = (place: Place): SearchSuggestion => ({key: `place:${place.sourceUrl ?? `${place.name}|${place.location.latitude}|${place.location.longitude}`}`,
     kind: 'place', name: place.name, address: place.address, place});
-  const stationSuggestions: SearchSuggestion[] = [...new Map(stations.filter(station => station.stationName?.trim() && matches(station.stationName, station.address))
+  const stationSuggestions: SearchSuggestion[] = [...new Map(stations.filter(station => station.stationName?.trim() && matches(station.stationName, station.address ?? ''))
     .map(station => [station.stationId, station])).values()]
     .sort((a, b) => bestSearchScore(a.stationName, a.address, query) - bestSearchScore(b.stationName, b.address, query) || a.distanceMeters - b.distanceMeters)
     .slice(0, 3).map(station => ({key: `station:${station.stationId}`, kind: 'station', name: station.stationName,
-      address: station.address, station}));
+      address: station.address ?? '', station}));
   // Keep room for our rental stations even when the provider returns many businesses.
   return [...subways.slice(0, 3).map(asSuggestion), ...others.slice(0, 4).map(asSuggestion),
     ...stationSuggestions, ...others.slice(4).map(asSuggestion)].slice(0, 10)

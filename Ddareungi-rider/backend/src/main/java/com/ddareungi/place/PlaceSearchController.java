@@ -1,19 +1,21 @@
 package com.ddareungi.place;
 
 import com.ddareungi.global.http.KakaoHttpClientProperties;
+import com.ddareungi.global.exception.ApiException;
+import com.ddareungi.global.exception.ErrorCode;
+import com.ddareungi.global.response.ApiErrorResponse.Detail;
 import com.ddareungi.global.response.ApiResponse;
+import com.ddareungi.global.response.CoordinateResponse;
 import org.springframework.beans.factory.annotation.Autowired;
 import com.ddareungi.station.domain.Location;
 import com.ddareungi.station.domain.StationSearchPort;
 import com.ddareungi.station.domain.KoreanSearch;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.client.RestClient;
-import org.springframework.web.server.ResponseStatusException;
 import tools.jackson.databind.json.JsonMapper;
 import java.util.ArrayList;
 import java.util.List;
@@ -41,9 +43,9 @@ public class PlaceSearchController {
     }
 
     @GetMapping("/reverse")
-    public ApiResponse<Place> reverse(@RequestParam double latitude, @RequestParam double longitude) {
+    public ApiResponse<PlaceResponse> reverse(@RequestParam double latitude, @RequestParam double longitude) {
         var location = new Location(latitude, longitude);
-        if (key.isBlank()) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "주소 조회를 현재 사용할 수 없습니다.");
+        if (key.isBlank()) throw new ApiException(ErrorCode.SERVICE_UNAVAILABLE, "주소 조회를 현재 사용할 수 없습니다.");
         try {
             String body = client.get().uri(uri -> uri.path("/v2/local/geo/coord2address.json")
                     .queryParam("x", longitude).queryParam("y", latitude).queryParam("input_coord", "WGS84").build())
@@ -56,23 +58,29 @@ public class PlaceSearchController {
                 if (address.isBlank()) address = document.path("address").path("address_name").asString("");
                 if (address.isBlank()) continue;
                 String building = road.path("building_name").asString("");
-                return ApiResponse.ok(new Place(building.isBlank() ? address : building, address, location, null, ""));
+                return ApiResponse.ok(response(new Place(building.isBlank() ? address : building, address, location, null, "")));
             }
             return ApiResponse.ok(null);
         } catch (Exception exception) {
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "주소를 가져오지 못했습니다.");
+            throw new ApiException(ErrorCode.PLACE_PROVIDER_ERROR, "주소를 가져오지 못했습니다.");
         }
     }
 
     @GetMapping("/search")
-    public ApiResponse<List<Place>> search(@RequestParam String query,
+    public ApiResponse<List<PlaceResponse>> search(@RequestParam(required = false) String query,
             @RequestParam(required = false) Double latitude,
             @RequestParam(required = false) Double longitude) {
+        if (query == null || query.isBlank()) throw new ApiException(ErrorCode.PLACE_QUERY_REQUIRED, null,
+                List.of(new Detail("query", "검색어를 입력해 주세요.")));
         String term = query.trim();
-        if (term.length() < 2 || term.length() > 100) throw new IllegalArgumentException("검색어는 2~100자로 입력해 주세요.");
-        if ((latitude == null) != (longitude == null)) throw new IllegalArgumentException("검색 중심의 위도와 경도를 함께 입력해 주세요.");
+        // Minimum length stays 2 (spec says 1); the difference is recorded in the spec (phase 1 decision).
+        if (term.length() < 2 || term.length() > 100) throw new ApiException(ErrorCode.INVALID_PARAMETER,
+                "검색어는 2~100자로 입력해 주세요.", List.of(new Detail("query", "2~100자여야 합니다.")));
+        if ((latitude == null) != (longitude == null)) throw new ApiException(ErrorCode.INVALID_PARAMETER,
+                "검색 중심의 위도와 경도를 함께 입력해 주세요.",
+                List.of(new Detail(latitude == null ? "latitude" : "longitude", "위도와 경도를 함께 입력해야 합니다.")));
         if (latitude != null) new Location(latitude, longitude);
-        if (key.isBlank()) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "장소 검색을 현재 사용할 수 없습니다.");
+        if (key.isBlank()) throw new ApiException(ErrorCode.SERVICE_UNAVAILABLE, "장소 검색을 현재 사용할 수 없습니다.");
         try {
             var result = keywordPlaces(term, latitude, longitude, false);
             // Preserve real English place searches; retry a complete Korean keyboard conversion only if unrelated.
@@ -128,9 +136,9 @@ public class PlaceSearchController {
                             Double.parseDouble(address.path("x").asString())), null, ""));
                 }
             }
-            return ApiResponse.ok(result);
+            return ApiResponse.ok(result.stream().map(PlaceSearchController::response).toList());
         } catch (Exception exception) {
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "장소 검색 응답을 가져오지 못했습니다.");
+            throw new ApiException(ErrorCode.PLACE_PROVIDER_ERROR, "장소 검색 응답을 가져오지 못했습니다.");
         }
     }
 
@@ -153,9 +161,9 @@ public class PlaceSearchController {
     }
 
     @GetMapping("/nearby-subways")
-    public ApiResponse<List<Place>> nearbySubways(@RequestParam double latitude, @RequestParam double longitude) {
+    public ApiResponse<List<PlaceResponse>> nearbySubways(@RequestParam double latitude, @RequestParam double longitude) {
         var center = new Location(latitude, longitude);
-        if (key.isBlank()) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "주변 지하철역을 현재 조회할 수 없습니다.");
+        if (key.isBlank()) throw new ApiException(ErrorCode.SERVICE_UNAVAILABLE, "주변 지하철역을 현재 조회할 수 없습니다.");
         try {
             String body = client.get().uri(uri -> uri.path("/v2/local/search/category.json")
                     .queryParam("category_group_code", "SW8").queryParam("x", longitude).queryParam("y", latitude)
@@ -174,9 +182,9 @@ public class PlaceSearchController {
             }
             return ApiResponse.ok(distinct.values().stream()
                     .sorted(java.util.Comparator.comparingDouble(station -> center.distanceTo(station.location())))
-                    .limit(3).toList());
+                    .limit(3).map(PlaceSearchController::response).toList());
         } catch (Exception exception) {
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "주변 지하철역 정보를 가져오지 못했습니다.");
+            throw new ApiException(ErrorCode.PLACE_PROVIDER_ERROR, "주변 지하철역 정보를 가져오지 못했습니다.");
         }
     }
 
@@ -192,5 +200,11 @@ public class PlaceSearchController {
         return new Place(name, address, location, sourceUrl, item.path("category_group_code").asString(""));
     }
 
-    public record Place(String name, String address, Location location, String sourceUrl, String categoryGroupCode) {}
+    private static PlaceResponse response(Place place) {
+        return new PlaceResponse(place.name(), place.address(), CoordinateResponse.from(place.location()),
+                place.sourceUrl(), place.categoryGroupCode());
+    }
+
+    /** Internal search candidate; the public shape is {@link PlaceResponse}. */
+    private record Place(String name, String address, Location location, String sourceUrl, String categoryGroupCode) {}
 }

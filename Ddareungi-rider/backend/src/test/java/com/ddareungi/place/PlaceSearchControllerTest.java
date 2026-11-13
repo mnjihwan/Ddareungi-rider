@@ -6,8 +6,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
-import org.springframework.web.server.ResponseStatusException;
 import tools.jackson.databind.json.JsonMapper;
+import com.ddareungi.global.exception.ApiException;
+import com.ddareungi.global.exception.ErrorCode;
 import com.ddareungi.station.domain.StationSearchPort;
 import com.ddareungi.station.domain.Station;
 
@@ -56,7 +57,7 @@ class PlaceSearchControllerTest {
                 {"documents":[{"place_name":"스타벅스 강남점","category_group_code":"CE7","x":"127.02","y":"37.5"}]}
                 """, MediaType.APPLICATION_JSON));
         server.expect(anything()).andRespond(withSuccess("{\"documents\":[]}", MediaType.APPLICATION_JSON));
-        assertThat(controller.search("tmxkqjrtm", null, null).data()).extracting(PlaceSearchController.Place::name)
+        assertThat(controller.search("tmxkqjrtm", null, null).data()).extracting(PlaceResponse::name)
                 .containsExactly("스타벅스 강남점");
         server.verify();
     }
@@ -67,7 +68,7 @@ class PlaceSearchControllerTest {
                 {"documents":[{"place_name":"RKA Cafe","category_group_code":"CE7","x":"127.02","y":"37.5"}]}
                 """, MediaType.APPLICATION_JSON));
         server.expect(anything()).andRespond(withSuccess("{\"documents\":[]}", MediaType.APPLICATION_JSON));
-        assertThat(controller.search("rka", null, null).data()).extracting(PlaceSearchController.Place::name)
+        assertThat(controller.search("rka", null, null).data()).extracting(PlaceResponse::name)
                 .containsExactly("RKA Cafe");
         server.verify();
     }
@@ -85,7 +86,7 @@ class PlaceSearchControllerTest {
                 .andRespond(withSuccess("""
                 {"documents":[{"place_name":"강남역 2호선","category_group_code":"SW8","x":"127.02","y":"37.5"}]}
                 """, MediaType.APPLICATION_JSON));
-        assertThat(controller.search(query, null, null).data()).extracting(PlaceSearchController.Place::name)
+        assertThat(controller.search(query, null, null).data()).extracting(PlaceResponse::name)
                 .containsExactly("강남역 2호선");
         server.verify();
     }
@@ -130,7 +131,7 @@ class PlaceSearchControllerTest {
                 {"place_name":"서울대입구역 신설역","category_group_code":"SW8","x":"126.954","y":"37.482","place_url":"http://place.map.kakao.com/3"}]}
                 """, MediaType.APPLICATION_JSON));
         var places = controller.search("서울대입", null, null).data();
-        assertThat(places).extracting(PlaceSearchController.Place::name)
+        assertThat(places).extracting(PlaceResponse::name)
                 .containsExactly("서울대입구역 2호선", "서울대입구역 신설역", "서울대입구역 카페");
         assertThat(places.getFirst().categoryGroupCode()).isEqualTo("SW8");
         server.verify();
@@ -141,7 +142,7 @@ class PlaceSearchControllerTest {
                 {"documents":[{"place_name":"서울대입구역 2호선","category_group_code":"SW8","x":"126.953","y":"37.481"}]}
                 """, MediaType.APPLICATION_JSON));
         server.expect(anything()).andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS).body("test-secret"));
-        assertThat(controller.search("서울대입", null, null).data()).extracting(PlaceSearchController.Place::name)
+        assertThat(controller.search("서울대입", null, null).data()).extracting(PlaceResponse::name)
                 .containsExactly("서울대입구역 2호선");
         server.verify();
     }
@@ -152,7 +153,7 @@ class PlaceSearchControllerTest {
         server.expect(anything()).andRespond(withSuccess("""
                 {"documents":[{"address_name":"서울 강남구 테헤란로 212","x":"127.04","y":"37.5"}]}
                 """, MediaType.APPLICATION_JSON));
-        assertThat(controller.search("테헤란로 212", null, null).data()).extracting(PlaceSearchController.Place::name)
+        assertThat(controller.search("테헤란로 212", null, null).data()).extracting(PlaceResponse::name)
                 .containsExactly("서울 강남구 테헤란로 212");
         server.verify();
     }
@@ -173,16 +174,30 @@ class PlaceSearchControllerTest {
     }
 
     @Test void validatesQueryBeforeCallingProvider() {
-        assertThatThrownBy(() -> controller.search(" ", null, null)).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> controller.search("x".repeat(101), null, null)).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> controller.search("강남역", 37.5, null)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> controller.search(null, null, null)).isInstanceOfSatisfying(ApiException.class,
+                error -> assertThat(error.errorCode()).isEqualTo(ErrorCode.PLACE_QUERY_REQUIRED));
+        assertThatThrownBy(() -> controller.search(" ", null, null)).isInstanceOfSatisfying(ApiException.class,
+                error -> assertThat(error.errorCode()).isEqualTo(ErrorCode.PLACE_QUERY_REQUIRED));
+        assertThatThrownBy(() -> controller.search("x", null, null)).isInstanceOfSatisfying(ApiException.class,
+                error -> assertThat(error.errorCode()).isEqualTo(ErrorCode.INVALID_PARAMETER));
+        assertThatThrownBy(() -> controller.search("x".repeat(101), null, null)).isInstanceOfSatisfying(ApiException.class,
+                error -> assertThat(error.errorCode()).isEqualTo(ErrorCode.INVALID_PARAMETER));
+        assertThatThrownBy(() -> controller.search("강남역", 37.5, null)).isInstanceOfSatisfying(ApiException.class,
+                error -> assertThat(error.errorCode()).isEqualTo(ErrorCode.INVALID_PARAMETER));
+        assertThatThrownBy(() -> controller.search("강남역", 91.0, 127.0)).isInstanceOf(IllegalArgumentException.class);
         server.verify();
     }
 
     @Test void reportsMissingConfigurationAsUnavailable() {
         var missing = new PlaceSearchController(RestClient.builder(), JsonMapper.builder().build(), "", stations);
-        assertThatThrownBy(() -> missing.search("강남역", null, null)).isInstanceOfSatisfying(ResponseStatusException.class,
-                error -> assertThat(error.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE));
+        assertThatThrownBy(() -> missing.search("강남역", null, null)).isInstanceOfSatisfying(ApiException.class, error -> {
+            assertThat(error.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+            assertThat(error.errorCode()).isEqualTo(ErrorCode.SERVICE_UNAVAILABLE);
+        });
+        assertThatThrownBy(() -> missing.reverse(37.5, 127.0)).isInstanceOfSatisfying(ApiException.class,
+                error -> assertThat(error.errorCode()).isEqualTo(ErrorCode.SERVICE_UNAVAILABLE));
+        assertThatThrownBy(() -> missing.nearbySubways(37.5, 127.0)).isInstanceOfSatisfying(ApiException.class,
+                error -> assertThat(error.errorCode()).isEqualTo(ErrorCode.SERVICE_UNAVAILABLE));
     }
 
     @Test void completesPartialSubwayNamesFromRentalDataAndIgnoresAddressOnlySubwayMatches() {
@@ -200,15 +215,16 @@ class PlaceSearchControllerTest {
                 .andRespond(withSuccess("""
                 {"documents":[{"place_name":"서울대입구역 2호선","category_group_code":"SW8","x":"126.953","y":"37.481"}]}
                 """, MediaType.APPLICATION_JSON));
-        assertThat(controller.search("서울대입", null, null).data()).extracting(PlaceSearchController.Place::name)
+        assertThat(controller.search("서울대입", null, null).data()).extracting(PlaceResponse::name)
                 .containsExactly("서울대입구역 2호선", "서울대입구 카페");
         server.verify();
     }
 
     private void assertSafeGatewayError() {
         assertThatThrownBy(() -> controller.search("강남역", null, null))
-                .isInstanceOfSatisfying(ResponseStatusException.class, error -> {
+                .isInstanceOfSatisfying(ApiException.class, error -> {
                     assertThat(error.getStatusCode()).isEqualTo(HttpStatus.BAD_GATEWAY);
+                    assertThat(error.errorCode()).isEqualTo(ErrorCode.PLACE_PROVIDER_ERROR);
                     assertThat(error.getReason()).doesNotContain("test-secret", "test-id");
                     assertThat(error.getCause()).isNull();
                 });
@@ -225,7 +241,7 @@ class PlaceSearchControllerTest {
                     {"place_name":"음식점","category_group_code":"FD6","x":"127.02","y":"37.5"},
                     {"place_name":"먼역","category_group_code":"SW8","x":"128","y":"38"}]}
                     """,MediaType.APPLICATION_JSON));
-        assertThat(controller.nearbySubways(37.5,127.02).data()).extracting(PlaceSearchController.Place::name)
+        assertThat(controller.nearbySubways(37.5,127.02).data()).extracting(PlaceResponse::name)
                 .containsExactly("가역 2호선","나역 9호선");
         server.verify();
     }
@@ -233,8 +249,9 @@ class PlaceSearchControllerTest {
     @Test void rejectsInvalidSubwayCoordinatesAndSanitizesProviderErrors() {
         assertThatThrownBy(()->controller.nearbySubways(Double.NaN,127.02)).isInstanceOf(IllegalArgumentException.class);
         server.expect(anything()).andRespond(withStatus(HttpStatus.UNAUTHORIZED).body("test-secret"));
-        assertThatThrownBy(()->controller.nearbySubways(37.5,127.02)).isInstanceOfSatisfying(ResponseStatusException.class,error->{
+        assertThatThrownBy(()->controller.nearbySubways(37.5,127.02)).isInstanceOfSatisfying(ApiException.class,error->{
             assertThat(error.getStatusCode()).isEqualTo(HttpStatus.BAD_GATEWAY);
+            assertThat(error.errorCode()).isEqualTo(ErrorCode.PLACE_PROVIDER_ERROR);
             assertThat(error.getReason()).doesNotContain("test-secret");
             assertThat(error.getCause()).isNull();
         });

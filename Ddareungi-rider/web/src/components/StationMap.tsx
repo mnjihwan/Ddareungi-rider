@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { loadKakaoMaps, coordinatesOf } from "../lib/kakaoMaps";
 import { clusterPoints, separateMarkerGroups, type MarkerGroup } from "../lib/clusters";
-import type { Coordinates, Station, MapBounds, BikeRoute, Place, RouteEndpointRole } from "../lib/types";
+import { stationLocation, type Coordinates, type Station, type MapBounds, type BikeRoute, type Place, type RouteEndpointRole } from "../lib/types";
 import { availability, AVAILABILITY_LABEL } from "../lib/status";
 import { Icon } from "./Icon";
 import { MapMarker } from "./MapMarker";
@@ -189,8 +189,8 @@ export function StationMap({
             .getProjection()
             .containerPointFromCoords(
               new sdk.LatLng(
-                station.location.latitude,
-                station.location.longitude,
+                station.stationLatitude,
+                station.stationLongitude,
               ),
             );
           return { id: station.stationId, x: point.x, y: point.y };
@@ -200,11 +200,11 @@ export function StationMap({
           id: station.stationId,
           x:
             width * 0.45 +
-            ((station.location.longitude - focus.location.longitude) / 0.025) *
+            ((station.stationLongitude - focus.location.longitude) / 0.025) *
               width,
           y:
             height * 0.46 -
-            ((station.location.latitude - focus.location.latitude) / 0.025) *
+            ((station.stationLatitude - focus.location.latitude) / 0.025) *
               height,
         };
       })
@@ -241,13 +241,13 @@ export function StationMap({
     );
     if (!members.length) return;
     const first = new sdk.LatLng(
-      members[0].location.latitude,
-      members[0].location.longitude,
+      members[0].stationLatitude,
+      members[0].stationLongitude,
     );
     const bounds = new sdk.LatLngBounds(first, first);
     members.forEach((station) =>
       bounds.extend(
-        new sdk.LatLng(station.location.latitude, station.location.longitude),
+        new sdk.LatLng(station.stationLatitude, station.stationLongitude),
       ),
     );
     map.setBounds(bounds, 100, 100, 200, 100);
@@ -353,8 +353,8 @@ export function StationMap({
               <span>{focusedPlace.name}</span><button aria-label="선택한 장소 표시 지우기" onClick={onDismissPlace}><Icon name="close" size={14}/></button></span>
           </MapMarker>}
         {route && state === "ready" && mapRef.current && window.kakao?.maps &&
-          [{name:'출발',location:route.origin},{name:'대여',location:route.departureStation.location},
-            {name:'반납',location:route.arrivalStation.location},{name:'도착',location:route.destination}].map(point=>
+          [{name:'출발',location:route.origin},{name:'대여',location:stationLocation(route.departureStation)},
+            {name:'반납',location:stationLocation(route.arrivalStation)},{name:'도착',location:route.destination}].map(point=>
             <MapMarker key={point.name} map={mapRef.current!} sdk={window.kakao!.maps} location={point.location} selected>
               <span className={`route-endpoint ${point.name==='대여'||point.name==='반납'?'station':''}`}>{point.name}</span>
             </MapMarker>)}
@@ -362,8 +362,8 @@ export function StationMap({
           const members = stations.filter(station => group.stationIds.includes(station.stationId));
           const anchored = (button: ReactNode) => state === "ready" && mapRef.current && window.kakao?.maps
             ? <MapMarker key={group.id} map={mapRef.current} sdk={window.kakao.maps}
-                location={{latitude: members.reduce((sum, station) => sum + station.location.latitude, 0) / members.length,
-                  longitude: members.reduce((sum, station) => sum + station.location.longitude, 0) / members.length}}
+                location={{latitude: members.reduce((sum, station) => sum + station.stationLatitude, 0) / members.length,
+                  longitude: members.reduce((sum, station) => sum + station.stationLongitude, 0) / members.length}}
                 selected={group.stationIds.includes(selectedId ?? "")} zIndex={routeStationsOnly ? 110 : undefined}>{button}</MapMarker>
             : button;
           const position = state === "ready" ? {left:group.offsetX??0,top:group.offsetY??0} : {left: group.x, top: group.y};
@@ -399,11 +399,11 @@ export function StationMap({
               data-route-station={routeStationsOnly || undefined}
               data-station-ids={group.stationIds.join(",")}
               onClick={() => onSelect(station)}
-              aria-label={`${station.stationName}, ${AVAILABILITY_LABEL[status]}, ${status === "unknown" ? "수량 미확인" : `${station.availableBikeCount}대`}`}
+              aria-label={`${station.stationName}, ${AVAILABILITY_LABEL[status]}, ${status === "unknown" ? "수량 미확인" : `${station.parkingBikeTotCnt}대`}`}
               aria-pressed={station.stationId === selectedId}
             >
               <Icon name="bike" size={18} />
-              <b>{status === "unknown" ? "—" : station.availableBikeCount}</b>
+              <b>{status === "unknown" ? "—" : station.parkingBikeTotCnt}</b>
               <span className="marker-name">{station.stationName}</span>
             </button>
             </span>
