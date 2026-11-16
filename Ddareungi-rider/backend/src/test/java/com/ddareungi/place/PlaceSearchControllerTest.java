@@ -234,11 +234,18 @@ class PlaceSearchControllerTest {
 
     @Test void primaryFailureCancelsTheParallelSubwayLookup() throws Exception {
         var subwayInterrupted = new java.util.concurrent.CountDownLatch(1);
+        var subwayStarted = new java.util.concurrent.CountDownLatch(1);
         when(provider.keyword(eq("강남역"), isNull(), eq(SUBWAY))).thenAnswer(invocation -> {
+            subwayStarted.countDown();
             try { Thread.sleep(10_000); } catch (InterruptedException interrupted) { subwayInterrupted.countDown(); }
             return List.of();
         });
-        when(provider.keyword(eq("강남역"), isNull(), isNull())).thenThrow(new PlaceProviderException("down", false));
+        // The primary lookup fails only after the subway lookup is running. Otherwise the subway task could be
+        // cancelled before it starts and the interrupt would never be observed (race seen once in a full run).
+        when(provider.keyword(eq("강남역"), isNull(), isNull())).thenAnswer(invocation -> {
+            subwayStarted.await(5, java.util.concurrent.TimeUnit.SECONDS);
+            throw new PlaceProviderException("down", false);
+        });
         assertThatThrownBy(() -> controller.search("강남역", null, null)).isInstanceOf(ApiException.class);
         assertThat(subwayInterrupted.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
     }

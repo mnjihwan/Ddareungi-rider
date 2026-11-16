@@ -1,10 +1,16 @@
 package com.ddareungi.routing;
 
+import com.ddareungi.realtime.domain.RealtimeFreshnessPolicy;
 import com.ddareungi.station.domain.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
+import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.List;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -169,6 +175,118 @@ class PlanBikeRouteTest {
         when(stations.findByIds(List.of("a1"),destination)).thenReturn(List.of(station("a1",a1.location(),0,Instant.now().minusSeconds(301))));
         assertThatThrownBy(()->planner.execute(origin,destination,null,"a1"))
             .isInstanceOfSatisfying(RouteException.class,e->assertThat(e.code).isEqualTo("STATION_STATUS_UNAVAILABLE"));
+    }
+    // ---- D2: route candidates use the shared FRESH rule (RealtimeFreshnessPolicy, 120 s / +30 s skew) ----
+    static final Instant NOW = Instant.parse("2026-11-16T03:00:00Z");
+    PlanBikeRoute fixedPlanner() { return fixedPlanner(Clock.fixed(NOW, ZoneOffset.UTC)); }
+    PlanBikeRoute fixedPlanner(Clock clock) {
+        return new PlanBikeRoute(stations,walking,bicycle,true,Duration.ofSeconds(10),RealtimeFreshnessPolicy.defaults(clock));
+    }
+    /** Nearby departures: the candidate under test plus a FRESH reference d1; one arrival a1. */
+    private void departureCandidates(Station candidate) {
+        var reference = station("d1",d1.location(),3,NOW);
+        when(stations.findNearby(origin,1000)).thenReturn(List.of(candidate,reference));
+        when(stations.findNearby(destination,1000)).thenReturn(List.of(station("a1",a1.location(),0,NOW)));
+        when(stations.findByIds(anyList(),eq(origin))).thenAnswer(invocation -> {
+            List<String> ids=invocation.getArgument(0); return ids.contains(candidate.stationId())?List.of(candidate):List.of(reference);
+        });
+        when(walking.durations(eq(List.of(origin)),anyList())).thenAnswer(invocation -> {
+            List<?> to=invocation.getArgument(1); return to.size()==2?new Double[][]{{10.0,500.0}}:new Double[][]{{500.0}};
+        });
+        when(walking.durations(anyList(),eq(List.of(destination)))).thenReturn(new Double[][]{{20.0}});
+        when(bicycle.durations(anyList(),anyList())).thenAnswer(invocation -> {
+            List<?> from=invocation.getArgument(0); return from.size()==2?new Double[][]{{100.0},{100.0}}:new Double[][]{{100.0}};
+        });
+    }
+    private String departureFor(int ageSeconds) {
+        var candidate = station("cand",new Location(37.50005,127.02),4,NOW.minusSeconds(ageSeconds));
+        departureCandidates(candidate);
+        return fixedPlanner().execute(origin,destination,null).departureStation().stationId();
+    }
+    @Test void departureAged119sIsFresh() { assertThat(departureFor(119)).isEqualTo("cand"); }
+    @Test void departureAgedExactly120sIsStillFresh() { assertThat(departureFor(120)).isEqualTo("cand"); }
+    @Test void departureAged121sIsStaleAndExcluded() {
+        assertThat(departureFor(121)).isEqualTo("d1");
+        verify(bicycle).durations(List.of(d1.location()),List.of(a1.location()));
+    }
+    @Test void fractionalAgeIsFlooredSo120point9sIsFresh() {
+        var candidate = station("cand",new Location(37.50005,127.02),4,NOW.minusMillis(120_900));
+        departureCandidates(candidate);
+        assertThat(fixedPlanner().execute(origin,destination,null).departureStation().stationId()).isEqualTo("cand");
+    }
+    @Test void departureStampedUpTo30sInTheFutureIsFresh() { assertThat(departureFor(-30)).isEqualTo("cand"); }
+    @Test void departureStampedMoreThan30sInTheFutureIsExcluded() { assertThat(departureFor(-31)).isEqualTo("d1"); }
+    // Under the former 300 s rule a 200 s-old value was a route candidate; under D2 it is STALE and excluded.
+    @Test void staleDepartureThatWasAcceptedUnderThe300sRuleIsNowExcluded() { assertThat(departureFor(200)).isEqualTo("d1"); }
+    @Test void onlyStaleDeparturesWithinMaxStaleAreReportedAsStatusUnavailable() {
+        when(stations.findNearby(origin,1000)).thenReturn(List.of(
+                station("s1",d1.location(),5,NOW.minusSeconds(121)),station("s2",d2.location(),5,NOW.minusSeconds(600))));
+        assertThatThrownBy(()->fixedPlanner().execute(origin,destination,null))
+                .isInstanceOfSatisfying(RouteException.class,e->{
+                    assertThat(e.code).isEqualTo("STATION_STATUS_UNAVAILABLE");
+                    assertThat(e.status).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+                });
+        verify(walking,never()).forRequest();
+    }
+    @Test void pinnedDepartureStaleAt121sIsRejectedWith503() {
+        when(stations.findByIds(List.of("p"),origin)).thenReturn(List.of(station("p",d1.location(),5,NOW.minusSeconds(121))));
+        assertThatThrownBy(()->fixedPlanner().execute(origin,destination,"p"))
+                .isInstanceOfSatisfying(RouteException.class,e->{
+                    assertThat(e.code).isEqualTo("STATION_STATUS_UNAVAILABLE");
+                    assertThat(e.status).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+                });
+        verify(walking,never()).forRequest();
+    }
+    @Test void pinnedDepartureAt120sIsAccepted() {
+        var pinned = station("p",d1.location(),5,NOW.minusSeconds(120));
+        when(stations.findByIds(List.of("p"),origin)).thenReturn(List.of(pinned));
+        when(stations.findNearby(destination,1000)).thenReturn(List.of(station("a2",a2.location(),20,NOW)));
+        when(walking.durations(eq(List.of(origin)),anyList())).thenReturn(new Double[][]{{50.0}});
+        when(walking.durations(anyList(),eq(List.of(destination)))).thenReturn(new Double[][]{{20.0}});
+        when(bicycle.durations(anyList(),anyList())).thenReturn(new Double[][]{{400.0}});
+        assertThat(fixedPlanner().execute(origin,destination,"p").departureStation().stationId()).isEqualTo("p");
+    }
+    @Test void pinnedReturnStaleAt121sIsRejectedWith503() {
+        when(stations.findByIds(List.of("a1"),destination)).thenReturn(List.of(station("a1",a1.location(),0,NOW.minusSeconds(121))));
+        when(stations.findNearby(origin,1000)).thenReturn(List.of(station("d1",d1.location(),3,NOW)));
+        assertThatThrownBy(()->fixedPlanner().execute(origin,destination,null,"a1"))
+                .isInstanceOfSatisfying(RouteException.class,e->{
+                    assertThat(e.code).isEqualTo("STATION_STATUS_UNAVAILABLE");
+                    assertThat(e.status).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+                });
+    }
+    @Test void staleReturnCandidateIsExcludedButZeroBikeFreshReturnIsKept() {
+        when(stations.findNearby(origin,1000)).thenReturn(List.of(station("d1",d1.location(),3,NOW)));
+        when(stations.findByIds(anyList(),eq(origin))).thenReturn(List.of(station("d1",d1.location(),3,NOW)));
+        when(stations.findNearby(destination,1000)).thenReturn(List.of(
+                station("staleReturn",a2.location(),20,NOW.minusSeconds(121)),station("a1",a1.location(),0,NOW.minusSeconds(120))));
+        when(walking.durations(eq(List.of(origin)),anyList())).thenReturn(new Double[][]{{50.0}});
+        when(walking.durations(anyList(),eq(List.of(destination)))).thenReturn(new Double[][]{{20.0}});
+        when(bicycle.durations(anyList(),anyList())).thenReturn(new Double[][]{{400.0}});
+        assertThat(fixedPlanner().execute(origin,destination,null).arrivalStation().stationId()).isEqualTo("a1");
+        verify(bicycle).durations(List.of(d1.location()),List.of(a1.location()));
+    }
+    @Test void oneEvaluationInstantPerRequestIncludingTheStockRecheck() {
+        // The clock advances 100 s on every read. With a single now per request a 119 s-old departure stays
+        // FRESH through candidate selection and the post-routing recheck; a second read would make it STALE.
+        var reads = new AtomicInteger();
+        var advancing = new Clock() {
+            @Override public ZoneId getZone() { return ZoneOffset.UTC; }
+            @Override public Clock withZone(ZoneId zone) { return this; }
+            @Override public Instant instant() { return NOW.plusSeconds(100L * reads.getAndIncrement()); }
+        };
+        var candidate = station("cand",new Location(37.50005,127.02),4,NOW.minusSeconds(119));
+        departureCandidates(candidate);
+        assertThat(fixedPlanner(advancing).execute(origin,destination,null).departureStation().stationId()).isEqualTo("cand");
+        assertThat(reads.get()).isEqualTo(1);
+    }
+    @Test void freshnessBoundaryFollowsTheInjectedPolicy() {
+        // realtime.freshness.fresh-seconds is externalised: a 300 s policy accepts a 200 s-old departure.
+        var candidate = station("cand",new Location(37.50005,127.02),4,NOW.minusSeconds(200));
+        departureCandidates(candidate);
+        var lenient = new PlanBikeRoute(stations,walking,bicycle,true,Duration.ofSeconds(10),
+                new RealtimeFreshnessPolicy(Clock.fixed(NOW,ZoneOffset.UTC),300,600));
+        assertThat(lenient.execute(origin,destination,null).departureStation().stationId()).isEqualTo("cand");
     }
     private void assertCode(String code) { assertThatThrownBy(()->planner.execute(origin,destination,null))
             .isInstanceOfSatisfying(RouteException.class,e->assertThat(e.code).isEqualTo(code)); }
