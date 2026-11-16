@@ -583,11 +583,11 @@ GET /api/client-config
 
 ### 10.2 코드 결정 규칙 (Phase 1 구현)
 
-- 검증 오류: 위반 필드가 모두 좌표(`latitude`/`longitude`)이면 `INVALID_COORDINATE`, 모두 `radiusMeters`이면 `INVALID_RADIUS`, 그 밖은 `INVALID_PARAMETER`. Query·JSON Body 검증에 같은 규칙을 적용한다. `details[].field`는 경로의 마지막 이름(`origin.latitude` → `latitude`)이며 입력값은 반영하지 않는다.
+- 검증 오류: 필수 값 누락(`@NotNull` 위반, 예: Body의 `origin.latitude` 생략)이 하나라도 있으면 필드와 무관하게 `INVALID_PARAMETER`(2026-11-16 리뷰 L4). 그 밖에 위반 필드가 모두 좌표(`latitude`/`longitude`)의 범위 위반이면 `INVALID_COORDINATE`, 모두 `radiusMeters`이면 `INVALID_RADIUS`, 그 밖은 `INVALID_PARAMETER`. Query·JSON Body 검증에 같은 규칙을 적용한다. `details[].field`는 경로의 마지막 이름(`origin.latitude` → `latitude`)이며 입력값은 반영하지 않는다.
 - 파라미터 누락·형식 불일치, 읽을 수 없는 JSON은 `INVALID_PARAMETER`. 단, JSON 역직렬화가 좌표 범위 오류로 실패하면 `INVALID_COORDINATE`.
-- 경로 오류의 기존 내부 코드는 위 표의 코드로 변환한다(예: 출발 후보 없음·지정 출발 대여소 0대 → `422 NO_AVAILABLE_ORIGIN_STATION`, 연결 경로 없음 → `404 ROUTE_NOT_FOUND`, 길찾기 미설정 → `503 SERVICE_UNAVAILABLE`). 경로 Provider 장애는 도보·자전거 Provider 분리(E2) 전까지 임시로 `502 BIKE_ROUTE_PROVIDER_ERROR`로 보고한다.
+- 경로 오류의 기존 내부 코드는 위 표의 코드로 변환한다(예: 출발 후보 없음·지정 출발 대여소 0대 → `422 NO_AVAILABLE_ORIGIN_STATION`, 연결 경로 없음 → `404 ROUTE_NOT_FOUND`, 길찾기 미설정 → `503 SERVICE_UNAVAILABLE`). 경로 Provider 장애(엔진의 공급자 실패)는 구간 어댑터가 도보 구간은 `502 WALK_ROUTE_PROVIDER_ERROR`, 자전거 구간은 `502 BIKE_ROUTE_PROVIDER_ERROR`로 변환한다(E2). 어댑터를 거치지 않은 엔진 실패 코드가 예외 처리기에 직접 도달하면 안전망으로 `502 BIKE_ROUTE_PROVIDER_ERROR`로 응답한다.
 - 저장소(MySQL/Redis) 접근 장애는 `503 SERVICE_UNAVAILABLE`, 장소 Provider 키 미설정은 `503 SERVICE_UNAVAILABLE`, 장소 Provider 실패는 `502 PLACE_PROVIDER_ERROR`, 그 밖의 예외는 `500 INTERNAL_SERVER_ERROR`. 내부 정보는 requestId와 함께 로그에만 남긴다.
-- `204`, Actuator 응답, CORS 거부(`403`, Spring 기본 처리)는 envelope을 적용하지 않는다. 관리 포트의 존재하지 않는 경로 404는 관리 child context가 같은 예외 처리기를 상속하므로 envelope 형식(`requestId`는 null)으로 응답한다(알려진 차이).
+- `204`, Actuator 응답, CORS 거부(`403`, Spring 기본 처리)는 envelope을 적용하지 않는다. 관리 포트에서 발생한 프레임워크 오류 전반(존재하지 않는 경로 404, 지원하지 않는 메서드 405 등)은 관리 child context가 같은 예외 처리기를 상속하므로 envelope 형식으로 응답하고 `meta.requestId`는 null이다(알려진 차이). Actuator 정상 응답 자체는 envelope을 적용하지 않는다.
 
 ---
 
@@ -1445,6 +1445,8 @@ Collector는 매 실행에서 새 버전 Hash `station:realtime:v{n}`를 완전�
 백엔드 조회는 `GET station:realtime:current`로 버전을 읽은 뒤 해당 Hash에 `HMGET`(전체 재적재는 `HGETALL`)을 보내는 2회 왕복이며, 왕복을 줄이려면 두 단계를 Lua 스크립트 1회로 묶을 수 있다. 키 이름과 값 직렬화(압축 여부)는 R2 구현에서 Collector·백엔드가 함께 확정하며, 변경 시 양쪽을 같은 배포 순서로 바꾼다.
 
 포인터 키에는 TTL을 두지 않는다. 따라서 Collector가 버전 Hash TTL(900초)보다 오래 중단되면 포인터는 이미 만료된 Hash를 가리키고 `HMGET` 결과가 전부 miss가 된다. 백엔드는 이를 "field 누락 또는 버전 키 만료"로 보고 전체 ID를 MySQL `station_latest_snapshot` Batch fallback으로 처리하며(11.0), 이 시점의 스냅샷은 대개 600초를 넘어 UNAVAILABLE로 판정된다.
+
+**Phase 1 구현(R2 읽기 호환, 2026-11-16 리뷰 M1 반영, 최종 동작은 Collector 구현 시 확정)**: MySQL `station_latest_snapshot` fallback이 아직 없으므로, 현재 백엔드(`realtime.redis.read-mode=auto`, 기본값)는 포인터가 있어도 그 버전 Hash가 존재하지 않으면(만료·Collector 중단·레거시 쓰기로 롤백) 경고 로그(1분에 1회로 억제)를 남기고 레거시 대여소별 키(`station:realtime:{id}`)를 읽는다. 버전 Hash가 존재하면 그 Hash에 없는 대여소는 미확인으로 두며 레거시 값으로 채우지 않는다(서로 다른 수집 경로의 값을 섞지 않음). `versioned` 모드는 fallback하지 않고 빈 결과를 반환한다. 존재 확인은 `HMGET` 결과가 요청한 ID 전부 miss일 때만 `EXISTS station:realtime:v{n}`을 보내므로, 그 경우에 한해 위 2회 왕복에 1회가 추가된다(값이 하나라도 있으면 추가 왕복 없음).
 
 Redis Value는 원천 실시간 API의 Row 필드명을 유지한다(X1). `snapshotVersion`, `operationStatus`, `publicationEligible`은 공개 gate·늦은 쓰기 차단용 **내부 필드**이며 사용자 DTO에 노출하지 않는다(11.0).
 

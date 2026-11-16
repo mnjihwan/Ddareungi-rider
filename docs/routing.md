@@ -52,7 +52,9 @@ docker compose --env-file .env --profile real up -d --no-deps --build --wait --w
 
 ## API
 
-- `GET /api/v1/routes/status`: `{ "data": { "configured": true 또는 false } }`. 키 설정 여부이며 인증 성공 여부를 의미하지 않습니다. 키 자체는 반환하지 않습니다.
+모든 응답은 공통 형식(명세 8장)을 따릅니다. 성공은 `{ "success": true, "data": …, "meta": { "requestId": "…" }, "timestamp": "…" }`, 실패는 `{ "success": false, "error": { "code", "message", "details" }, "meta": { "requestId" }, "timestamp" }`이며 실패 응답에는 `data`가 없습니다.
+
+- `GET /api/v1/routes/status`: `{ "success": true, "data": { "configured": true 또는 false }, "meta": { "requestId": "…" }, "timestamp": "…" }`. 키 설정 여부이며 인증 성공 여부를 의미하지 않습니다. 키 자체는 반환하지 않습니다.
 - `POST /api/v1/routes/plan`: 카카오 장소 검색·현재 위치에서 얻은 좌표를 전달합니다. 좌표를 직접 입력하는 사용자 화면은 없습니다.
 
 ```json
@@ -64,7 +66,28 @@ docker compose --env-file .env --profile real up -d --no-deps --build --wait --w
 }
 ```
 
-응답에는 `departureStation`, `arrivalStation`, `legs`(walk/bicycle/walk), 구간별 `path`, `steps`, 거리(m), 시간(s), 생성 시각과 출처가 포함됩니다. 키 미설정은 503, 대여·반납 후보 없음은 404, 연결되는 도로 경로 없음은 422, 계산 중 대여 수량 변경은 409입니다. 외부 서비스 장애·한도 초과는 안내로 처리하며 외부 응답 본문이나 인증 정보를 사용자에게 전달하지 않습니다.
+성공 응답의 `data`에는 `origin`, `destination`, `departureStation`, `arrivalStation`(대여소 공통 형식), `legs`(walk/bicycle/walk), 구간별 `path`, `steps`, 거리(m), 시간(s), 생성 시각(`generatedAt`)과 출처(`attribution`)가 포함됩니다.
+
+실패는 `error.code`로 구분합니다(HTTP 상태는 코드 기준, `GlobalExceptionHandler`·`ErrorCode`).
+
+| 상황 | HTTP | `error.code` |
+|---|---|---|
+| 좌표 범위 위반 / 필드 누락·형식 오류·대여소 ID 길이 초과 | 400 | `INVALID_COORDINATE` / `INVALID_PARAMETER` |
+| 출발지 주변 대여소 없음, 대여 가능한 자전거 없음, 지정 출발 대여소 0대(`PINNED_STATION_EMPTY`) | 422 | `NO_AVAILABLE_ORIGIN_STATION` |
+| 목적지 주변 반납 대여소 없음 | 422 | `NO_AVAILABLE_RETURN_STATION` |
+| 지정 대여소를 찾지 못함 | 404 | `STATION_NOT_FOUND` |
+| 연결되는 도보·자전거 경로 없음(후보 조합 전부 미연결 또는 공급자가 경로 없음 응답) | 404 | `ROUTE_NOT_FOUND` |
+| 도보 구간 공급자 장애·한도 초과·인증 실패 | 502 | `WALK_ROUTE_PROVIDER_ERROR` |
+| 자전거 구간 공급자 장애·한도 초과·인증 실패 | 502 | `BIKE_ROUTE_PROVIDER_ERROR` |
+| 후보·지정 대여소의 최신 수량 확인 불가 | 503 | `REALTIME_DATA_UNAVAILABLE` |
+| 길찾기 키 미설정·비활성, 데이터 저장소(Redis/DB) 장애 | 503 | `SERVICE_UNAVAILABLE` |
+| 경로 계산 후 출발 대여소 수량 변경(확장 코드) | 409 | `RENTAL_STOCK_CHANGED` |
+
+외부 응답 본문이나 인증 정보는 사용자에게 전달하지 않으며 상세 원인은 요청 ID와 함께 서버 로그에만 남깁니다.
+
+### 경로 공급자 구조
+
+`PlanBikeRoute`는 구간별 포트 `WalkingRouteProvider`(도보)와 `BicycleRouteProvider`(자전거)만 사용합니다. 각 포트의 구현은 엔진 어댑터 `EngineWalkingRouteProvider`·`EngineBicycleRouteProvider`이며, `routing.provider`로 선택한 하나의 엔진(`RouteProvider` 내부 SPI: 기본 카카오 `KakaoRouteClient`, 선택 시 ORS `OpenRouteServiceClient`)에 프로필(`foot-walking`/`cycling-regular`)을 고정해 호출합니다. 어댑터는 엔진의 공급자 실패 코드(`ROUTING_UNAVAILABLE`/`ROUTING_LIMIT`/`ROUTING_AUTH`)를 구간별 `WALK_ROUTE_PROVIDER_ERROR`/`BIKE_ROUTE_PROVIDER_ERROR`(502)로 바꾸고, `NO_ROAD_ROUTE`(→ `ROUTE_NOT_FOUND`)와 `ROUTING_NOT_CONFIGURED`(→ `SERVICE_UNAVAILABLE`)는 그대로 전달합니다. 어댑터를 거치지 않은 엔진 실패 코드가 핸들러에 도달하면 안전망으로 `BIKE_ROUTE_PROVIDER_ERROR`(502)로 응답합니다.
 
 ## 실제 검증 (2026-10-10)
 

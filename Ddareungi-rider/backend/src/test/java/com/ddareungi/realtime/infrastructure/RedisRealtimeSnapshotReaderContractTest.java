@@ -38,6 +38,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -94,6 +95,7 @@ class RedisRealtimeSnapshotReaderContractTest {
         verify(values).get("station:realtime:current");
         verify(hashes).multiGet("station:realtime:v184211", List.<Object>of("ST-123"));
         verify(redis, never()).executePipelined(any(RedisCallback.class));
+        verify(redis, never()).hasKey(any());
     }
 
     @Test
@@ -118,13 +120,57 @@ class RedisRealtimeSnapshotReaderContractTest {
         verify(hashes, never()).multiGet(any(), any());
     }
 
+    /**
+     * Changed by review M1: this test used to assert that auto returns nothing when the pointer's hash expired.
+     * A pointer left behind by a stopped collector or a rollback to the legacy writer would then hide all
+     * realtime data, so auto now confirms the hash is missing (EXISTS) and reads the legacy layout instead.
+     * Final behaviour is to be confirmed when the collector implements R2.
+     */
     @Test
-    void expiredVersionHashMeansUnknownAndDoesNotFallBackToLegacy() {
+    void autoFallsBackToLegacyWhenPointerTargetsMissingVersionHash() {
         pointer("184211");
         hmget("station:realtime:v184211", List.of("ST-123", "ST-9"), Arrays.asList(null, null));
+        when(redis.hasKey("station:realtime:v184211")).thenReturn(false);
+        legacy(Arrays.asList(legacyFixture(), Map.of()));
+
+        var auto = reader(RealtimeReadMode.AUTO);
+        assertThat(auto.findAll(List.of("ST-123", "ST-9"))).containsExactlyEntriesOf(Map.of("ST-123", EXPECTED));
+        // Repeated reads keep falling back (the warning is throttled, the fallback is not).
+        assertThat(auto.findAll(List.of("ST-123", "ST-9"))).containsExactlyEntriesOf(Map.of("ST-123", EXPECTED));
+        verify(redis, times(2)).hasKey("station:realtime:v184211");
+    }
+
+    @Test
+    void versionedModeWithMissingVersionHashReturnsNothingAndDoesNotFallBack() {
+        pointer("184211");
+        hmget("station:realtime:v184211", List.of("ST-123", "ST-9"), Arrays.asList(null, null));
+        when(redis.hasKey("station:realtime:v184211")).thenReturn(false);
+
+        assertThat(reader(RealtimeReadMode.VERSIONED).findAll(List.of("ST-123", "ST-9"))).isEmpty();
+        verify(redis, never()).executePipelined(any(RedisCallback.class));
+        verify(redis, never()).hasKey(any());
+    }
+
+    @Test
+    void autoWithExistingVersionHashLackingRequestedIdsLeavesThemUnknown() {
+        pointer("184211");
+        hmget("station:realtime:v184211", List.of("ST-123", "ST-9"), Arrays.asList(null, null));
+        when(redis.hasKey("station:realtime:v184211")).thenReturn(true);
 
         assertThat(reader(RealtimeReadMode.AUTO).findAll(List.of("ST-123", "ST-9"))).isEmpty();
         verify(redis, never()).executePipelined(any(RedisCallback.class));
+    }
+
+    @Test
+    void autoPartialCoverageDoesNotFillMissingStationsFromLegacy() {
+        pointer("184211");
+        hmget("station:realtime:v184211", List.of("ST-123", "ST-9"), Arrays.asList(versionedValue(), null));
+
+        assertThat(reader(RealtimeReadMode.AUTO).findAll(List.of("ST-123", "ST-9")))
+                .containsExactlyEntriesOf(Map.of("ST-123", EXPECTED));
+        verify(redis, never()).executePipelined(any(RedisCallback.class));
+        // A returned value proves the hash exists, so no EXISTS round trip is made.
+        verify(redis, never()).hasKey(any());
     }
 
     @Test

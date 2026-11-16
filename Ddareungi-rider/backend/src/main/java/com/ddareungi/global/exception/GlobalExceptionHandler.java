@@ -8,6 +8,7 @@ import com.ddareungi.station.domain.Location.InvalidCoordinateException;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import jakarta.validation.Path;
+import jakarta.validation.constraints.NotNull;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,6 +33,7 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExcep
 
 import java.time.Clock;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -46,8 +48,10 @@ import java.util.Set;
 public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
     private static final Set<String> COORDINATE_FIELDS = Set.of("latitude", "longitude");
+    /** Constraint code of {@link NotNull} in binding/method-validation errors. */
+    private static final String NOT_NULL = NotNull.class.getSimpleName();
 
-    /** Codes thrown by routing before the provider split (E2) and their public equivalent (phase 1 table 2.5). */
+    /** Internal routing codes and their public equivalent (phase 1 table 2.5). */
     static final Map<String, ErrorCode> LEGACY_ROUTE_CODES = Map.ofEntries(
             Map.entry("ROUTING_NOT_CONFIGURED", ErrorCode.SERVICE_UNAVAILABLE),
             Map.entry("NO_RENTAL_STATION", ErrorCode.NO_AVAILABLE_ORIGIN_STATION),
@@ -58,7 +62,9 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
             Map.entry("NO_ROAD_ROUTE", ErrorCode.ROUTE_NOT_FOUND),
             Map.entry("PINNED_STATION_NOT_FOUND", ErrorCode.STATION_NOT_FOUND),
             Map.entry("STATION_STATUS_UNAVAILABLE", ErrorCode.REALTIME_DATA_UNAVAILABLE),
-            // Temporary until E2 throws WALK_/BIKE_ROUTE_PROVIDER_ERROR per leg.
+            // Safety net: the segment adapters (EngineWalking/BicycleRouteProvider) translate these into
+            // WALK_/BIKE_ROUTE_PROVIDER_ERROR; this mapping only applies when an engine exception reaches the
+            // handler without passing through an adapter.
             Map.entry("ROUTING_UNAVAILABLE", ErrorCode.BIKE_ROUTE_PROVIDER_ERROR),
             Map.entry("ROUTING_LIMIT", ErrorCode.BIKE_ROUTE_PROVIDER_ERROR),
             Map.entry("ROUTING_AUTH", ErrorCode.BIKE_ROUTE_PROVIDER_ERROR));
@@ -99,10 +105,13 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(ConstraintViolationException.class)
     public ResponseEntity<Object> handleConstraintViolation(ConstraintViolationException exception, WebRequest request) {
         var details = new ArrayList<Detail>();
+        boolean missing = false;
         for (ConstraintViolation<?> violation : exception.getConstraintViolations()) {
             details.add(new Detail(lastNode(violation.getPropertyPath()), violation.getMessage()));
+            missing |= violation.getConstraintDescriptor() != null
+                    && violation.getConstraintDescriptor().getAnnotation() instanceof NotNull;
         }
-        return respond(validationCode(details), null, details, null, request);
+        return respond(validationCode(details, missing), null, details, null, request);
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
@@ -140,11 +149,14 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         switch (exception) {
             case MethodArgumentNotValidException invalid -> {
                 details = bindingDetails(invalid);
-                code = validationCode(details);
+                code = validationCode(details, invalid.getBindingResult().getFieldErrors().stream()
+                        .anyMatch(error -> NOT_NULL.equals(error.getCode())));
             }
             case HandlerMethodValidationException invalid -> {
                 details = methodValidationDetails(invalid);
-                code = validationCode(details);
+                code = validationCode(details, invalid.getParameterValidationResults().stream()
+                        .flatMap(result -> result.getResolvableErrors().stream())
+                        .anyMatch(error -> error.getCodes() != null && Arrays.asList(error.getCodes()).contains(NOT_NULL)));
             }
             case MissingServletRequestParameterException missing -> {
                 details = List.of(new Detail(missing.getParameterName(), "필수 파라미터입니다."));
@@ -193,9 +205,12 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         };
     }
 
-    /** Coordinate-only violations are INVALID_COORDINATE, radius-only INVALID_RADIUS, anything else INVALID_PARAMETER. */
-    private static ErrorCode validationCode(List<Detail> details) {
-        if (details.isEmpty()) return ErrorCode.INVALID_PARAMETER;
+    /**
+     * A missing required value ({@code @NotNull}) is INVALID_PARAMETER even on a coordinate or radius field; otherwise
+     * coordinate-only violations are INVALID_COORDINATE, radius-only INVALID_RADIUS, anything else INVALID_PARAMETER.
+     */
+    private static ErrorCode validationCode(List<Detail> details, boolean missingRequired) {
+        if (details.isEmpty() || missingRequired) return ErrorCode.INVALID_PARAMETER;
         if (details.stream().allMatch(detail -> COORDINATE_FIELDS.contains(detail.field()))) return ErrorCode.INVALID_COORDINATE;
         if (details.stream().allMatch(detail -> "radiusMeters".equals(detail.field()))) return ErrorCode.INVALID_RADIUS;
         return ErrorCode.INVALID_PARAMETER;

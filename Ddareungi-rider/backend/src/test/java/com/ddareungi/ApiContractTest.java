@@ -148,6 +148,11 @@ class ApiContractTest {
         failure(mvc.perform(post("/api/v1/routes/plan").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"destination\":{\"latitude\":37.5,\"longitude\":127}}")), 400, "INVALID_PARAMETER")
                 .andExpect(jsonPath("$.error.details[0].field").value("origin"));
+        // Review L4: a missing coordinate (@NotNull) is INVALID_PARAMETER, not INVALID_COORDINATE.
+        failure(mvc.perform(post("/api/v1/routes/plan").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"origin\":{\"longitude\":127},\"destination\":{\"latitude\":37.5,\"longitude\":127}}")),
+                400, "INVALID_PARAMETER")
+                .andExpect(jsonPath("$.error.details[0].field").value("latitude"));
         failure(mvc.perform(post("/api/v1/routes/plan").contentType(MediaType.TEXT_PLAIN).content("hello")),
                 415, "UNSUPPORTED_MEDIA_TYPE");
         // Routing is disabled in the local profile: ROUTING_NOT_CONFIGURED becomes 503 SERVICE_UNAVAILABLE.

@@ -7,7 +7,9 @@ import com.ddareungi.routing.RouteException;
 import com.ddareungi.station.domain.Location;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMax;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -56,9 +58,13 @@ class GlobalExceptionHandlerTest {
         @GetMapping("/probe/params") ApiResponse<Integer> params(@RequestParam int count) { return ApiResponse.ok(count); }
         @PostMapping("/probe/body") ApiResponse<Body> body(@Valid @RequestBody Body body) { return ApiResponse.ok(body); }
         @PostMapping("/probe/location") ApiResponse<Location> location(@RequestBody Location location) { return ApiResponse.ok(location); }
+        @PostMapping("/probe/coordinate") ApiResponse<Coordinate> coordinate(@Valid @RequestBody Coordinate body) { return ApiResponse.ok(body); }
+        @GetMapping("/probe/radius") ApiResponse<Integer> radius(
+                @RequestParam(required = false) @NotNull @Min(100) Integer radiusMeters) { return ApiResponse.ok(radiusMeters); }
     }
 
     record Body(@DecimalMax("90") double latitude, @NotBlank String name) {}
+    record Coordinate(@NotNull @DecimalMax("90") Double latitude, @NotNull @DecimalMax("180") Double longitude) {}
 
     @BeforeEach void setup() {
         var clock = new DefaultListableBeanFactory();
@@ -197,6 +203,23 @@ class GlobalExceptionHandlerTest {
                 .andExpect(jsonPath("$.error.details[0].field").value("latitude"));
         assertFailureEnvelope(mvc.perform(post("/probe/body").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"latitude\":1,\"name\":\" \"}")), HttpStatus.BAD_REQUEST, "INVALID_PARAMETER");
+    }
+
+    /** Review L4: a missing coordinate/radius (@NotNull) is INVALID_PARAMETER; a range violation keeps its specific code. */
+    @Test void missingRequiredFieldIsInvalidParameterWhileRangeViolationKeepsSpecificCode() throws Exception {
+        assertFailureEnvelope(mvc.perform(post("/probe/coordinate").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"longitude\":127}")), HttpStatus.BAD_REQUEST, "INVALID_PARAMETER");
+        mvc.perform(post("/probe/coordinate").contentType(MediaType.APPLICATION_JSON).content("{\"longitude\":127}"))
+                .andExpect(jsonPath("$.error.details[0].field").value("latitude"));
+        // Missing latitude plus out-of-range longitude: the missing value decides.
+        assertFailureEnvelope(mvc.perform(post("/probe/coordinate").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"longitude\":181}")), HttpStatus.BAD_REQUEST, "INVALID_PARAMETER");
+        assertFailureEnvelope(mvc.perform(post("/probe/coordinate").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"latitude\":91,\"longitude\":127}")), HttpStatus.BAD_REQUEST, "INVALID_COORDINATE");
+        assertFailureEnvelope(mvc.perform(get("/probe/radius")), HttpStatus.BAD_REQUEST, "INVALID_PARAMETER");
+        mvc.perform(get("/probe/radius")).andExpect(jsonPath("$.error.details[0].field").value("radiusMeters"));
+        assertFailureEnvelope(mvc.perform(get("/probe/radius").param("radiusMeters", "10")),
+                HttpStatus.BAD_REQUEST, "INVALID_RADIUS");
     }
 
     @Test void unreadableJsonIsInvalidParameterUnlessTheCauseIsACoordinate() throws Exception {

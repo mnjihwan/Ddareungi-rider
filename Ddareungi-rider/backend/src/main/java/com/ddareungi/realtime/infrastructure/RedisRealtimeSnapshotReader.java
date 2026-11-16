@@ -18,8 +18,10 @@ import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Reads realtime station status from Redis in one of two layouts (spec v5 21.2; key names and value
@@ -31,8 +33,11 @@ import java.util.OptionalLong;
  * </ul>
  * {@code realtime.redis.read-mode=auto} (default) uses the versioned layout once the pointer exists and the
  * legacy layout otherwise, so the backend can be deployed before or after the collector starts writing.
- * When the pointer exists but its hash has expired every id misses (unknown), as the spec requires;
- * auto does not fall back to legacy in that case because the pointer is the collector's source of truth.
+ * When the pointer exists but its version hash does not (expired, collector stopped, rollback to the legacy
+ * writer), auto logs a throttled warning and reads the legacy layout instead. The existence check
+ * ({@code EXISTS station:realtime:v{n}}) is an extra round trip made only when HMGET returned no value for any
+ * requested id. When the version hash exists, ids it lacks stay unknown and are never filled from legacy.
+ * versioned mode never falls back. Final behaviour is to be confirmed when the collector implements R2.
  */
 @Profile("infra")
 @Component
@@ -43,11 +48,14 @@ public class RedisRealtimeSnapshotReader implements RealtimeSnapshotReader {
     /** Same freshness window the legacy reader always applied (legacy key TTL). FRESH/STALE (120/600s) is A3. */
     static final Duration MAX_AGE = Duration.ofMinutes(5);
     static final Duration MAX_CLOCK_SKEW = Duration.ofSeconds(30);
+    /** Minimum interval between "pointer without version hash" warnings so every request does not log. */
+    static final Duration MISSING_HASH_WARN_INTERVAL = Duration.ofMinutes(1);
     private static final Logger log = LoggerFactory.getLogger(RedisRealtimeSnapshotReader.class);
 
     private final StringRedisTemplate redisTemplate;
     private final RealtimeReadMode mode;
     private final Clock clock;
+    private final AtomicReference<Instant> lastMissingHashWarn = new AtomicReference<>();
 
     @Autowired
     public RedisRealtimeSnapshotReader(StringRedisTemplate redisTemplate,
@@ -71,13 +79,26 @@ public class RedisRealtimeSnapshotReader implements RealtimeSnapshotReader {
             case LEGACY -> findLegacy(stationIds);
             case VERSIONED -> {
                 OptionalLong version = currentVersion();
-                yield version.isPresent() ? findVersioned(version.getAsLong(), stationIds) : Map.of();
+                yield version.isPresent() ? findVersioned(version.getAsLong(), stationIds, false).orElseGet(Map::of) : Map.of();
             }
             case AUTO -> {
                 OptionalLong version = currentVersion();
-                yield version.isPresent() ? findVersioned(version.getAsLong(), stationIds) : findLegacy(stationIds);
+                if (version.isEmpty()) yield findLegacy(stationIds);
+                yield findVersioned(version.getAsLong(), stationIds, true).orElseGet(() -> {
+                    warnMissingVersionHash(version.getAsLong());
+                    return findLegacy(stationIds);
+                });
             }
         };
+    }
+
+    private void warnMissingVersionHash(long version) {
+        Instant now = clock.instant();
+        Instant last = lastMissingHashWarn.get();
+        if (last != null && now.isBefore(last.plus(MISSING_HASH_WARN_INTERVAL))) return;
+        if (!lastMissingHashWarn.compareAndSet(last, now)) return;
+        log.warn("Realtime pointer {} points to missing hash {}{}; falling back to legacy keys (warning throttled to once per {}s)",
+                CURRENT_KEY, VERSION_KEY_PREFIX, version, MISSING_HASH_WARN_INTERVAL.toSeconds());
     }
 
     /** Pointer value, or empty when absent or not a non-negative integer (a corrupt pointer is logged). */
@@ -94,8 +115,17 @@ public class RedisRealtimeSnapshotReader implements RealtimeSnapshotReader {
         return OptionalLong.empty();
     }
 
-    private Map<String, RealtimeStationStatus> findVersioned(long version, List<String> stationIds) {
-        List<Object> values = redisTemplate.opsForHash().multiGet(VERSION_KEY_PREFIX + version, List.<Object>copyOf(stationIds));
+    /**
+     * Reads the version hash. When {@code checkExists} is set and no requested id had a value, verifies the hash
+     * exists with one EXISTS round trip and returns empty when it does not (the caller decides the fallback).
+     */
+    private Optional<Map<String, RealtimeStationStatus>> findVersioned(long version, List<String> stationIds, boolean checkExists) {
+        String key = VERSION_KEY_PREFIX + version;
+        List<Object> values = redisTemplate.opsForHash().multiGet(key, List.<Object>copyOf(stationIds));
+        if (checkExists && (values == null || values.stream().allMatch(Objects::isNull))
+                && !Boolean.TRUE.equals(redisTemplate.hasKey(key))) {
+            return Optional.empty();
+        }
         Map<String, RealtimeStationStatus> result = new HashMap<>();
         Instant now = clock.instant();
         int rejected = 0;
@@ -109,7 +139,7 @@ public class RedisRealtimeSnapshotReader implements RealtimeSnapshotReader {
             else rejected++;
         }
         if (rejected > 0) log.debug("Realtime version {}: {} entries rejected (corrupt, hidden or not fresh)", version, rejected);
-        return result;
+        return Optional.of(result);
     }
 
     private Map<String, RealtimeStationStatus> findLegacy(List<String> stationIds) {
