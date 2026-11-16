@@ -75,3 +75,18 @@ ratelimit:
   routes:
     burst: ${RATE_LIMIT_ROUTES_BURST:10}
     per-minute: ${RATE_LIMIT_ROUTES_PER_MINUTE:10}
+
+# External provider limits (D8). Defaults live in ProviderHttpProperties/ResilienceProperties (@DefaultValue);
+# only the request budgets are listed here. Durations: 500ms, 3s, ...
+provider:
+  http:
+    place:
+      total-timeout: ${PLACE_TOTAL_TIMEOUT:3s}
+    route:
+      total-timeout: ${ROUTE_TOTAL_TIMEOUT:10s}
+
+place:
+  cache:
+    # Redis cache of Kakao Local answers (infra profile only; local never caches). Fails open on Redis errors.
+    enabled: ${PLACE_CACHE_ENABLED:true}
+    ttl: 5m

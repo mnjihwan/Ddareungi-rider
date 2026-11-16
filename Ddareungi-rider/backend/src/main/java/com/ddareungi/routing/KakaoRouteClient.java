@@ -1,6 +1,9 @@
 package com.ddareungi.routing;
 
-import com.ddareungi.global.http.KakaoHttpClientProperties;
+import com.ddareungi.global.http.ProviderHttpProperties;
+import com.ddareungi.global.resilience.ContextPropagation;
+import com.ddareungi.global.resilience.ProviderCallException;
+import com.ddareungi.global.resilience.ProviderResilience;
 import com.ddareungi.station.domain.Location;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -31,19 +34,25 @@ public class KakaoRouteClient implements RouteProvider {
     private final RestClient client;
     private final JsonMapper mapper;
     private final String key;
+    private final ProviderResilience resilience;
 
-    public KakaoRouteClient(RestClient.Builder builder, JsonMapper mapper,
-            @Value("${kakao.maps.rest-api-key:}") String key) {
+    /** Uses the builder's own request factory and fresh default resilience state (tests, manual wiring). */
+    public KakaoRouteClient(RestClient.Builder builder, JsonMapper mapper, String key) {
+        this(builder, mapper, key, ProviderResilience.defaults());
+    }
+
+    public KakaoRouteClient(RestClient.Builder builder, JsonMapper mapper, String key, ProviderResilience resilience) {
         this.client = builder.baseUrl("https://dapi.kakao.com").build();
         this.mapper = mapper;
         this.key = key.trim();
+        this.resilience = resilience;
     }
 
-    // Production wiring: Kakao-specific connect/read timeouts instead of the global HTTP client defaults.
+    // Production wiring: route-specific connect/read timeouts (D8) and the shared walking/bicycle breakers.
     @Autowired
     public KakaoRouteClient(RestClient.Builder builder, JsonMapper mapper,
-            @Value("${kakao.maps.rest-api-key:}") String key, KakaoHttpClientProperties http) {
-        this(builder.requestFactory(http.requestFactory()), mapper, key);
+            @Value("${kakao.maps.rest-api-key:}") String key, ProviderHttpProperties http, ProviderResilience resilience) {
+        this(builder.requestFactory(http.route().requestFactory()), mapper, key, resilience);
     }
     @Override public boolean configured() { return !key.isBlank(); }
     @Override public String attribution() { return "경로 제공 · Kakao Maps"; }
@@ -114,11 +123,12 @@ public class KakaoRouteClient implements RouteProvider {
             for (int i = 0; i < sources.size(); i++) for (int j = 0; j < destinations.size(); j++) {
                 var from = sources.get(i);
                 var to = destinations.get(j);
-                cells.add(new Cell(i, j, executor.submit(() -> {
+                // Carry the request id (MDC) and plan deadline into each virtual thread.
+                cells.add(new Cell(i, j, executor.submit(ContextPropagation.wrap(() -> {
                     permits.acquire();
                     try { return duration(provider, profile, from, to); }
                     finally { permits.release(); }
-                })));
+                }))));
             }
             try {
                 for (var cell : cells) result[cell.row()][cell.column()] = await(cell.duration());
@@ -170,15 +180,21 @@ public class KakaoRouteClient implements RouteProvider {
         if (from.distanceTo(to) < 0.5) return new Leg(walk ? "walk" : "bicycle", 0, 0, List.of(from, to), List.of());
         JsonNode body;
         try {
-            var response = client.get().uri(uri -> uri.path(walk ? "/v2/routing/walk" : "/v2/routing/bicycle")
+            // Only the HTTP exchange runs under the breaker/retry: "no road route" answers are successful exchanges.
+            var response = (walk ? resilience.walking() : resilience.bicycle()).call(() -> client.get()
+                    .uri(uri -> uri.path(walk ? "/v2/routing/walk" : "/v2/routing/bicycle")
                     .queryParam("start_x", from.longitude()).queryParam("start_y", from.latitude())
                     .queryParam("end_x", to.longitude()).queryParam("end_y", to.latitude())
                     .queryParam("input_coord", "WGS84").queryParam("output_coord", "WGS84")
                     .queryParam("route_mode", walk ? "BROAD_FIRST" : "BIKE_ONLY").build())
-                    .header("Authorization", "KakaoAK " + key).retrieve().body(String.class);
+                    .header("Authorization", "KakaoAK " + key).retrieve().body(String.class), true);
             if (response == null || response.isBlank()) throw new IllegalStateException();
             body = mapper.readTree(response);
             if (body == null || !body.isObject()) throw new IllegalStateException();
+        } catch (ProviderCallException error) {
+            // Timeout -> 504 EXTERNAL_API_TIMEOUT; open breaker / full bulkhead -> immediate 502 via the adapters.
+            if (error.kind() == ProviderCallException.Kind.TIMEOUT) throw timeout();
+            throw unavailable();
         } catch (RestClientResponseException error) {
             int status = error.getStatusCode().value();
             if (status == 429) throw new RouteException(HttpStatus.SERVICE_UNAVAILABLE, "ROUTING_LIMIT", "길찾기 이용량이 많아요. 잠시 후 다시 시도해 주세요.");
@@ -224,6 +240,10 @@ public class KakaoRouteClient implements RouteProvider {
     }
     private static RouteException noRoad() {
         return new RouteException(HttpStatus.UNPROCESSABLE_ENTITY, "NO_ROAD_ROUTE", "연결되는 도보·자전거 경로를 찾지 못했어요. 다른 출발·도착 장소를 선택해 주세요.");
+    }
+    /** The public code name itself, so the exception handler answers 504 without a new mapping (D13). */
+    static RouteException timeout() {
+        return new RouteException(HttpStatus.GATEWAY_TIMEOUT, "EXTERNAL_API_TIMEOUT", "경로 응답이 늦어지고 있어요. 잠시 후 다시 시도해 주세요.");
     }
     private static RouteException unavailable() {
         return new RouteException(HttpStatus.BAD_GATEWAY, "ROUTING_UNAVAILABLE", "경로를 가져오지 못했어요. 잠시 후 다시 시도해 주세요.");
