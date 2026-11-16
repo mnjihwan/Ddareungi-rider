@@ -22,7 +22,14 @@ management:
         readiness:
           # Redis is intentionally excluded: when it is down the API keeps serving (degraded), so
           # taking the instance out of rotation would turn a partial outage into a full one.
-          include: readinessState,db
+          # stationCatalog: DOWN until the in-memory station catalog has loaded once (R3, D4).
+          include: readinessState,db,stationCatalog
+
+station:
+  catalog:
+    # In-memory catalog (R3, D4): synchronous load at startup, periodic reload; a failed reload keeps the previous one.
+    reload-interval: ${STATION_CATALOG_RELOAD_INTERVAL:10m}
+    retry-interval: ${STATION_CATALOG_RETRY_INTERVAL:30s}
 
 seoul-bike:
   api:
