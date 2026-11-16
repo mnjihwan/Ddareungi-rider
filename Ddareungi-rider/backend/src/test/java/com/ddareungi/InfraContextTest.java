@@ -21,9 +21,16 @@ class InfraContextTest {
 
     @Autowired Environment environment;
     // Readiness depends on MySQL only; Redis outages degrade the API but must not drop the instance from rotation.
+    // R3 (D4) adds stationCatalog: an instance whose in-memory station catalog never loaded is not ready.
+    // Redis is still excluded (expected value changed from "readinessState,db" by R3).
     @Test void readinessGroupIncludesDatabaseButNotRedis() {
         assertThat(environment.getProperty("management.endpoint.health.probes.enabled", Boolean.class)).isTrue();
         assertThat(environment.getProperty("management.endpoint.health.group.readiness.include"))
-                .isEqualTo("readinessState,db");
+                .isEqualTo("readinessState,db,stationCatalog");
+    }
+
+    @Autowired org.springframework.context.ApplicationContext context;
+    @Test void stationCatalogHealthIndicatorBacksTheReadinessEntry() {
+        assertThat(context.containsBean("stationCatalogHealthIndicator")).isTrue();
     }
 }

@@ -20,7 +20,7 @@ import java.util.Optional;
 @Repository
 public class RedisRealtimeStationStore {
     private static final String KEY_PREFIX = "station:realtime:";
-    private static final String LAST_SUCCESS_KEY = "station:realtime:last-success-at";
+    static final String LAST_SUCCESS_KEY = "station:realtime:last-success-at";
     private static final String LAST_ATTEMPT_KEY = "station:realtime:last-attempt-at";
     /**
      * Physical TTL of legacy per-station hashes: 900 s (X3), longer than {@code realtime.freshness.max-stale-seconds}
