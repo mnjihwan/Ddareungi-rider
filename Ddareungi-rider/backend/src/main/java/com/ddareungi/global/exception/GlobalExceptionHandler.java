@@ -206,13 +206,16 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
-     * A missing required value ({@code @NotNull}) is INVALID_PARAMETER even on a coordinate or radius field; otherwise
-     * coordinate-only violations are INVALID_COORDINATE, radius-only INVALID_RADIUS, anything else INVALID_PARAMETER.
+     * A missing required value ({@code @NotNull}) is INVALID_PARAMETER even on a coordinate, radius or limit field;
+     * otherwise coordinate-only violations are INVALID_COORDINATE, {@code radius}-only INVALID_RADIUS, {@code limit}-only
+     * INVALID_LIMIT, anything else (including mixes) INVALID_PARAMETER. A5/D11: the nearby parameter is {@code radius};
+     * the Phase 1 {@code radiusMeters} mapping was removed (no other endpoint validates a field of that name).
      */
     private static ErrorCode validationCode(List<Detail> details, boolean missingRequired) {
         if (details.isEmpty() || missingRequired) return ErrorCode.INVALID_PARAMETER;
         if (details.stream().allMatch(detail -> COORDINATE_FIELDS.contains(detail.field()))) return ErrorCode.INVALID_COORDINATE;
-        if (details.stream().allMatch(detail -> "radiusMeters".equals(detail.field()))) return ErrorCode.INVALID_RADIUS;
+        if (details.stream().allMatch(detail -> "radius".equals(detail.field()))) return ErrorCode.INVALID_RADIUS;
+        if (details.stream().allMatch(detail -> "limit".equals(detail.field()))) return ErrorCode.INVALID_LIMIT;
         return ErrorCode.INVALID_PARAMETER;
     }
 

@@ -59,8 +59,15 @@ class GlobalExceptionHandlerTest {
         @PostMapping("/probe/body") ApiResponse<Body> body(@Valid @RequestBody Body body) { return ApiResponse.ok(body); }
         @PostMapping("/probe/location") ApiResponse<Location> location(@RequestBody Location location) { return ApiResponse.ok(location); }
         @PostMapping("/probe/coordinate") ApiResponse<Coordinate> coordinate(@Valid @RequestBody Coordinate body) { return ApiResponse.ok(body); }
+        // A5/D11: the nearby parameter is `radius` (was `radiusMeters`); `limit` maps to INVALID_LIMIT.
         @GetMapping("/probe/radius") ApiResponse<Integer> radius(
+                @RequestParam(required = false) @NotNull @Min(100) Integer radius) { return ApiResponse.ok(radius); }
+        @GetMapping("/probe/legacy-radius") ApiResponse<Integer> legacyRadius(
                 @RequestParam(required = false) @NotNull @Min(100) Integer radiusMeters) { return ApiResponse.ok(radiusMeters); }
+        @GetMapping("/probe/limit") ApiResponse<Integer> limit(
+                @RequestParam(required = false) @NotNull @Min(1) Integer limit) { return ApiResponse.ok(limit); }
+        @GetMapping("/probe/radius-limit") ApiResponse<Integer> radiusAndLimit(
+                @RequestParam @Min(100) int radius, @RequestParam @Min(1) int limit) { return ApiResponse.ok(radius + limit); }
     }
 
     record Body(@DecimalMax("90") double latitude, @NotBlank String name) {}
@@ -205,7 +212,7 @@ class GlobalExceptionHandlerTest {
                 .content("{\"latitude\":1,\"name\":\" \"}")), HttpStatus.BAD_REQUEST, "INVALID_PARAMETER");
     }
 
-    /** Review L4: a missing coordinate/radius (@NotNull) is INVALID_PARAMETER; a range violation keeps its specific code. */
+    /** Review L4: a missing coordinate/radius/limit (@NotNull) is INVALID_PARAMETER; a range violation keeps its specific code. */
     @Test void missingRequiredFieldIsInvalidParameterWhileRangeViolationKeepsSpecificCode() throws Exception {
         assertFailureEnvelope(mvc.perform(post("/probe/coordinate").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"longitude\":127}")), HttpStatus.BAD_REQUEST, "INVALID_PARAMETER");
@@ -217,9 +224,24 @@ class GlobalExceptionHandlerTest {
         assertFailureEnvelope(mvc.perform(post("/probe/coordinate").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"latitude\":91,\"longitude\":127}")), HttpStatus.BAD_REQUEST, "INVALID_COORDINATE");
         assertFailureEnvelope(mvc.perform(get("/probe/radius")), HttpStatus.BAD_REQUEST, "INVALID_PARAMETER");
-        mvc.perform(get("/probe/radius")).andExpect(jsonPath("$.error.details[0].field").value("radiusMeters"));
-        assertFailureEnvelope(mvc.perform(get("/probe/radius").param("radiusMeters", "10")),
+        mvc.perform(get("/probe/radius")).andExpect(jsonPath("$.error.details[0].field").value("radius"));
+        assertFailureEnvelope(mvc.perform(get("/probe/radius").param("radius", "10")),
                 HttpStatus.BAD_REQUEST, "INVALID_RADIUS");
+        assertFailureEnvelope(mvc.perform(get("/probe/limit")), HttpStatus.BAD_REQUEST, "INVALID_PARAMETER");
+        assertFailureEnvelope(mvc.perform(get("/probe/limit").param("limit", "0")), HttpStatus.BAD_REQUEST, "INVALID_LIMIT");
+        mvc.perform(get("/probe/limit").param("limit", "0")).andExpect(jsonPath("$.error.details[0].field").value("limit"));
+    }
+
+    /** A5/D11: only `radius`/`limit` get the specific codes; mixes and the removed `radiusMeters` name are generic. */
+    @Test void radiusAndLimitMappingIsByExactFieldName() throws Exception {
+        assertFailureEnvelope(mvc.perform(get("/probe/legacy-radius").param("radiusMeters", "10")),
+                HttpStatus.BAD_REQUEST, "INVALID_PARAMETER");
+        assertFailureEnvelope(mvc.perform(get("/probe/radius-limit").param("radius", "10").param("limit", "0")),
+                HttpStatus.BAD_REQUEST, "INVALID_PARAMETER");
+        assertFailureEnvelope(mvc.perform(get("/probe/radius-limit").param("radius", "10").param("limit", "5")),
+                HttpStatus.BAD_REQUEST, "INVALID_RADIUS");
+        assertFailureEnvelope(mvc.perform(get("/probe/radius-limit").param("radius", "500").param("limit", "0")),
+                HttpStatus.BAD_REQUEST, "INVALID_LIMIT");
     }
 
     @Test void unreadableJsonIsInvalidParameterUnlessTheCauseIsACoordinate() throws Exception {
