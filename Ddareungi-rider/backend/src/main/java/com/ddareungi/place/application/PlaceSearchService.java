@@ -8,7 +8,10 @@ import com.ddareungi.place.PlaceSearchProvider;
 import com.ddareungi.station.domain.KoreanSearch;
 import com.ddareungi.station.domain.Location;
 import com.ddareungi.station.domain.StationSearchPort;
+import com.ddareungi.global.resilience.ContextPropagation;
 import org.jspecify.annotations.Nullable;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -16,6 +19,9 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -35,10 +41,23 @@ public class PlaceSearchService {
 
     private final PlaceSearchProvider provider;
     private final StationSearchPort stations;
+    private final PlaceSearchCache cache;
 
     public PlaceSearchService(PlaceSearchProvider provider, StationSearchPort stations) {
+        this(provider, stations, PlaceSearchCache.NONE);
+    }
+
+    public PlaceSearchService(PlaceSearchProvider provider, StationSearchPort stations, PlaceSearchCache cache) {
         this.provider = provider;
         this.stations = stations;
+        this.cache = cache;
+    }
+
+    /** Production wiring: the Redis cache exists only with the infra profile (D9: disabled locally). */
+    @Autowired
+    public PlaceSearchService(PlaceSearchProvider provider, StationSearchPort stations,
+                              ObjectProvider<PlaceSearchCache> cache) {
+        this(provider, stations, cache.getIfAvailable(() -> PlaceSearchCache.NONE));
     }
 
     public @Nullable Place reverse(Location location) {
@@ -59,26 +78,32 @@ public class PlaceSearchService {
     public List<Place> search(String term, @Nullable Location center) {
         requireConfigured("장소 검색을 현재 사용할 수 없습니다.");
         try {
-            var result = new ArrayList<>(provider.keyword(term, center, null));
+            // Nearby businesses can fill the general first page before a matching station, so the provider's
+            // subway category is queried separately. The two lookups are independent and run in parallel (D10);
+            // everything that depends on their results below stays sequential.
+            Future<List<Place>> subwayLookup = ContextPropagation.start("place-subway", () -> keyword(term, center, SUBWAY));
+            ArrayList<Place> result;
+            try {
+                result = new ArrayList<>(keyword(term, center, null));
+            } catch (RuntimeException error) {
+                subwayLookup.cancel(true);
+                throw error;
+            }
             // Preserve real English place searches; retry a complete Korean keyboard conversion only if unrelated.
             String converted = KoreanSearch.koreanKeyboardQuery(term);
             if (!converted.equals(term) && result.stream().noneMatch(place ->
                     KoreanSearch.bestScore(place.name(), place.address(), term) >= 0)) {
-                try { result.addAll(provider.keyword(converted, center, null)); }
+                try { result.addAll(keyword(converted, center, null)); }
                 catch (RuntimeException ignored) { /* Keep original results and station completion available. */ }
             }
-            // Nearby businesses can fill the general first page before a matching station.
-            // Query the provider's subway category separately, then merge by place identity.
-            var subways = new ArrayList<Place>();
-            try { subways.addAll(provider.keyword(term, center, SUBWAY)); }
-            catch (RuntimeException ignored) { /* General results still work if the category lookup fails. */ }
+            var subways = new ArrayList<Place>(optional(subwayLookup));
             subways.addAll(result.stream().filter(place -> SUBWAY.equals(place.categoryGroupCode())).toList());
             subways.removeIf(place -> !KoreanSearch.matches(place.name(), term));
             if (subways.isEmpty()) subways.addAll(completeSubwaysFromStations(term, center));
             var distinct = new LinkedHashMap<String, Place>();
             Stream.concat(subways.stream(), result.stream()).forEach(place -> distinct.putIfAbsent(identity(place), place));
             var merged = new ArrayList<>(distinct.values());
-            if (merged.isEmpty()) merged.addAll(provider.address(term));
+            if (merged.isEmpty()) merged.addAll(cached(PlaceSearchCache.key(term, null, "address"), () -> provider.address(term)));
             return merged;
         } catch (PlaceProviderException error) {
             throw publicError(error, "장소 검색 응답을 가져오지 못했습니다.");
@@ -94,7 +119,8 @@ public class PlaceSearchService {
         requireConfigured("주변 지하철역을 현재 조회할 수 없습니다.");
         try {
             var distinct = new LinkedHashMap<String, Place>();
-            for (var station : provider.category(SUBWAY, center, NEARBY_SUBWAY_RADIUS_METERS)) {
+            for (var station : cached(PlaceSearchCache.key("", center, "category:" + SUBWAY + ":" + NEARBY_SUBWAY_RADIUS_METERS),
+                    () -> provider.category(SUBWAY, center, NEARBY_SUBWAY_RADIUS_METERS))) {
                 if (center.distanceTo(station.location()) > NEARBY_SUBWAY_RADIUS_METERS) continue;
                 // Multiple subway lines at one station should occupy one suggestion.
                 distinct.putIfAbsent(SUBWAY_LINE_SUFFIX.matcher(station.name()).replaceFirst("$1"), station);
@@ -130,12 +156,42 @@ public class PlaceSearchService {
             }
             for (String name : names.stream().limit(2).toList()) {
                 try {
-                    found.addAll(provider.keyword(name, center, SUBWAY).stream()
+                    found.addAll(keyword(name, center, SUBWAY).stream()
                             .filter(place -> KoreanSearch.matches(place.name(), term)).toList());
                 } catch (RuntimeException ignored) { /* Preserve the original successful search results. */ }
             }
         } catch (RuntimeException ignored) { /* Rental station lookup is an optional completion source. */ }
         return found;
+    }
+
+    private List<Place> keyword(String query, @Nullable Location center, @Nullable String category) {
+        return cached(PlaceSearchCache.key(query, center, category == null ? "keyword" : "keyword:" + category),
+                () -> provider.keyword(query, center, category));
+    }
+
+    /** Provider answers are cached only on success; reverse geocoding is never cached (it echoes exact coordinates). */
+    private List<Place> cached(String key, Supplier<List<Place>> lookup) {
+        try {
+            var hit = cache.get(key);
+            if (hit != null) return hit;
+        } catch (RuntimeException ignored) { /* Fail open: a cache error is a miss. */ }
+        var places = List.copyOf(lookup.get());
+        try { cache.put(key, places); }
+        catch (RuntimeException ignored) { /* Fail open: the answer is still returned. */ }
+        return places;
+    }
+
+    /** Result of a best-effort lookup; any failure (or interruption) yields no places. */
+    private static List<Place> optional(Future<List<Place>> lookup) {
+        try {
+            return lookup.get();
+        } catch (InterruptedException error) {
+            lookup.cancel(true);
+            Thread.currentThread().interrupt();
+            return List.of();
+        } catch (ExecutionException | RuntimeException error) {
+            return List.of();
+        }
     }
 
     private void requireConfigured(String message) {

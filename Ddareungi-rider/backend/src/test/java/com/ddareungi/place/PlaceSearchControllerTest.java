@@ -2,6 +2,7 @@ package com.ddareungi.place;
 
 import com.ddareungi.global.exception.ApiException;
 import com.ddareungi.global.exception.ErrorCode;
+import com.ddareungi.place.application.PlaceSearchCache;
 import com.ddareungi.place.application.PlaceSearchService;
 import com.ddareungi.station.domain.Location;
 import com.ddareungi.station.domain.Station;
@@ -204,6 +205,85 @@ class PlaceSearchControllerTest {
             assertThat(error.getReason()).doesNotContain("test-secret");
             assertThat(error.getCause()).isNull();
         });
+    }
+
+    @Test void generalAndSubwayLookupsRunInParallelWithRequestContext() throws Exception {
+        // Each lookup waits until the other one has started: a sequential implementation would time out.
+        var bothStarted = new java.util.concurrent.CountDownLatch(2);
+        var subwayRequestId = new java.util.concurrent.atomic.AtomicReference<String>();
+        when(provider.keyword(eq("강남역"), isNull(), isNull())).thenAnswer(invocation -> {
+            bothStarted.countDown();
+            assertThat(bothStarted.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            return List.of(place("강남역 카페", "CE7", null));
+        });
+        when(provider.keyword(eq("강남역"), isNull(), eq(SUBWAY))).thenAnswer(invocation -> {
+            subwayRequestId.set(org.slf4j.MDC.get("requestId"));
+            bothStarted.countDown();
+            assertThat(bothStarted.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            return List.of(place("강남역 2호선", SUBWAY, null));
+        });
+        org.slf4j.MDC.put("requestId", "parallel-test");
+        try {
+            assertThat(controller.search("강남역", null, null).data()).extracting(PlaceResponse::name)
+                    .containsExactly("강남역 2호선", "강남역 카페");
+        } finally {
+            org.slf4j.MDC.remove("requestId");
+        }
+        assertThat(subwayRequestId).hasValue("parallel-test");
+    }
+
+    @Test void primaryFailureCancelsTheParallelSubwayLookup() throws Exception {
+        var subwayInterrupted = new java.util.concurrent.CountDownLatch(1);
+        when(provider.keyword(eq("강남역"), isNull(), eq(SUBWAY))).thenAnswer(invocation -> {
+            try { Thread.sleep(10_000); } catch (InterruptedException interrupted) { subwayInterrupted.countDown(); }
+            return List.of();
+        });
+        when(provider.keyword(eq("강남역"), isNull(), isNull())).thenThrow(new PlaceProviderException("down", false));
+        assertThatThrownBy(() -> controller.search("강남역", null, null)).isInstanceOf(ApiException.class);
+        assertThat(subwayInterrupted.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+    }
+
+    @Test void cachesSuccessfulProviderAnswersPerQueryRoundedCenterAndCategory() {
+        var cache = new MapCache();
+        var cached = new PlaceSearchController(new PlaceSearchService(provider, stations, cache));
+        when(provider.keyword(eq("강남역"), any(), isNull())).thenReturn(List.of(place("강남역 카페", "CE7", null)));
+        cached.search("강남역", 37.49791, 127.02761);
+        // 4th decimal differs only: same ~100 m cell, so both lookups are served from the cache.
+        cached.search("강남역", 37.49794, 127.02764);
+        verify(provider, times(1)).keyword(eq("강남역"), any(), isNull());
+        verify(provider, times(1)).keyword(eq("강남역"), any(), eq(SUBWAY));
+        assertThat(cache.entries).hasSize(2).allSatisfy((key, value) -> assertThat(key).startsWith("place:v1:"));
+    }
+
+    @Test void providerFailuresAreNotCachedAndCacheErrorsFailOpen() {
+        var broken = new PlaceSearchCache() {
+            @Override public List<Place> get(String key) { throw new IllegalStateException("redis down"); }
+            @Override public void put(String key, List<Place> places) { throw new IllegalStateException("redis down"); }
+        };
+        var cached = new PlaceSearchController(new PlaceSearchService(provider, stations, broken));
+        when(provider.keyword(eq("강남역"), isNull(), isNull())).thenReturn(List.of(place("강남역 카페", "CE7", null)));
+        assertThat(cached.search("강남역", null, null).data()).extracting(PlaceResponse::name).containsExactly("강남역 카페");
+
+        var cache = new MapCache();
+        var withCache = new PlaceSearchController(new PlaceSearchService(provider, stations, cache));
+        when(provider.category(any(), any(), anyInt())).thenThrow(new PlaceProviderException("down", false));
+        assertThatThrownBy(() -> withCache.nearbySubways(37.5, 127.02)).isInstanceOf(ApiException.class);
+        assertThat(cache.entries).isEmpty();
+    }
+
+    @Test void reverseGeocodingIsNeverCached() {
+        var cache = new MapCache();
+        var cached = new PlaceSearchController(new PlaceSearchService(provider, stations, cache));
+        cached.reverse(37.5, 127.0);
+        cached.reverse(37.5, 127.0);
+        verify(provider, times(2)).reverse(new Location(37.5, 127.0));
+        assertThat(cache.entries).isEmpty();
+    }
+
+    static class MapCache implements PlaceSearchCache {
+        final java.util.Map<String, List<Place>> entries = new java.util.concurrent.ConcurrentHashMap<>();
+        @Override public List<Place> get(String key) { return entries.get(key); }
+        @Override public void put(String key, List<Place> places) { entries.put(key, places); }
     }
 
     private static Place place(String name, String category, String url) {
