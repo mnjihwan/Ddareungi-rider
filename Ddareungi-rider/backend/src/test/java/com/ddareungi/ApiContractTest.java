@@ -40,8 +40,18 @@ class ApiContractTest {
     @Autowired RequestIdFilter requestIdFilter;
     MockMvc mvc;
 
+    /**
+     * O3 rate limit (stations group: burst 30, keyed by remoteAddr) stays enabled here. The cached context is shared
+     * by every test method, which together send more than 30 station/status requests, so each method gets its own
+     * client address and stays far below the burst (largest method: about 15 requests).
+     */
+    private static final java.util.concurrent.atomic.AtomicInteger CLIENT = new java.util.concurrent.atomic.AtomicInteger();
+
     @BeforeEach void setup() {
-        mvc = MockMvcBuilders.webAppContextSetup(context).addFilters(requestIdFilter).build();
+        String remoteAddr = "10.77.0." + CLIENT.incrementAndGet();
+        mvc = MockMvcBuilders.webAppContextSetup(context).addFilters(requestIdFilter)
+                .defaultRequest(get("/").with(request -> { request.setRemoteAddr(remoteAddr); return request; }))
+                .build();
     }
 
     private static ResultActions failure(ResultActions result, int status, String code) throws Exception {
@@ -63,26 +73,48 @@ class ApiContractTest {
                 .andExpect(jsonPath("$.error").doesNotExist())
                 .andExpect(jsonPath("$.meta.requestId").value("contract-1"))
                 .andExpect(jsonPath("$.timestamp").isString())
-                .andExpect(jsonPath("$.data[0].stationId").value("ST-001"))
-                .andExpect(jsonPath("$.data[0].stationName").isString())
-                .andExpect(jsonPath("$.data[0].stationLatitude").value(37.4979))
-                .andExpect(jsonPath("$.data[0].stationLongitude").value(127.0276))
-                .andExpect(jsonPath("$.data[0].rackTotCnt").value(20))
-                .andExpect(jsonPath("$.data[0].parkingBikeTotCnt").value(7))
+                // Changed by A5: data is {center, radiusMeters, items} instead of a bare array (spec 11.1).
+                .andExpect(jsonPath("$.data.center.latitude").value(37.4979))
+                .andExpect(jsonPath("$.data.center.longitude").value(127.0276))
+                .andExpect(jsonPath("$.data.radiusMeters").value(1000))
+                .andExpect(jsonPath("$.data.items[0].stationId").value("ST-001"))
+                .andExpect(jsonPath("$.data.items[0].stationName").isString())
+                .andExpect(jsonPath("$.data.items[0].stationLatitude").value(37.4979))
+                .andExpect(jsonPath("$.data.items[0].stationLongitude").value(127.0276))
+                .andExpect(jsonPath("$.data.items[0].rackTotCnt").value(20))
+                .andExpect(jsonPath("$.data.items[0].parkingBikeTotCnt").value(7))
                 // Changed by P2-1 (A3): shared is now provided (sample 7/20 → 35.0, was always null), and
                 // realtimeStatus/realtimeAgeSeconds are new; an all-FRESH list carries no partial/warnings meta.
-                .andExpect(jsonPath("$.data[0].shared").value(35.0))
-                .andExpect(jsonPath("$.data[0].realtimeStatus").value("FRESH"))
-                .andExpect(jsonPath("$.data[0].realtimeAgeSeconds").isNumber())
+                .andExpect(jsonPath("$.data.items[0].shared").value(35.0))
+                .andExpect(jsonPath("$.data.items[0].realtimeStatus").value("FRESH"))
+                .andExpect(jsonPath("$.data.items[0].realtimeAgeSeconds").isNumber())
                 .andExpect(jsonPath("$.meta.partial").doesNotExist())
                 .andExpect(jsonPath("$.meta.warnings").doesNotExist())
-                .andExpect(jsonPath("$.data[0].realtimeUpdatedAt").isString())
-                .andExpect(jsonPath("$.data[0].distanceMeters").isNumber())
-                .andExpect(jsonPath("$.data[0].address").isString())
-                .andExpect(jsonPath("$.data[0].location").doesNotExist())
-                .andExpect(jsonPath("$.data[0].rackTotalCount").doesNotExist())
-                .andExpect(jsonPath("$.data[0].availableBikeCount").doesNotExist())
-                .andExpect(jsonPath("$.data[0].updatedAt").doesNotExist());
+                .andExpect(jsonPath("$.data.items[0].realtimeUpdatedAt").isString())
+                .andExpect(jsonPath("$.data.items[0].distanceMeters").isNumber())
+                .andExpect(jsonPath("$.data.items[0].address").isString())
+                .andExpect(jsonPath("$.data.items[0].location").doesNotExist())
+                .andExpect(jsonPath("$.data.items[0].rackTotalCount").doesNotExist())
+                .andExpect(jsonPath("$.data.items[0].availableBikeCount").doesNotExist())
+                .andExpect(jsonPath("$.data.items[0].updatedAt").doesNotExist());
+    }
+
+    /** A5: sort/limit/onlyAvailable on the three sample stations (ST-001 7 bikes, ST-002 2, ST-003 11). */
+    @Test void nearbySortLimitAndOnlyAvailable() throws Exception {
+        mvc.perform(get("/api/v1/stations/nearby").param("latitude", "37.4979").param("longitude", "127.0276")
+                        .param("radius", "2000").param("sort", "parkingBikeTotCnt").param("limit", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.radiusMeters").value(2000))
+                .andExpect(jsonPath("$.data.items.length()").value(2))
+                .andExpect(jsonPath("$.data.items[0].stationId").value("ST-003"))
+                .andExpect(jsonPath("$.data.items[1].stationId").value("ST-001"))
+                .andExpect(jsonPath("$.meta.partial").doesNotExist());
+        mvc.perform(get("/api/v1/stations/nearby").param("latitude", "37.4979").param("longitude", "127.0276")
+                        .param("radius", "2000").param("sort", "name").param("onlyAvailable", "true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].stationName").value("강남역 2번 출구"))
+                .andExpect(jsonPath("$.data.items[1].stationName").value("신논현역 6번 출구"))
+                .andExpect(jsonPath("$.data.items[2].stationName").value("역삼역 4번 출구"));
     }
 
     @Test void stationDtoHasNoLegacyFieldNames() {
@@ -115,6 +147,31 @@ class ApiContractTest {
                 .andExpect(jsonPath("$.data[0].stationName").value(containsString("강남")));
     }
 
+    /** A4: detail, realtime batch and realtime status on the local sample data. */
+    @Test void detailRealtimeBatchAndRealtimeStatus() throws Exception {
+        mvc.perform(get("/api/v1/stations/ST-002")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.stationId").value("ST-002"))
+                .andExpect(jsonPath("$.data.realtimeStatus").value("FRESH"))
+                .andExpect(jsonPath("$.data.distanceMeters").doesNotExist());
+        failure(mvc.perform(get("/api/v1/stations/ST-999")), 404, "STATION_NOT_FOUND");
+        failure(mvc.perform(get("/api/v1/stations/bad_id")), 400, "INVALID_PARAMETER");
+        failure(mvc.perform(get("/api/v1/stations/batch")), 405, "METHOD_NOT_ALLOWED");
+        mvc.perform(get("/api/v1/stations/realtime").param("stationIds", "ST-003,ST-999,ST-001,ST-003"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].stationId").value("ST-003"))
+                .andExpect(jsonPath("$.data.items[1].stationId").value("ST-001"))
+                .andExpect(jsonPath("$.data.notFoundStationIds[0]").value("ST-999"))
+                .andExpect(jsonPath("$.data.excludedStationIds").isArray())
+                .andExpect(jsonPath("$.data.unavailableStationIds").isArray())
+                .andExpect(jsonPath("$.meta.partial").value(true));
+        failure(mvc.perform(get("/api/v1/stations/realtime").param("stationIds", "ST-001,,ST-002")), 400, "INVALID_PARAMETER");
+        mvc.perform(get("/api/v1/status/realtime")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("NORMAL"))
+                .andExpect(jsonPath("$.data.totalStationCount").value(3))
+                .andExpect(jsonPath("$.data.freshStationCount").value(3))
+                .andExpect(jsonPath("$.data.ageSeconds").isNumber());
+    }
+
     @Test void statusEndpointsUseDtos() throws Exception {
         mvc.perform(get("/api/v1/status")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true)).andExpect(jsonPath("$.data.mode").value("sample"));
@@ -126,9 +183,24 @@ class ApiContractTest {
         failure(mvc.perform(get("/api/v1/stations/nearby").param("latitude", "91").param("longitude", "127")),
                 400, "INVALID_COORDINATE")
                 .andExpect(jsonPath("$.error.details[0].field").value("latitude"));
+        // Changed by A5 (D11): the parameter is `radius`; `radiusMeters` has no alias and is ignored.
         failure(mvc.perform(get("/api/v1/stations/nearby").param("latitude", "37.5").param("longitude", "127")
-                .param("radiusMeters", "10")), 400, "INVALID_RADIUS")
-                .andExpect(jsonPath("$.error.details[0].field").value("radiusMeters"));
+                .param("radius", "10")), 400, "INVALID_RADIUS")
+                .andExpect(jsonPath("$.error.details[0].field").value("radius"));
+        failure(mvc.perform(get("/api/v1/stations/nearby").param("latitude", "37.5").param("longitude", "127")
+                .param("radius", "5001")), 400, "INVALID_RADIUS");
+        failure(mvc.perform(get("/api/v1/stations/nearby").param("latitude", "37.5").param("longitude", "127")
+                .param("limit", "0")), 400, "INVALID_LIMIT")
+                .andExpect(jsonPath("$.error.details[0].field").value("limit"));
+        failure(mvc.perform(get("/api/v1/stations/nearby").param("latitude", "37.5").param("longitude", "127")
+                .param("limit", "101")), 400, "INVALID_LIMIT");
+        failure(mvc.perform(get("/api/v1/stations/nearby").param("latitude", "37.5").param("longitude", "127")
+                .param("sort", "bikes")), 400, "INVALID_PARAMETER")
+                .andExpect(jsonPath("$.error.details[0].field").value("sort"));
+        mvc.perform(get("/api/v1/stations/nearby").param("latitude", "37.4979").param("longitude", "127.0276")
+                        .param("radiusMeters", "10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.radiusMeters").value(1000));
         failure(mvc.perform(get("/api/v1/stations/nearby").param("latitude", "NaN").param("longitude", "127")),
                 400, "INVALID_COORDINATE");
         failure(mvc.perform(post("/api/v1/stations/batch").contentType(MediaType.APPLICATION_JSON)

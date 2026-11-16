@@ -3,9 +3,12 @@ package com.ddareungi.station.presentation;
 import com.ddareungi.global.web.RequestIdFilter;
 import com.ddareungi.realtime.domain.RealtimeFreshnessPolicy;
 import com.ddareungi.station.application.FindNearbyStationsUseCase;
+import com.ddareungi.station.application.StationQueryService;
 import com.ddareungi.station.application.StationViewMapper;
 import com.ddareungi.station.domain.Location;
 import com.ddareungi.station.domain.Station;
+import com.ddareungi.station.domain.StationCandidate;
+import com.ddareungi.realtime.domain.RealtimeFreshness;
 import com.ddareungi.station.domain.StationSearchPort;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,7 +40,8 @@ class StationListResponseTest {
     void setUp() {
         port = mock(StationSearchPort.class);
         var mapper = new StationViewMapper(RealtimeFreshnessPolicy.defaults(Clock.fixed(NOW, ZoneOffset.UTC)));
-        mvc = MockMvcBuilders.standaloneSetup(new StationController(new FindNearbyStationsUseCase(port), mapper))
+        mvc = MockMvcBuilders.standaloneSetup(new StationController(new FindNearbyStationsUseCase(port), mapper,
+                        new StationQueryService(port)))
                 .addFilters(new RequestIdFilter()).build();
     }
 
@@ -45,12 +49,15 @@ class StationListResponseTest {
         return new Station(id, id, "서울", new Location(37.5, 127.0), null, bikes, 10, updatedAt, shared);
     }
 
+    // Changed by A5: nearby now reads findWithin (candidates already classified by the port) and returns
+    // {center, radiusMeters, items}; the A3 rule checked here (UNAVAILABLE removed, STALE kept, partial/warnings)
+    // is unchanged. Items are sorted by distance, so distances differ to keep the original order.
     @Test
     void nearbyDropsUnavailableAndMarksPartial() throws Exception {
-        when(port.findNearby(any(), anyInt())).thenReturn(List.of(
-                station("fresh", 0, NOW.minusSeconds(5), 0.0),
-                station("unknown", null, null, null),
-                station("stale", 6, NOW.minusSeconds(300), 140.0)));
+        when(port.findWithin(any(), anyInt())).thenReturn(List.of(
+                candidate(station("fresh", 0, NOW.minusSeconds(5), 0.0, 10), RealtimeFreshness.FRESH, 5L),
+                candidate(station("unknown", null, null, null, 20), RealtimeFreshness.UNAVAILABLE, null),
+                candidate(station("stale", 6, NOW.minusSeconds(300), 140.0, 30), RealtimeFreshness.STALE, 300L)));
 
         mvc.perform(get("/api/v1/stations/nearby").param("latitude", "37.5").param("longitude", "127.0")
                         .header(RequestIdFilter.HEADER, "partial-1"))
@@ -58,18 +65,26 @@ class StationListResponseTest {
                 .andExpect(jsonPath("$.meta.requestId").value("partial-1"))
                 .andExpect(jsonPath("$.meta.partial").value(true))
                 .andExpect(jsonPath("$.meta.warnings[*].code").value(contains("STALE_DATA", "REALTIME_DATA_UNAVAILABLE")))
-                .andExpect(jsonPath("$.data", hasSize(2)))
-                .andExpect(jsonPath("$.data[0].stationId").value("fresh"))
-                .andExpect(jsonPath("$.data[0].realtimeStatus").value("FRESH"))
-                .andExpect(jsonPath("$.data[0].realtimeAgeSeconds").value(5))
-                .andExpect(jsonPath("$.data[0].parkingBikeTotCnt").value(0))
-                .andExpect(jsonPath("$.data[0].shared").value(0.0))
-                .andExpect(jsonPath("$.data[0].rackTotCnt").value(org.hamcrest.Matchers.nullValue()))
-                .andExpect(jsonPath("$.data[1].stationId").value("stale"))
-                .andExpect(jsonPath("$.data[1].realtimeStatus").value("STALE"))
-                .andExpect(jsonPath("$.data[1].realtimeAgeSeconds").value(300))
-                .andExpect(jsonPath("$.data[1].parkingBikeTotCnt").value(6))
-                .andExpect(jsonPath("$.data[1].shared").value(140.0));
+                .andExpect(jsonPath("$.data.items", hasSize(2)))
+                .andExpect(jsonPath("$.data.items[0].stationId").value("fresh"))
+                .andExpect(jsonPath("$.data.items[0].realtimeStatus").value("FRESH"))
+                .andExpect(jsonPath("$.data.items[0].realtimeAgeSeconds").value(5))
+                .andExpect(jsonPath("$.data.items[0].parkingBikeTotCnt").value(0))
+                .andExpect(jsonPath("$.data.items[0].shared").value(0.0))
+                .andExpect(jsonPath("$.data.items[0].rackTotCnt").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.data.items[1].stationId").value("stale"))
+                .andExpect(jsonPath("$.data.items[1].realtimeStatus").value("STALE"))
+                .andExpect(jsonPath("$.data.items[1].realtimeAgeSeconds").value(300))
+                .andExpect(jsonPath("$.data.items[1].parkingBikeTotCnt").value(6))
+                .andExpect(jsonPath("$.data.items[1].shared").value(140.0));
+    }
+
+    private static Station station(String id, Integer bikes, Instant updatedAt, Double shared, double distance) {
+        return new Station(id, id, "서울", new Location(37.5, 127.0), null, bikes, distance, updatedAt, shared);
+    }
+
+    private static StationCandidate candidate(Station station, RealtimeFreshness status, Long age) {
+        return new StationCandidate(station, status, age);
     }
 
     @Test

@@ -81,3 +81,10 @@ export const INITIAL_LOCATION: Coordinates = {
   latitude: 37.4979,
   longitude: 127.0276,
 };
+
+/** `GET /stations/nearby` data (spec 11.1, A5). `api.nearby()` returns only `items`. */
+export interface NearbyStations {
+  center: Coordinates;
+  radiusMeters: number;
+  items: Station[];
+}
