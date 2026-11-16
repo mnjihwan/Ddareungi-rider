@@ -1,8 +1,7 @@
 package com.ddareungi.global.http;
 
-import com.ddareungi.place.PlaceSearchController;
+import com.ddareungi.place.infrastructure.KakaoPlaceSearchProvider;
 import com.ddareungi.routing.KakaoRouteClient;
-import com.ddareungi.station.domain.StationSearchPort;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -94,7 +93,7 @@ class KakaoHttpClientPropertiesTest {
 
         var placeBuilder = mock(RestClient.Builder.class, RETURNS_SELF);
         when(placeBuilder.build()).thenReturn(mock(RestClient.class));
-        new PlaceSearchController(placeBuilder, mapper, "key", mock(StationSearchPort.class), properties);
+        new KakaoPlaceSearchProvider(placeBuilder, mapper, "key", properties);
         verify(placeBuilder).requestFactory(any(JdkClientHttpRequestFactory.class));
         verify(placeBuilder).baseUrl(anyString());
     }
