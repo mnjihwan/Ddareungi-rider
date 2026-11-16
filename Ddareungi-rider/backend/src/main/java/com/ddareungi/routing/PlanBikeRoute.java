@@ -1,6 +1,14 @@
 package com.ddareungi.routing;
 
+import com.ddareungi.global.http.ProviderHttpProperties;
+import com.ddareungi.global.resilience.ContextPropagation;
+import com.ddareungi.global.resilience.Deadline;
 import com.ddareungi.station.domain.Location;
+import org.springframework.beans.factory.annotation.Autowired;
+import java.time.Duration;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import com.ddareungi.station.domain.Station;
 import com.ddareungi.station.domain.StationSearchPort;
 import org.springframework.beans.factory.annotation.Value;
@@ -16,9 +24,21 @@ public class PlanBikeRoute {
     private final WalkingRouteProvider walking;
     private final BicycleRouteProvider bicycle;
     private final boolean enabled;
+    private final Duration deadline;
     public PlanBikeRoute(StationSearchPort stations, WalkingRouteProvider walking, BicycleRouteProvider bicycle,
-                         @Value("${routing.enabled:true}") boolean enabled) {
+                         boolean enabled) {
+        this(stations, walking, bicycle, enabled, ProviderHttpProperties.defaults().route().totalTimeout());
+    }
+    /** @param deadline budget of one whole plan, all provider calls and retries included (D8: 10s) */
+    public PlanBikeRoute(StationSearchPort stations, WalkingRouteProvider walking, BicycleRouteProvider bicycle,
+                         boolean enabled, Duration deadline) {
         this.stations = stations; this.walking = walking; this.bicycle = bicycle; this.enabled = enabled;
+        this.deadline = deadline;
+    }
+    @Autowired
+    public PlanBikeRoute(StationSearchPort stations, WalkingRouteProvider walking, BicycleRouteProvider bicycle,
+                         @Value("${routing.enabled:true}") boolean enabled, ProviderHttpProperties http) {
+        this(stations, walking, bicycle, enabled, http.route().totalTimeout());
     }
     public boolean configured() { return enabled && walking.configured() && bicycle.configured(); }
 
@@ -29,6 +49,26 @@ public class PlanBikeRoute {
     public Plan execute(Location origin, Location destination, String departureStationId, String arrivalStationId) {
         if (origin == null || destination == null) throw new IllegalArgumentException("출발지와 목적지를 선택해 주세요.");
         if (!configured()) throw new RouteException(HttpStatus.SERVICE_UNAVAILABLE, "ROUTING_NOT_CONFIGURED", "길찾기 연결을 준비하고 있어요. 장소와 대여소 조회는 계속 이용할 수 있어요.");
+        // The whole plan runs on a virtual thread under one deadline; past it, the work is cancelled (interrupted)
+        // and the client gets 504 EXTERNAL_API_TIMEOUT. Provider retries inside see the same deadline.
+        var budget = Deadline.after(deadline);
+        var plan = ContextPropagation.start("route-plan",
+                () -> budget.supply(() -> plan(origin, destination, departureStationId, arrivalStationId)));
+        try {
+            return plan.get(budget.remaining().toNanos(), TimeUnit.NANOSECONDS);
+        } catch (TimeoutException error) {
+            plan.cancel(true);
+            throw KakaoRouteClient.timeout();
+        } catch (InterruptedException error) {
+            plan.cancel(true);
+            Thread.currentThread().interrupt();
+            throw KakaoRouteClient.timeout();
+        } catch (ExecutionException error) {
+            throw ContextPropagation.unwrap(error);
+        }
+    }
+
+    private Plan plan(Location origin, Location destination, String departureStationId, String arrivalStationId) {
         var departures = candidates(origin, true, departureStationId);
         var arrivals = candidates(destination, false, arrivalStationId);
         if (departures.isEmpty()) throw new RouteException(HttpStatus.NOT_FOUND, "NO_RENTAL_STATION", "출발지 1km 안에 대여 가능한 자전거가 확인된 대여소가 없어요. 출발지나 지정 대여소를 변경해 주세요.");
@@ -85,6 +125,7 @@ public class PlanBikeRoute {
         var within500 = usable.stream().filter(s -> location.distanceTo(s.location()) <= 500).toList();
         return (within500.isEmpty() ? usable : within500).stream().limit(3).toList();
     }
+    // TODO(D2): switch to the FRESH 120s rule (RealtimeFreshnessPolicy) once P2-1 is merged; kept at 300s for now.
     private static boolean fresh(Station station) {
         var now = Instant.now();
         return station.location() != null && station.availableBikeCount() != null && station.availableBikeCount() >= 0
