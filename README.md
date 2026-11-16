@@ -242,10 +242,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\collect-data-once.
 - `KAKAO_MAPS_REST_API_KEY`: 서버의 장소/주소 검색과 도보·자전거 길찾기에 사용합니다. 브라우저에 전달하지 않으며 VITE 접두사를 붙이지 않습니다. 네이버 인증키는 현재 실행 경로에서 사용하지 않습니다.
 - `VITE_FORECAST_API_PATH`: 선택 사항. 제공된 기획서의 stationIds/horizons 요청 및 data 배열 응답 계약을 사용하는 예측 서비스의 경로입니다. 미설정이면 예측 준비 안내를 표시합니다. `ai/`의 오프라인 수요 모델과 이 잔여 수량 예측 API는 서로 다른 출력이며, 호환되는 예측 서버 연결은 아직 없습니다.
 
-백엔드 운영 설정(환경변수, 모두 선택). `KAKAO_HTTP_*`, `APP_CORS_ALLOWED_ORIGINS`는 백엔드 프로세스(jar 실행·배포 환경)에 직접 전달해야 하며, 현재 `compose.yaml`과 `scripts/start-local.sh`는 이 값을 전달하지 않아 기본값으로 동작합니다(배포 구성은 Phase 3 O7에서 정의):
+백엔드 운영 설정(환경변수, 모두 선택). `PROVIDER_HTTP_*`, `PROVIDER_RESILIENCE_*`, `RATE_LIMIT_*`, `APP_CORS_ALLOWED_ORIGINS`는 백엔드 프로세스(jar 실행·배포 환경)에 직접 전달해야 하며, 현재 `compose.yaml`과 `scripts/start-local.sh`는 이 값을 전달하지 않아 기본값으로 동작합니다(배포 구성은 Phase 3 O7에서 정의):
 
 - `MANAGEMENT_SERVER_PORT`: Actuator 관리 포트. 기본 `8090`이며 API 포트(8080)와 분리됩니다. `/actuator/health/liveness`, `/actuator/health/readiness`를 제공합니다. `infra` 프로필의 readiness는 `readinessState`와 MySQL(`db`)만 포함하고 Redis는 제외합니다(Redis 장애 시 수량을 null로 응답하며 서비스는 계속 동작). 로컬 실행 스크립트와 Vite `/actuator` 프록시가 이 값을 따르며, Compose 컨테이너는 항상 8090을 사용하고 이 포트를 호스트로 publish하지 않습니다.
-- `KAKAO_HTTP_CONNECT_TIMEOUT`(`kakao.http.connect-timeout`, 기본 `2s`), `KAKAO_HTTP_READ_TIMEOUT`(`kakao.http.read-timeout`, 기본 `5s`): 카카오 Local·길찾기 API 호출의 연결/응답 타임아웃. `500ms`, `3s` 같은 Duration 형식입니다.
+- 외부 Provider timeout(`provider.http.*`, Duration 형식 `500ms`, `3s`): 장소 `place`(connect `1s`/read `2500ms`/요청 전체 `3s`, env `PLACE_TOTAL_TIMEOUT`), 길찾기 `route`(`1s`/`4s`/계획 전체 `10s`, env `ROUTE_TOTAL_TIMEOUT`), `ors`(`1s`/`4s`). 개별 값은 relaxed binding(예: `PROVIDER_HTTP_PLACE_READ_TIMEOUT`)으로 지정합니다. 이전 `kakao.http.*`(`KAKAO_HTTP_*`)는 제거되어 설정해도 무시됩니다.
+- 복원력(`provider.resilience.*`): GET 재시도 1회(timeout·5xx·연결 오류만), circuit breaker(창 20, 최소 10회, 실패율 50%, OPEN 30초), 동시 호출 제한(장소 32, 경로 48). timeout은 504 `EXTERNAL_API_TIMEOUT`, breaker OPEN·포화는 502.
+- 장소 검색 캐시(`PLACE_CACHE_ENABLED`, 기본 true, infra 프로필만, TTL 5분, Redis 오류 시 우회).
+- Rate Limit(`RATE_LIMIT_ENABLED`, `RATE_LIMIT_{STATIONS|PLACES|ROUTES}_{BURST|PER_MINUTE}`): 클라이언트 IP(`remoteAddr`) 해시 기준 토큰 버킷. 초과 시 429 `RATE_LIMIT_EXCEEDED`+`Retry-After`. 수치는 운영 측정 전 초안(stations 분당 120/burst 30, places 30/30, routes 10/10)이며 프록시 뒤에서는 forwarding 설정이 필요합니다.
 - `APP_CORS_ALLOWED_ORIGINS`(`app.cors.allowed-origins`): `/api/**`에 브라우저 cross-origin 호출을 허용할 origin 목록. 쉼표로 구분한 정확한 `scheme://host[:port]` 값만 허용하며(예: `https://ddareungi.example.com,https://admin.example.com`), 와일드카드는 거부합니다. 기본값은 비어 있어 cross-origin 요청을 허용하지 않습니다. 로컬 개발은 Vite 프록시를 통한 same-origin 호출이므로 설정하지 않아도 됩니다.
 
 Vite는 최상위 `.env`를 읽습니다. 키 변경 후 웹 서버를 재시작합니다. 서버 REST 키는 `scripts/start-local.ps1` 또는 Compose를 통해 전달됩니다. 두 키는 같은 카카오 Developers 앱에서 발급합니다. 지도 연결 실패 시 명확히 표시한 도식 미리보기를 제공하며 실제 지도·경로나 예측값을 생성하지 않습니다.
