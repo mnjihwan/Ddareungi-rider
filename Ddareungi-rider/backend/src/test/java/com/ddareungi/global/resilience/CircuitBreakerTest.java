@@ -73,6 +73,57 @@ class CircuitBreakerTest {
         assertThat(breaker.tryAcquirePermission()).isTrue();
     }
 
+    // ---- Review M7: generations keep outcomes of calls admitted before a transition out of the probe ----
+    @Test void outcomeOfACallAdmittedWhileClosedIsDroppedAfterTheBreakerOpens() {
+        long old = breaker.acquire();
+        open();
+        breaker.onFailure(old); // would have re-recorded/reopened under the old rules; now dropped
+        now.addAndGet(Duration.ofSeconds(30).toNanos());
+        long probe = breaker.acquire();
+        assertThat(probe).isNotEqualTo(CircuitBreaker.DENIED).isNotEqualTo(old);
+        breaker.onSuccess(old);   // stale success: must not close the breaker
+        breaker.onIgnored(old);   // stale ignore: must not free the probe slot
+        assertThat(breaker.state()).isEqualTo(State.HALF_OPEN);
+        assertThat(breaker.acquire()).isEqualTo(CircuitBreaker.DENIED);
+        breaker.onSuccess(probe);
+        assertThat(breaker.state()).isEqualTo(State.CLOSED);
+    }
+
+    @Test void staleFailureDoesNotReopenAHalfOpenBreaker() {
+        long old = breaker.acquire();
+        open();
+        now.addAndGet(Duration.ofSeconds(30).toNanos());
+        long probe = breaker.acquire();
+        breaker.onFailure(old);
+        assertThat(breaker.state()).isEqualTo(State.HALF_OPEN);
+        breaker.onFailure(probe);
+        assertThat(breaker.state()).isEqualTo(State.OPEN);
+    }
+
+    @Test void probeOutcomeArrivingAfterTheBreakerReopenedIsDropped() {
+        open();
+        now.addAndGet(Duration.ofSeconds(30).toNanos());
+        long probe = breaker.acquire();
+        breaker.onFailure(); // current-generation failure (e.g. reported without a permit) reopens
+        assertThat(breaker.state()).isEqualTo(State.OPEN);
+        breaker.onSuccess(probe);
+        assertThat(breaker.state()).isEqualTo(State.OPEN);
+        // After closing, permits of the HALF_OPEN generation no longer count in the new CLOSED window.
+        now.addAndGet(Duration.ofSeconds(30).toNanos());
+        long next = breaker.acquire();
+        breaker.onSuccess(next);
+        assertThat(breaker.state()).isEqualTo(State.CLOSED);
+        for (int i = 0; i < 4; i++) breaker.onFailure(next);
+        assertThat(breaker.state()).isEqualTo(State.CLOSED);
+    }
+
+    @Test void permitsOfTheSameClosedGenerationAllCount() {
+        long a = breaker.acquire(), b = breaker.acquire(), c = breaker.acquire(), d = breaker.acquire();
+        assertThat(a).isEqualTo(b).isEqualTo(c).isEqualTo(d);
+        breaker.onSuccess(a); breaker.onSuccess(b); breaker.onFailure(c); breaker.onFailure(d);
+        assertThat(breaker.state()).isEqualTo(State.OPEN);
+    }
+
     private void open() {
         for (int i = 0; i < 4; i++) call(false);
         assertThat(breaker.state()).isEqualTo(State.OPEN);

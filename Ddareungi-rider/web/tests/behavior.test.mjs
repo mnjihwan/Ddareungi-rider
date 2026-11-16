@@ -128,7 +128,7 @@ test("forecast ranking uses future stock and leaves missing or stale predictions
   assert.equal(stationOutlook(items[0],forecast('empty-now',3),60,now).count,null);
 });
 
-test("server realtimeStatus decides FRESH/STALE; the client clock only downgrades to unavailable", () => {
+test("server STALE/UNAVAILABLE win; the client clock downgrades FRESH to STALE (>120 s) and to unavailable", () => {
   const at = (seconds) => new Date(now - seconds * 1000).toISOString();
   // Fallback without server status: 120 s FRESH, 121..600 s STALE, 601 s UNAVAILABLE.
   assert.equal(realtimeStatus({ realtimeUpdatedAt: at(120) }, now), "FRESH");
@@ -137,8 +137,10 @@ test("server realtimeStatus decides FRESH/STALE; the client clock only downgrade
   assert.equal(realtimeStatus({ realtimeUpdatedAt: at(601) }, now), "UNAVAILABLE");
   assert.equal(realtimeStatus({ realtimeUpdatedAt: null }, now), "UNAVAILABLE");
   assert.equal(realtimeStatus({ realtimeUpdatedAt: at(-31) }, now), "UNAVAILABLE");
-  // The server's verdict wins inside the servable window (small client clock differences do not flip it).
-  assert.equal(realtimeStatus({ realtimeUpdatedAt: at(150), realtimeStatus: "FRESH" }, now), "FRESH");
+  // Changed by the review fix: a server FRESH is no longer kept past 120 s of client-side age (a response left on
+  // screen between refetches must not keep advertising delayed counts as current). Server STALE is never upgraded.
+  assert.equal(realtimeStatus({ realtimeUpdatedAt: at(150), realtimeStatus: "FRESH" }, now), "STALE");
+  assert.equal(realtimeStatus({ realtimeUpdatedAt: at(100), realtimeStatus: "FRESH" }, now), "FRESH");
   assert.equal(realtimeStatus({ realtimeUpdatedAt: at(30), realtimeStatus: "STALE" }, now), "STALE");
   assert.equal(realtimeStatus({ realtimeUpdatedAt: at(30), realtimeStatus: "UNAVAILABLE" }, now), "UNAVAILABLE");
   // A response left on screen past max-stale becomes unavailable even if it said FRESH.

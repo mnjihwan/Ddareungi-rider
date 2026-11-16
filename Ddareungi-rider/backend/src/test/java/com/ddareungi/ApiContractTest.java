@@ -41,9 +41,9 @@ class ApiContractTest {
     MockMvc mvc;
 
     /**
-     * O3 rate limit (stations group: burst 30, keyed by remoteAddr) stays enabled here. The cached context is shared
-     * by every test method, which together send more than 30 station/status requests, so each method gets its own
-     * client address and stays far below the burst (largest method: about 15 requests).
+     * O3 rate limit (stations group: burst 100 since review H1, keyed by remoteAddr) stays enabled here. The cached
+     * context is shared by every test method, which together may send more than a burst of station/status requests,
+     * so each method gets its own client address and stays far below the burst (largest method: about 15 requests).
      */
     private static final java.util.concurrent.atomic.AtomicInteger CLIENT = new java.util.concurrent.atomic.AtomicInteger();
 

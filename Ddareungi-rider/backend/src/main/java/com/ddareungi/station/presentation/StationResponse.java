@@ -1,7 +1,6 @@
 package com.ddareungi.station.presentation;
 
 import com.ddareungi.realtime.domain.RealtimeFreshness;
-import com.ddareungi.realtime.domain.RealtimeFreshnessPolicy;
 import com.ddareungi.station.application.StationView;
 import com.ddareungi.station.domain.Station;
 import org.jspecify.annotations.Nullable;
@@ -28,7 +27,11 @@ public record StationResponse(
         double distanceMeters,
         @Nullable String address
 ) {
-    /** Maps a view classified by {@link com.ddareungi.station.application.StationViewMapper}. */
+    /**
+     * Maps a view classified by {@link com.ddareungi.station.application.StationViewMapper}. Review M8 removed the
+     * {@code from(Station)} overload that classified with the default 120/600 s policy: every caller (station
+     * lists, route plans) now goes through the mapper and therefore the configured thresholds.
+     */
     public static StationResponse from(StationView view) {
         Station station = view.station();
         var location = station.location();
@@ -45,19 +48,5 @@ public record StationResponse(
                 view.realtimeAgeSeconds(),
                 station.distanceMeters(),
                 station.address());
-    }
-
-    /**
-     * Compatibility mapping for callers without the policy bean (route plan response). Classifies with the default
-     * 120/600 s thresholds on the system clock, so a station without a servable value shows {@code UNAVAILABLE}.
-     * Station list endpoints use {@link #from(StationView)}; routing should switch to the mapper in E4.
-     */
-    public static StationResponse from(Station station) {
-        var assessment = RealtimeFreshnessPolicy.defaults().classify(station.updatedAt(), Instant.now());
-        return from(new StationView(station, assessment.status(), assessment.ageSeconds()));
-    }
-
-    public static @Nullable StationResponse fromNullable(@Nullable Station station) {
-        return station == null ? null : from(station);
     }
 }

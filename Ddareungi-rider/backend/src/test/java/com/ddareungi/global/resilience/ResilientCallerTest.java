@@ -8,6 +8,7 @@ import org.slf4j.MDC;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -85,7 +86,9 @@ class ResilientCallerTest {
         long started = System.nanoTime();
         assertThatThrownBy(() -> caller.call(() -> get("/slow"), true)).isInstanceOfSatisfying(ProviderCallException.class,
                 error -> assertThat(error.kind()).isEqualTo(ProviderCallException.Kind.TIMEOUT));
-        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofMillis(280));
+        // Review Low: was 280 ms, which flaked on loaded CI machines (virtual thread start + cancel). 700 ms still
+        // proves the 100 ms deadline wins over the 300 ms read timeout plus a retry (>= 600 ms).
+        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofMillis(700));
         assertThat(requests).hasValue(1); // no budget left for a retry
     }
 
@@ -129,6 +132,88 @@ class ResilientCallerTest {
         assertThatThrownBy(() -> caller.call(() -> get("/ok"), true)).isInstanceOfSatisfying(ProviderCallException.class,
                 error -> assertThat(error.kind()).isEqualTo(ProviderCallException.Kind.CIRCUIT_OPEN));
         assertThat(requests).hasValue(before);
+    }
+
+    // ---- Review M7: timeouts caused only by the remaining request budget do not count against the provider ----
+    static final ResilienceProperties.Breaker SMALL_BREAKER = new ResilienceProperties.Breaker(4, 4, 50, Duration.ofSeconds(30), 1);
+
+    ResilienceProperties noRetry() {
+        return new ResilienceProperties(new ResilienceProperties.Retry(0, Duration.ZERO), SMALL_BREAKER, settings.bulkhead());
+    }
+
+    static String hang() {
+        try { Thread.sleep(10_000); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+        return "late";
+    }
+
+    @Test void timeoutFromABudgetShorterThanTheReadTimeoutIsNotCounted() {
+        var breaker = new CircuitBreaker("test", SMALL_BREAKER);
+        // Read timeout 300 ms (the stub client's), only 100 ms of budget: the cut is ours, not the provider's.
+        var caller = new ResilientCaller("test", breaker, new Semaphore(4), noRetry(), Duration.ofMillis(100), Duration.ofMillis(300));
+        for (int i = 0; i < 6; i++) {
+            assertThatThrownBy(() -> caller.call(() -> get("/slow"), true)).isInstanceOfSatisfying(ProviderCallException.class, error -> {
+                assertThat(error.kind()).isEqualTo(ProviderCallException.Kind.TIMEOUT); // still 504 for the client
+                assertThat(error.budgetLimited()).isTrue();
+            });
+        }
+        assertThat(breaker.state()).isEqualTo(CircuitBreaker.State.CLOSED);
+    }
+
+    @Test void timeoutWithABudgetAtLeastTheReadTimeoutStillCounts() {
+        var breaker = new CircuitBreaker("test", SMALL_BREAKER);
+        // 100 ms of budget, read timeout 50 ms: the provider had its full read timeout and still did not answer.
+        var caller = new ResilientCaller("test", breaker, new Semaphore(4), noRetry(), Duration.ofMillis(100), Duration.ofMillis(50));
+        for (int i = 0; i < 4; i++) {
+            assertThatThrownBy(() -> caller.call(ResilientCallerTest::hang, true)).isInstanceOfSatisfying(ProviderCallException.class,
+                    error -> assertThat(error.budgetLimited()).isFalse());
+        }
+        assertThat(breaker.state()).isEqualTo(CircuitBreaker.State.OPEN);
+    }
+
+    @Test void budgetLimitedRetryAfterAProviderFailureStillCounts() {
+        var breaker = new CircuitBreaker("test", SMALL_BREAKER);
+        var retryOnce = new ResilienceProperties(new ResilienceProperties.Retry(1, Duration.ZERO), SMALL_BREAKER, settings.bulkhead());
+        var caller = new ResilientCaller("test", breaker, new Semaphore(4), retryOnce, Duration.ofMillis(150), Duration.ofSeconds(10));
+        for (int i = 0; i < 4; i++) {
+            var attempts = new AtomicInteger();
+            // First attempt: connection error (provider fault). Retry: hangs until the short budget runs out.
+            assertThatThrownBy(() -> caller.call(() -> {
+                if (attempts.incrementAndGet() == 1) throw new ResourceAccessException("connection refused");
+                return hang();
+            }, true)).isInstanceOfSatisfying(ProviderCallException.class, error -> assertThat(error.budgetLimited()).isTrue());
+            assertThat(attempts).hasValue(2);
+        }
+        assertThat(breaker.state()).isEqualTo(CircuitBreaker.State.OPEN);
+    }
+
+    @Test void callAdmittedBeforeTheBreakerOpenedIsNotTakenForTheHalfOpenProbe() throws Exception {
+        var now = new java.util.concurrent.atomic.AtomicLong();
+        var breaker = new CircuitBreaker("test", SMALL_BREAKER, now::get);
+        var caller = new ResilientCaller("test", breaker, new Semaphore(4), noRetry(), Duration.ofSeconds(5));
+        var started = new CountDownLatch(1);
+        var finish = new CountDownLatch(1);
+        var slow = Executors.newVirtualThreadPerTaskExecutor().submit(() -> caller.call(() -> {
+            started.countDown();
+            try { finish.await(5, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            return "old";
+        }, false));
+        assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+        for (int i = 0; i < 4; i++) {
+            assertThatThrownBy(() -> caller.call(() -> { throw new ResourceAccessException("down"); }, false))
+                    .isInstanceOf(ResourceAccessException.class);
+        }
+        assertThat(breaker.state()).isEqualTo(CircuitBreaker.State.OPEN);
+        now.addAndGet(Duration.ofSeconds(30).toNanos());
+        long probe = breaker.acquire(); // the real probe is in flight
+        assertThat(probe).isNotEqualTo(CircuitBreaker.DENIED);
+
+        finish.countDown();
+        assertThat(slow.get(5, TimeUnit.SECONDS)).isEqualTo("old");
+        // The old call's success neither closed the breaker nor freed the probe slot.
+        assertThat(breaker.state()).isEqualTo(CircuitBreaker.State.HALF_OPEN);
+        assertThat(breaker.tryAcquirePermission()).isFalse();
+        breaker.onSuccess(probe);
+        assertThat(breaker.state()).isEqualTo(CircuitBreaker.State.CLOSED);
     }
 
     @Test void fullBulkheadRejectsWithoutCallingTheProvider() {

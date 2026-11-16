@@ -10,25 +10,33 @@ export const AVAILABILITY_LABEL: Record<Availability, string> = {
   unknown: "정보 확인 중",
 };
 
-/** Same boundaries as the backend defaults (spec 11.0, X3); used only when the server status is missing. */
+/**
+ * Freshness thresholds in seconds. KEEP IN SYNC with the backend `realtime.freshness` settings
+ * (`realtime.freshness.fresh-seconds` = 120 and `.max-stale-seconds` = 600 in backend application.yml, overridable
+ * via REALTIME_FRESH_SECONDS / REALTIME_MAX_STALE_SECONDS; spec 11.0 / X3). When the backend values change, change these too.
+ */
 export const FRESH_SECONDS = 120;
 export const MAX_STALE_SECONDS = 600;
-const MAX_CLOCK_SKEW_MS = 30_000;
+/** Collection times further than this in the future are treated as an invalid clock. */
+export const MAX_CLOCK_SKEW_MS = 30_000;
 
 type StationStatusFields = Pick<Station, "realtimeUpdatedAt"> & Partial<Pick<Station, "realtimeStatus">>;
 
 /**
- * Freshness for display. The server's `realtimeStatus` decides FRESH vs STALE. The client clock only downgrades to
- * UNAVAILABLE (a response kept on screen beyond max-stale, or a collection time more than 30s in the future), and
- * classifies by age when an older response has no `realtimeStatus`.
+ * Freshness for display, evaluated against the client clock at render time.
+ * - Missing/invalid collection time, or one more than 30 s in the future: UNAVAILABLE.
+ * - Server UNAVAILABLE, or age > MAX_STALE_SECONDS: UNAVAILABLE.
+ * - Server STALE is kept (never upgraded to FRESH).
+ * - Server FRESH (or no server status) is downgraded to STALE once the age exceeds FRESH_SECONDS, so a response
+ *   left on screen between refetches never keeps advertising delayed counts as current.
  */
 export function realtimeStatus(station: StationStatusFields, now = Date.now()): RealtimeStatus {
   const updated = station.realtimeUpdatedAt ? Date.parse(station.realtimeUpdatedAt) : NaN;
   if (!Number.isFinite(updated) || updated - now > MAX_CLOCK_SKEW_MS) return "UNAVAILABLE";
   const ageSeconds = Math.max(0, Math.floor((now - updated) / 1000));
   if (ageSeconds > MAX_STALE_SECONDS || station.realtimeStatus === "UNAVAILABLE") return "UNAVAILABLE";
-  if (station.realtimeStatus === "FRESH" || station.realtimeStatus === "STALE") return station.realtimeStatus;
-  return ageSeconds <= FRESH_SECONDS ? "FRESH" : "STALE";
+  if (station.realtimeStatus === "STALE" || ageSeconds > FRESH_SECONDS) return "STALE";
+  return "FRESH";
 }
 
 export function availability(station: StationStatusFields & Pick<Station, "parkingBikeTotCnt">, now = Date.now()): Availability {
@@ -116,4 +124,38 @@ export function compareOutlooks(a: Station, b: Station, forecasts: Map<string, i
   return AVAILABILITY_RANK[stationOutlook(a, forecasts.get(a.stationId), minutes, now).state]
     - AVAILABILITY_RANK[stationOutlook(b, forecasts.get(b.stationId), minutes, now).state]
     || a.distanceMeters - b.distanceMeters;
+}
+
+export interface EndpointAction {
+  disabled: boolean;
+  /** Why the button is disabled (or a caution when it is enabled); null when nothing needs saying. */
+  reason: string | null;
+}
+
+/**
+ * "여기서 출발" / "여기로 도착" rules, mirroring the backend route planner: a pinned departure station must be FRESH
+ * with bikes (STALE and unknown are rejected), a pinned arrival station is rejected only when UNAVAILABLE
+ * (STALE is accepted, with a delay notice).
+ */
+export function endpointActions(
+  station: StationStatusFields & Pick<Station, "parkingBikeTotCnt">,
+  sample = false,
+  now = Date.now(),
+): { departure: EndpointAction; arrival: EndpointAction } {
+  if (sample) {
+    const reason = "샘플 데이터라 길찾기에 사용할 수 없어요.";
+    return { departure: { disabled: true, reason }, arrival: { disabled: true, reason } };
+  }
+  const state = availability(station, now);
+  const status = realtimeStatus(station, now);
+  const departure: EndpointAction =
+    state === "available" || state === "low" ? { disabled: false, reason: null }
+      : state === "stale" ? { disabled: true, reason: "수량 갱신이 지연되어 출발 대여소로 지정할 수 없어요." }
+        : state === "empty" ? { disabled: true, reason: "대여 가능한 자전거가 없어 출발 대여소로 지정할 수 없어요." }
+          : { disabled: true, reason: "실시간 수량을 확인할 수 없어 출발 대여소로 지정할 수 없어요." };
+  const arrival: EndpointAction =
+    status === "UNAVAILABLE" ? { disabled: true, reason: "실시간 정보를 확인할 수 없어 도착 대여소로 지정할 수 없어요." }
+      : status === "STALE" ? { disabled: false, reason: "수량 갱신이 지연되고 있어요. 반납 전 현장에서 확인해 주세요." }
+        : { disabled: false, reason: null };
+  return { departure, arrival };
 }

@@ -354,6 +354,18 @@ p {
   color: var(--theme-muted, #8e9196);
   background: var(--raised-surface, #eff0f2);
 }
+/* STALE: last known count, delayed. Neutral gray (never the "available" blue) plus a dashed outline so it stays
+   distinct from "unknown" and from 0-bike "empty". Theme variables keep light/dark consistent. */
+.availability-tag.stale {
+  color: var(--theme-muted, #7d828a);
+  background: var(--raised-surface, #eff0f2);
+  outline: 1px dashed currentColor;
+  outline-offset: -1px;
+}
+.availability-tag.stale i {
+  background: transparent;
+  border: 1px solid currentColor;
+}
 .station-distance {
   color: var(--theme-muted, #9a9fa6);
   font-size: 10px;
@@ -389,6 +401,10 @@ p {
 }
 .station-count.unknown {
   color: var(--theme-muted, #95999e);
+}
+.station-count.stale {
+  color: var(--theme-muted, #8a8f96);
+  opacity: 0.75;
 }
 .station-card-select > p {
   font-size: 10px;
@@ -528,6 +544,14 @@ p {
   color: var(--theme-muted, #848991);
   border-color: #a4aab2;
 }
+.station-marker.stale {
+  color: var(--theme-muted, #848991);
+  border-color: #a4aab2;
+  border-style: dashed;
+}
+.station-marker.stale b {
+  opacity: 0.75;
+}
 .station-marker.selected {
   background: #23426e;
   color: #fff;
@@ -661,6 +685,11 @@ p {
 }
 .map-legend .unknown {
   color: var(--theme-muted, #999ea6);
+}
+.map-legend .stale {
+  color: var(--theme-muted, #999ea6);
+  background: transparent;
+  border: 1px dashed currentColor;
 }
 .map-connection {
   position: absolute;
@@ -851,6 +880,15 @@ p {
 .detail-inventory.empty {
   background: var(--negative-surface, #fbf0ec);
   color: var(--theme-negative, #b56d5a);
+}
+.detail-inventory.stale {
+  background: var(--raised-surface, #eff1f3);
+  color: var(--theme-muted, #8a9098);
+  outline: 1px dashed currentColor;
+  outline-offset: -1px;
+}
+.detail-inventory.stale strong {
+  opacity: 0.75;
 }
 .detail-meta {
   display: flex;
@@ -1484,6 +1522,7 @@ p {
 
 .endpoint-actions { display:flex; gap:8px; }
 .endpoint-actions > button { flex:1; min-width:0; }
+.endpoint-notes { margin-top: 8px; font-size: 11px; line-height: 1.6; color: var(--theme-muted, #6f7782); }
 .searched-place { padding:14px; margin:0 0 18px; border:1px solid var(--theme-line, #d8e1ed); border-radius:12px; background:var(--raised-surface, #f6f8fb); }
 .searched-place p { font-size:12px; color: var(--theme-muted, #68788f); margin:6px 0 12px; }
 

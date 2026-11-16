@@ -10,6 +10,12 @@ import java.util.function.LongSupplier;
  * rejects calls for {@code openDuration}. Then HALF_OPEN admits {@code halfOpenProbes} probes: all succeeding closes
  * it, any failure reopens it. Outcomes reported with {@link #onIgnored()} (4xx, "no road route", cancellations)
  * never count, but release a probe slot.
+ *
+ * <p>Generations (review M7): every state transition starts a new generation. {@link #acquire()} hands out the
+ * current generation as the permit, and an outcome reported with an older permit is dropped. Without this a slow
+ * call admitted while CLOSED could finish after the breaker opened and turned HALF_OPEN, and be taken for the probe
+ * (closing the breaker on its success, or reopening it on its failure, and freeing a probe slot it never held).
+ * The permit-less methods report against the current generation (as before).
  */
 public final class CircuitBreaker {
     public enum State { CLOSED, OPEN, HALF_OPEN }
@@ -26,6 +32,11 @@ public final class CircuitBreaker {
     private long openedAtNanos;
     private int probesInFlight;
     private int probesSucceeded;
+    /** Incremented on every state transition; see the class comment. */
+    private long generation;
+
+    /** Returned by {@link #acquire()} when the call is not permitted. */
+    public static final long DENIED = -1;
 
     public CircuitBreaker(String name, ResilienceProperties.Breaker settings) {
         this(name, settings, System::nanoTime);
@@ -47,31 +58,49 @@ public final class CircuitBreaker {
 
     /** True when a call may proceed. Every permitted call must later report exactly one outcome. */
     public synchronized boolean tryAcquirePermission() {
+        return acquire() != DENIED;
+    }
+
+    /**
+     * Like {@link #tryAcquirePermission()}, but returns the permit (the current generation) to report the outcome
+     * with, or {@link #DENIED}. Every permit must later report exactly one outcome.
+     */
+    public synchronized long acquire() {
         if (state == State.OPEN) {
-            if (!openElapsed()) return false;
+            if (!openElapsed()) return DENIED;
             transition(State.HALF_OPEN);
             probesInFlight = 0;
             probesSucceeded = 0;
         }
         if (state == State.HALF_OPEN) {
-            if (probesInFlight >= settings.halfOpenProbes()) return false;
+            if (probesInFlight >= settings.halfOpenProbes()) return DENIED;
             probesInFlight++;
         }
-        return true;
+        return generation;
     }
 
-    public synchronized void onSuccess() {
+    public synchronized void onSuccess() { onSuccess(generation); }
+
+    public synchronized void onFailure() { onFailure(generation); }
+
+    /** The call ended in a way that says nothing about provider health. */
+    public synchronized void onIgnored() { onIgnored(generation); }
+
+    /** Outcome of the call admitted with {@code permit}; dropped when the breaker has changed state since. */
+    public synchronized void onSuccess(long permit) {
+        if (permit != generation) return;
         switch (state) {
             case CLOSED -> record(false);
             case HALF_OPEN -> {
                 probesInFlight = Math.max(0, probesInFlight - 1);
                 if (++probesSucceeded >= settings.halfOpenProbes()) close();
             }
-            case OPEN -> { /* A call admitted before opening; it no longer matters. */ }
+            case OPEN -> { /* Unreachable: OPEN always has a newer generation than any permit. */ }
         }
     }
 
-    public synchronized void onFailure() {
+    public synchronized void onFailure(long permit) {
+        if (permit != generation) return;
         switch (state) {
             case CLOSED -> {
                 record(true);
@@ -83,8 +112,8 @@ public final class CircuitBreaker {
         }
     }
 
-    /** The call ended in a way that says nothing about provider health. */
-    public synchronized void onIgnored() {
+    public synchronized void onIgnored(long permit) {
+        if (permit != generation) return;
         if (state == State.HALF_OPEN) probesInFlight = Math.max(0, probesInFlight - 1);
     }
 
@@ -121,7 +150,10 @@ public final class CircuitBreaker {
     private boolean openElapsed() { return nanoClock.getAsLong() - openedAtNanos >= settings.openDuration().toNanos(); }
 
     private void transition(State target) {
-        if (state != target) log.warn("Circuit breaker {}: {} -> {}", name, state, target);
+        if (state != target) {
+            log.warn("Circuit breaker {}: {} -> {}", name, state, target);
+            generation++;
+        }
         state = target;
     }
 }

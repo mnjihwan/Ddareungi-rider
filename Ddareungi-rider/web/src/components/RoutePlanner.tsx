@@ -44,13 +44,13 @@ export function RoutePlanner({onStationSelectionChange, onPlanningChange, active
   const resultElement = useRef<HTMLDivElement>(null);
   const status = useQuery({queryKey:['routing-status'], queryFn: async ({signal}) =>
     unwrap((await api.get<ApiEnvelope<{configured:boolean}>>('/routes/status',{signal})).data),
-    staleTime:30_000, retry:1});
+    staleTime:30_000});
   const nearbyCenter = (activeEndpoint === 'origin' ? origin : destination)?.location ?? searchCenter;
   const nearbyStations = useQuery({
     queryKey: ['route-nearby', nearbyCenter],
     queryFn: ({signal}) => nearby(nearbyCenter, 1000, signal),
     enabled: active && !plan,
-    staleTime: 30_000, refetchInterval: active && !plan ? 60_000 : false, retry: 1,
+    staleTime: 30_000, refetchInterval: active && !plan ? 60_000 : false,
   });
   const suggestions = [...(nearbyStations.data ?? [])].sort(compareStations).slice(0, 3);
   function assignEndpoint(role: RouteEndpointRole, place: Place | null, station: Station | null = null, accuracy: number | null = null) {

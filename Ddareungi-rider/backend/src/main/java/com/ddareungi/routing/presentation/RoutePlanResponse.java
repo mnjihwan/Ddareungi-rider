@@ -3,6 +3,8 @@ package com.ddareungi.routing.presentation;
 import com.ddareungi.global.response.CoordinateResponse;
 import com.ddareungi.routing.PlanBikeRoute;
 import com.ddareungi.routing.RouteProvider;
+import com.ddareungi.station.application.StationViewMapper;
+import com.ddareungi.station.domain.Station;
 import com.ddareungi.station.presentation.StationResponse;
 import org.jspecify.annotations.Nullable;
 
@@ -21,17 +23,27 @@ public record RoutePlanResponse(
         Instant generatedAt,
         String attribution
 ) {
-    public static RoutePlanResponse from(PlanBikeRoute.Plan plan) {
+    /**
+     * Review M8: the stations' {@code realtimeStatus}/{@code realtimeAgeSeconds} come from the configured
+     * {@link com.ddareungi.realtime.domain.RealtimeFreshnessPolicy} (through {@link StationViewMapper}), judged
+     * against one instant for both stations, instead of the former fixed 120/600 s default on the system clock.
+     */
+    public static RoutePlanResponse from(PlanBikeRoute.Plan plan, StationViewMapper stations) {
+        Instant now = stations.now();
         return new RoutePlanResponse(
                 CoordinateResponse.from(plan.origin()),
                 CoordinateResponse.from(plan.destination()),
-                StationResponse.fromNullable(plan.departureStation()),
-                StationResponse.fromNullable(plan.arrivalStation()),
+                station(plan.departureStation(), stations, now),
+                station(plan.arrivalStation(), stations, now),
                 plan.legs().stream().map(LegResponse::from).toList(),
                 plan.distanceMeters(),
                 plan.durationSeconds(),
                 plan.generatedAt(),
                 plan.attribution());
+    }
+
+    private static @Nullable StationResponse station(@Nullable Station station, StationViewMapper stations, Instant now) {
+        return station == null ? null : StationResponse.from(stations.toView(station, now));
     }
 
     public record LegResponse(String mode, double distanceMeters, double durationSeconds,

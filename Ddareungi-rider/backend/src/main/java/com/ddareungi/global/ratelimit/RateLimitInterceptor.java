@@ -9,10 +9,14 @@ import org.springframework.web.servlet.HandlerInterceptor;
 import org.springframework.web.servlet.HandlerMapping;
 import org.springframework.web.util.pattern.PathPattern;
 
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.regex.Pattern;
 
 /**
  * Applies the group policies before the controller runs. It is a handler interceptor, not a servlet filter, so it
@@ -65,14 +69,53 @@ public class RateLimitInterceptor implements HandlerInterceptor {
                 ? uri.substring(contextPath.length()) : uri;
     }
 
-    /** SHA-256 of the client address (first 128 bits, hex), so raw IPs are not stored as Redis keys or map keys. */
+    /**
+     * SHA-256 of the normalized client address (first 128 bits, hex), so raw IPs are not stored as Redis keys or
+     * map keys. See {@link #normalizeClientAddress(String)} for the normalization.
+     */
     static String clientHash(@Nullable String remoteAddr) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
-                    .digest((remoteAddr == null ? "" : remoteAddr).getBytes(StandardCharsets.UTF_8));
+                    .digest(normalizeClientAddress(remoteAddr).getBytes(StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(digest, 0, 16);
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 is required by the Java platform", exception);
         }
     }
+
+    /**
+     * Review M6: an IPv6 client usually owns a whole /64 and can rotate through it freely (privacy addresses), so
+     * per-address buckets would not limit it. IPv6 addresses are therefore reduced to their /64 prefix, and an
+     * IPv4-mapped IPv6 address ({@code ::ffff:a.b.c.d}) is treated as the IPv4 address. Anything that is not an IP
+     * literal is used as is; this never performs a DNS lookup.
+     */
+    static String normalizeClientAddress(@Nullable String remoteAddr) {
+        if (remoteAddr == null || remoteAddr.isEmpty()) return "";
+        String address = remoteAddr.strip();
+        if (address.startsWith("[") && address.endsWith("]")) address = address.substring(1, address.length() - 1);
+        int zone = address.indexOf('%');
+        if (zone >= 0) address = address.substring(0, zone);
+        // Only IP literals are parsed: InetAddress.getByName would resolve a host name.
+        if (address.indexOf(':') < 0 || !IPV6_LITERAL.matcher(address).matches()) return address;
+        InetAddress parsed;
+        try {
+            parsed = InetAddress.getByName(address);
+        } catch (UnknownHostException | RuntimeException invalid) {
+            return address;
+        }
+        if (parsed instanceof Inet4Address) return parsed.getHostAddress(); // IPv4-mapped IPv6
+        byte[] bytes = parsed.getAddress();
+        if (bytes.length != 16) return address;
+        if (isIpv4Mapped(bytes)) {
+            return (bytes[12] & 0xff) + "." + (bytes[13] & 0xff) + "." + (bytes[14] & 0xff) + "." + (bytes[15] & 0xff);
+        }
+        return "v6:" + HexFormat.of().formatHex(bytes, 0, 8) + "/64";
+    }
+
+    private static boolean isIpv4Mapped(byte[] bytes) {
+        for (int i = 0; i < 10; i++) if (bytes[i] != 0) return false;
+        return bytes[10] == (byte) 0xff && bytes[11] == (byte) 0xff;
+    }
+
+    private static final Pattern IPV6_LITERAL = Pattern.compile("[0-9A-Fa-f:.]+");
 }

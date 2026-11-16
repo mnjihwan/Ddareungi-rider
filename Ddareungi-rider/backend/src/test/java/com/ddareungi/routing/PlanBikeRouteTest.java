@@ -171,8 +171,13 @@ class PlanBikeRouteTest {
         verify(walking,never()).forRequest();
         verify(bicycle,never()).forRequest();
     }
-    @Test void stalePinnedReturnStationIsRejected() {
-        when(stations.findByIds(List.of("a1"),destination)).thenReturn(List.of(station("a1",a1.location(),0,Instant.now().minusSeconds(301))));
+    // Review M3(a): a pinned return station only has to be servable (spec 11.0). The former 301 s case is STALE
+    // and now accepted, so the rejection case moved past max-stale (601 s, UNAVAILABLE); the same error still applies.
+    @Test void unavailablePinnedReturnStationIsRejected() {
+        when(stations.findByIds(List.of("a1"),destination)).thenReturn(List.of(station("a1",a1.location(),0,Instant.now().minusSeconds(601))));
+        assertThatThrownBy(()->planner.execute(origin,destination,null,"a1"))
+            .isInstanceOfSatisfying(RouteException.class,e->assertThat(e.code).isEqualTo("STATION_STATUS_UNAVAILABLE"));
+        when(stations.findByIds(List.of("a1"),destination)).thenReturn(List.of(station("a1",a1.location(),0,null)));
         assertThatThrownBy(()->planner.execute(origin,destination,null,"a1"))
             .isInstanceOfSatisfying(RouteException.class,e->assertThat(e.code).isEqualTo("STATION_STATUS_UNAVAILABLE"));
     }
@@ -246,25 +251,93 @@ class PlanBikeRouteTest {
         when(bicycle.durations(anyList(),anyList())).thenReturn(new Double[][]{{400.0}});
         assertThat(fixedPlanner().execute(origin,destination,"p").departureStation().stationId()).isEqualTo("p");
     }
-    @Test void pinnedReturnStaleAt121sIsRejectedWith503() {
-        when(stations.findByIds(List.of("a1"),destination)).thenReturn(List.of(station("a1",a1.location(),0,NOW.minusSeconds(121))));
+    /** One FRESH departure d1 and the matrices for one departure × one arrival. */
+    private void singleFreshDeparture() {
         when(stations.findNearby(origin,1000)).thenReturn(List.of(station("d1",d1.location(),3,NOW)));
+        when(stations.findByIds(anyList(),eq(origin))).thenReturn(List.of(station("d1",d1.location(),3,NOW)));
+        when(walking.durations(eq(List.of(origin)),anyList())).thenReturn(new Double[][]{{50.0}});
+        when(walking.durations(anyList(),eq(List.of(destination)))).thenReturn(new Double[][]{{20.0}});
+        when(bicycle.durations(anyList(),anyList())).thenReturn(new Double[][]{{400.0}});
+    }
+    // Review M3(a): this case used to expect 503 (FRESH required for a pinned return). Spec 11.0 only excludes
+    // UNAVAILABLE return stations, so a STALE pinned return (121 s and 600 s) is accepted; 601 s is rejected.
+    @Test void pinnedReturnStaleIsAcceptedUpToMaxStaleAndUnavailableAt601sIsRejectedWith503() {
+        singleFreshDeparture();
+        for (int age : new int[]{121, 600}) {
+            when(stations.findByIds(List.of("a1"),destination)).thenReturn(List.of(station("a1",a1.location(),0,NOW.minusSeconds(age))));
+            assertThat(fixedPlanner().execute(origin,destination,null,"a1").arrivalStation().stationId()).as("age %d",age).isEqualTo("a1");
+        }
+        when(stations.findByIds(List.of("a1"),destination)).thenReturn(List.of(station("a1",a1.location(),0,NOW.minusSeconds(601))));
         assertThatThrownBy(()->fixedPlanner().execute(origin,destination,null,"a1"))
                 .isInstanceOfSatisfying(RouteException.class,e->{
                     assertThat(e.code).isEqualTo("STATION_STATUS_UNAVAILABLE");
                     assertThat(e.status).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
                 });
     }
-    @Test void staleReturnCandidateIsExcludedButZeroBikeFreshReturnIsKept() {
-        when(stations.findNearby(origin,1000)).thenReturn(List.of(station("d1",d1.location(),3,NOW)));
-        when(stations.findByIds(anyList(),eq(origin))).thenReturn(List.of(station("d1",d1.location(),3,NOW)));
+    // Review M3(a): formerly "stale return candidate is excluded". Return candidates now drop only UNAVAILABLE
+    // stations: the STALE one (121 s) stays a candidate, the 601 s one does not, and a FRESH 0-bike one is kept.
+    @Test void unavailableReturnCandidateIsExcludedButStaleAndZeroBikeFreshReturnsAreKept() {
+        singleFreshDeparture();
         when(stations.findNearby(destination,1000)).thenReturn(List.of(
-                station("staleReturn",a2.location(),20,NOW.minusSeconds(121)),station("a1",a1.location(),0,NOW.minusSeconds(120))));
-        when(walking.durations(eq(List.of(origin)),anyList())).thenReturn(new Double[][]{{50.0}});
-        when(walking.durations(anyList(),eq(List.of(destination)))).thenReturn(new Double[][]{{20.0}});
-        when(bicycle.durations(anyList(),anyList())).thenReturn(new Double[][]{{400.0}});
+                station("gone",new Location(37.5205,127.04),20,NOW.minusSeconds(601)),
+                station("staleReturn",a2.location(),20,NOW.minusSeconds(121)),
+                station("a1",a1.location(),0,NOW.minusSeconds(120))));
+        // Ends are sorted by distance to the destination: a1 (about 11 m) before staleReturn (about 111 m).
+        when(walking.durations(anyList(),eq(List.of(destination)))).thenReturn(new Double[][]{{5.0},{20.0}});
+        when(bicycle.durations(anyList(),anyList())).thenReturn(new Double[][]{{400.0,400.0}});
         assertThat(fixedPlanner().execute(origin,destination,null).arrivalStation().stationId()).isEqualTo("a1");
-        verify(bicycle).durations(List.of(d1.location()),List.of(a1.location()));
+        verify(bicycle).durations(List.of(d1.location()),List.of(a1.location(),a2.location()));
+    }
+    @Test void staleReturnCandidateCanBeTheChosenArrival() {
+        singleFreshDeparture();
+        when(stations.findNearby(destination,1000)).thenReturn(List.of(station("staleReturn",a2.location(),20,NOW.minusSeconds(599))));
+        assertThat(fixedPlanner().execute(origin,destination,null).arrivalStation().stationId()).isEqualTo("staleReturn");
+    }
+    @Test void onlyUnavailableReturnCandidatesAre503NotNoReturnStation() {
+        singleFreshDeparture();
+        when(stations.findNearby(destination,1000)).thenReturn(List.of(
+                station("gone",a2.location(),20,NOW.minusSeconds(601)),station("never",a1.location(),null,null)));
+        assertThatThrownBy(()->fixedPlanner().execute(origin,destination,null))
+                .isInstanceOfSatisfying(RouteException.class,e->{
+                    assertThat(e.code).isEqualTo("STATION_STATUS_UNAVAILABLE");
+                    assertThat(e.status).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+                });
+        verify(walking,never()).forRequest();
+    }
+    // ---- Review M3(b): departure decision table (spec 11.0) ----
+    private void assertDepartureDecision(String code, HttpStatus status, Station... nearby) {
+        when(stations.findNearby(origin,1000)).thenReturn(List.of(nearby));
+        when(stations.findNearby(destination,1000)).thenReturn(List.of(station("a1",a1.location(),0,NOW)));
+        assertThatThrownBy(()->fixedPlanner().execute(origin,destination,null))
+                .isInstanceOfSatisfying(RouteException.class,e->{
+                    assertThat(e.code).isEqualTo(code);
+                    assertThat(e.status).isEqualTo(status);
+                });
+        verify(walking,never()).forRequest();
+        verify(bicycle,never()).forRequest();
+    }
+    @Test void allFreshZeroBikeDeparturesAreNoRentalBikes() {
+        assertDepartureDecision("NO_RENTAL_BIKES",HttpStatus.NOT_FOUND,
+                station("z1",d1.location(),0,NOW),station("z2",d2.location(),0,NOW.minusSeconds(120)));
+    }
+    @Test void freshZeroBikesWithAStaleDepartureIs503NotNoRentalBikes() {
+        assertDepartureDecision("STATION_STATUS_UNAVAILABLE",HttpStatus.SERVICE_UNAVAILABLE,
+                station("z1",d1.location(),0,NOW),station("s1",d2.location(),5,NOW.minusSeconds(121)));
+    }
+    @Test void freshZeroBikesWithAnUnavailableDepartureIs503NotNoRentalBikes() {
+        assertDepartureDecision("STATION_STATUS_UNAVAILABLE",HttpStatus.SERVICE_UNAVAILABLE,
+                station("z1",d1.location(),0,NOW),station("u1",d2.location(),null,null));
+        clearInvocations(walking,bicycle);
+        assertDepartureDecision("STATION_STATUS_UNAVAILABLE",HttpStatus.SERVICE_UNAVAILABLE,
+                station("z1",d1.location(),0,NOW),station("u2",d2.location(),5,NOW.minusSeconds(601)));
+    }
+    @Test void freshPositiveDepartureWinsOverStaleAndUnavailableNeighbours() {
+        singleFreshDeparture();
+        when(stations.findNearby(origin,1000)).thenReturn(List.of(
+                station("s1",d2.location(),5,NOW.minusSeconds(121)),station("z1",d2.location(),0,NOW),
+                station("d1",d1.location(),3,NOW),station("u1",d2.location(),null,null)));
+        when(stations.findNearby(destination,1000)).thenReturn(List.of(station("a1",a1.location(),0,NOW)));
+        assertThat(fixedPlanner().execute(origin,destination,null).departureStation().stationId()).isEqualTo("d1");
     }
     @Test void oneEvaluationInstantPerRequestIncludingTheStockRecheck() {
         // The clock advances 100 s on every read. With a single now per request a 119 s-old departure stays

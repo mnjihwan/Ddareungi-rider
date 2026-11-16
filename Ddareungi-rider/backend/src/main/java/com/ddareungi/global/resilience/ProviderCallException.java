@@ -16,11 +16,23 @@ public class ProviderCallException extends RuntimeException {
     }
 
     private final Kind kind;
+    private final boolean budgetLimited;
 
     public ProviderCallException(Kind kind, String message) {
+        this(kind, message, false);
+    }
+
+    /**
+     * @param budgetLimited a {@link Kind#TIMEOUT} caused by the request's remaining deadline budget (smaller than
+     *                      the provider read timeout, or already spent) rather than by the provider (review M7)
+     */
+    public ProviderCallException(Kind kind, String message, boolean budgetLimited) {
         super(message, null, false, false);
         this.kind = kind;
+        this.budgetLimited = budgetLimited;
     }
 
     public Kind kind() { return kind; }
+
+    public boolean budgetLimited() { return budgetLimited; }
 }

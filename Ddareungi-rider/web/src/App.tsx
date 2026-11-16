@@ -11,7 +11,7 @@ import {
   viewportStations,
   nearbySubways,
   forecastPath, loadForecasts,
-  unwrap, type ApiEnvelope,
+  unwrap, type ApiEnvelope, apiErrorMessage,
 } from "./lib/api";
 import { INITIAL_LOCATION, stationLocation, type Coordinates, type Station, type MapBounds, type BikeRoute, type Place, type RouteEndpointRole } from "./lib/types";
 import {useRecentPlaces} from './lib/useRecentPlaces';
@@ -95,14 +95,12 @@ export default function App() {
     queryFn: ({ signal }) => nearby(center, radius, signal),
     staleTime: 30000,
     refetchInterval: 60000,
-    retry: 1,
   });
   const saved = useQuery({
     queryKey: ["favorites", favorites.ids, center],
     queryFn: ({ signal }) => favoriteStations(favorites.ids, center, signal),
     enabled: favorites.ids.length > 0,
     refetchInterval: 60000,
-    retry: 1,
   });
   const mapStations = useQuery({
     queryKey: ["viewport", viewport],
@@ -111,14 +109,12 @@ export default function App() {
     placeholderData: previous => previous,
     staleTime: 30000,
     refetchInterval: 60000,
-    retry: 1,
   });
   const selectedQuery = useQuery({
     queryKey: ["selected", selectedId, center],
     queryFn: ({ signal }) => favoriteStations([selectedId!], center, signal),
     enabled: !!selectedId,
     refetchInterval: 60000,
-    retry: 1,
   });
   const search = useQuery({
     queryKey: ["search", submitted, center],
@@ -491,7 +487,7 @@ export default function App() {
               <div className="mobile-map-info">
                 {searchShortcuts}
                 <details className="mobile-map-legend"><summary>지도 수량 표시 안내</summary>
-                  <p>파랑 4대 이상 · 노랑 1–3대 · 빨강 0대 · 회색 정보 없음</p>
+                  <p>파랑 4대 이상 · 노랑 1–3대 · 빨강 0대 · 회색 점선 갱신 지연(대여 가능 여부 미확인) · 회색 정보 없음</p>
                 </details>
               </div>
               <div className="list-filter">
@@ -564,8 +560,7 @@ export default function App() {
                 )}
               {!submitted && active.isError && (
                 <p className="error-notice" role="alert">
-                  대여소 정보를 갱신하지 못했어요. 새로고침으로 다시 확인해
-                  주세요.
+                  {apiErrorMessage(active.error, "대여소 정보를 갱신하지 못했어요. 새로고침으로 다시 확인해 주세요.")}
                 </p>
               )}
               {list.map((station) => (
@@ -683,6 +678,10 @@ export default function App() {
             <span>
               <i className="empty" />
               0대
+            </span>
+            <span>
+              <i className="stale" />
+              갱신 지연
             </span>
             <span>
               <i className="unknown" />

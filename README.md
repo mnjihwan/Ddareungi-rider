@@ -244,16 +244,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\collect-data-once.
 
 백엔드 운영 설정(환경변수, 모두 선택). `PROVIDER_HTTP_*`, `PROVIDER_RESILIENCE_*`, `RATE_LIMIT_*`, `APP_CORS_ALLOWED_ORIGINS`는 백엔드 프로세스(jar 실행·배포 환경)에 직접 전달해야 하며, 현재 `compose.yaml`과 `scripts/start-local.sh`는 이 값을 전달하지 않아 기본값으로 동작합니다(배포 구성은 Phase 3 O7에서 정의):
 
-- `MANAGEMENT_SERVER_PORT`: Actuator 관리 포트. 기본 `8090`이며 API 포트(8080)와 분리됩니다. `/actuator/health/liveness`, `/actuator/health/readiness`를 제공합니다. `infra` 프로필의 readiness는 `readinessState`와 MySQL(`db`)만 포함하고 Redis는 제외합니다(Redis 장애 시 수량을 null로 응답하며 서비스는 계속 동작). 로컬 실행 스크립트와 Vite `/actuator` 프록시가 이 값을 따르며, Compose 컨테이너는 항상 8090을 사용하고 이 포트를 호스트로 publish하지 않습니다.
+- `MANAGEMENT_SERVER_PORT`: Actuator 관리 포트. 기본 `8090`이며 API 포트(8080)와 분리됩니다. `/actuator/health/liveness`, `/actuator/health/readiness`를 제공합니다. `infra` 프로필의 readiness는 `readinessState`, MySQL(`db`), 메모리 대여소 카탈로그(`stationCatalog`)를 포함하고 Redis는 제외합니다. `stationCatalog`는 비어 있지 않은 카탈로그가 한 번 적재되기 전(또는 공개 대여소가 0개일 때) DOWN이며, 이때 대여소 API는 503입니다. 재적재가 실패하거나 0행·이전 대비 50% 미만(이전 10행 이상일 때)으로 줄면 이전 카탈로그를 유지하고 `station.catalog.retry-interval`(기본 30초)마다 재시도합니다. `db`는 R3 이전 요청 경로가 MySQL을 직접 조회하던 때부터 포함했고 지금도 카탈로그 재적재의 원천입니다. R3 이후 요청 경로는 메모리 카탈로그만 쓰므로(이미 적재된 인스턴스는 MySQL 장애 중에도 응답 가능) `db`를 readiness에 계속 둘지는 후속 결정입니다. Redis 장애 시에는 마지막 스냅샷을 나이에 따라 STALE→제외로 처리하며 서비스는 계속 동작합니다. 로컬 실행 스크립트와 Vite `/actuator` 프록시가 이 값을 따르며, Compose 컨테이너는 항상 8090을 사용하고 이 포트를 호스트로 publish하지 않습니다.
 - 외부 Provider timeout(`provider.http.*`, Duration 형식 `500ms`, `3s`): 장소 `place`(connect `1s`/read `2500ms`/요청 전체 `3s`, env `PLACE_TOTAL_TIMEOUT`), 길찾기 `route`(`1s`/`4s`/계획 전체 `10s`, env `ROUTE_TOTAL_TIMEOUT`), `ors`(`1s`/`4s`). 개별 값은 relaxed binding(예: `PROVIDER_HTTP_PLACE_READ_TIMEOUT`)으로 지정합니다. 이전 `kakao.http.*`(`KAKAO_HTTP_*`)는 제거되어 설정해도 무시됩니다.
 - 복원력(`provider.resilience.*`): GET 재시도 1회(timeout·5xx·연결 오류만), circuit breaker(창 20, 최소 10회, 실패율 50%, OPEN 30초), 동시 호출 제한(장소 32, 경로 48). timeout은 504 `EXTERNAL_API_TIMEOUT`, breaker OPEN·포화는 502.
 - 장소 검색 캐시(`PLACE_CACHE_ENABLED`, 기본 true, infra 프로필만, TTL 5분, Redis 오류 시 우회).
-- Rate Limit(`RATE_LIMIT_ENABLED`, `RATE_LIMIT_{STATIONS|PLACES|ROUTES}_{BURST|PER_MINUTE}`): 클라이언트 IP(`remoteAddr`) 해시 기준 토큰 버킷. 초과 시 429 `RATE_LIMIT_EXCEEDED`+`Retry-After`. 수치는 운영 측정 전 초안(stations 분당 120/burst 30, places 30/30, routes 10/10)이며 프록시 뒤에서는 forwarding 설정이 필요합니다.
+- Rate Limit(`RATE_LIMIT_ENABLED`, `RATE_LIMIT_{STATIONS|PLACES|ROUTES}_{BURST|PER_MINUTE}`): 클라이언트 IP(`remoteAddr`) 해시 기준 토큰 버킷. 초과 시 429 `RATE_LIMIT_EXCEEDED`+`Retry-After`. IPv6는 /64 단위로 묶고 IPv4-mapped IPv6는 IPv4로 봅니다. 수치는 운영 측정 전 초안(stations 분당 300/burst 100, places 분당 90/burst 30, routes 10/10)입니다. 지도 드래그 1회에 stations 요청이 최대 4건, 장소 자동완성이 350ms 디바운스마다 요청하는 웹 사용 패턴에 맞춰 리뷰(H1)에서 완화했으며 운영 측정 후 조정합니다. 웹의 429 backoff(Retry-After)와 공유 IP(Vite 프록시·CGNAT) 정책은 후속 결정이며, 프록시 뒤에서는 forwarding 설정이 필요합니다.
 - `APP_CORS_ALLOWED_ORIGINS`(`app.cors.allowed-origins`): `/api/**`에 브라우저 cross-origin 호출을 허용할 origin 목록. 쉼표로 구분한 정확한 `scheme://host[:port]` 값만 허용하며(예: `https://ddareungi.example.com,https://admin.example.com`), 와일드카드는 거부합니다. 기본값은 비어 있어 cross-origin 요청을 허용하지 않습니다. 로컬 개발은 Vite 프록시를 통한 same-origin 호출이므로 설정하지 않아도 됩니다.
 
 Vite는 최상위 `.env`를 읽습니다. 키 변경 후 웹 서버를 재시작합니다. 서버 REST 키는 `scripts/start-local.ps1` 또는 Compose를 통해 전달됩니다. 두 키는 같은 카카오 Developers 앱에서 발급합니다. 지도 연결 실패 시 명확히 표시한 도식 미리보기를 제공하며 실제 지도·경로나 예측값을 생성하지 않습니다.
 
-즐겨찾기는 `bike:favorites:v1`에 ID와 저장 시각만 보관하고 최신 수량은 API로 조회합니다. 5분 이상 갱신되지 않은 수량은 0대와 구분합니다. 길찾기는 서비스 내부에서 세 구간의 경로·거리·시간을 표시합니다. 선택 사항인 외부 장소 정보 버튼은 카카오맵을 엽니다.
+즐겨찾기는 `bike:favorites:v1`에 ID와 저장 시각만 보관하고 최신 수량은 API로 조회합니다. 수량 최신성은 수집 시각 기준 120초 이하 FRESH, 600초 이하 STALE(마지막 수량을 '갱신 지연'으로 표시), 그보다 오래되거나 없으면 UNAVAILABLE(목록에서 제외)로 판정하며(`realtime.freshness.*`), 미상 수량을 0대로 표시하지 않습니다. 길찾기는 서비스 내부에서 세 구간의 경로·거리·시간을 표시합니다. 선택 사항인 외부 장소 정보 버튼은 카카오맵을 엽니다.
 
 검증: `cd Ddareungi-rider/web`, `npm test`, `npm run build`. 카카오 전환 후 PC 1600×900(16:9), 모바일 390×844에서 실제 지도·장소 검색·서울시 대여 수량·도보/자전거 경로를 확인했습니다.
 

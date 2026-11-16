@@ -399,7 +399,7 @@ export function StationMap({
               data-route-station={routeStationsOnly || undefined}
               data-station-ids={group.stationIds.join(",")}
               onClick={() => onSelect(station)}
-              aria-label={`${station.stationName}, ${AVAILABILITY_LABEL[status]}, ${status === "unknown" ? "수량 미확인" : `${station.parkingBikeTotCnt}대`}`}
+              aria-label={`${station.stationName}, ${AVAILABILITY_LABEL[status]}, ${status === "unknown" ? "수량 미확인" : status === "stale" ? `마지막 확인 ${station.parkingBikeTotCnt}대` : `${station.parkingBikeTotCnt}대`}`}
               aria-pressed={station.stationId === selectedId}
             >
               <Icon name="bike" size={18} />

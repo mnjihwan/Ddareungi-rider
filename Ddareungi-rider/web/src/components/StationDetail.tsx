@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   availability,
@@ -6,6 +6,7 @@ import {
   distanceLabel,
   observationLabel,
   forecastAt,
+  endpointActions,
 } from "../lib/status";
 import { forecastPath, loadForecast } from "../lib/api";
 import type { Station } from "../lib/types";
@@ -29,13 +30,17 @@ export function StationDetail({
   onArrival: () => void;
 }) {
   const [minutes, setMinutes] = useState(15);
-  const state = availability(station);
+  const now = Date.now();
+  const state = availability(station, now);
+  const actions = endpointActions(station, sample, now);
+  const departureNoteId = useId(), arrivalNoteId = useId();
+  // One shared note when both buttons have the same reason (e.g. sample data).
+  const sharedNote = !!actions.departure.reason && actions.departure.reason === actions.arrival.reason;
   const forecast = useQuery({
     queryKey: ["forecast", station.stationId],
     queryFn: ({ signal }) => loadForecast(station.stationId, signal),
     enabled: !!forecastPath,
     staleTime: 5 * 60_000,
-    retry: 1,
   });
   const prediction = forecast.data ? forecastAt(forecast.data, minutes) : null;
   return (
@@ -168,11 +173,22 @@ export function StationDetail({
       </div>
       <div className="endpoint-actions">
       <button className="primary-button directions-button" onClick={onRoute}
-        disabled={sample || state === "unknown" || state === "empty"}>
+        disabled={actions.departure.disabled}
+        aria-describedby={actions.departure.reason ? departureNoteId : undefined}>
         <Icon name="arrow" size={18} />여기서 출발
       </button>
-      <button className="primary-button directions-button" onClick={onArrival} disabled={sample || state === "unknown"}>여기로 도착</button>
+      <button className="primary-button directions-button" onClick={onArrival}
+        disabled={actions.arrival.disabled}
+        aria-describedby={actions.arrival.reason ? (sharedNote ? departureNoteId : arrivalNoteId) : undefined}>여기로 도착</button>
       </div>
+      {(actions.departure.reason || actions.arrival.reason) && (
+        <div className="endpoint-notes" role="status">
+          {sharedNote ? <p id={departureNoteId}>{actions.departure.reason}</p> : <>
+            {actions.departure.reason && <p id={departureNoteId}>출발: {actions.departure.reason}</p>}
+            {actions.arrival.reason && <p id={arrivalNoteId}>도착: {actions.arrival.reason}</p>}
+          </>}
+        </div>
+      )}
     </section>
   );
 }

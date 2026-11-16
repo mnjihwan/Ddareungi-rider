@@ -2,7 +2,7 @@ import axios from "axios";
 import type { Coordinates, Forecast, Place, Station, MapBounds, BikeRoute, NearbyStations } from "./types.ts";
 import { unwrap, type ApiEnvelope } from "./apiEnvelope.ts";
 
-export { unwrap, apiError, apiErrorMessage } from "./apiEnvelope.ts";
+export { unwrap, apiError, apiErrorMessage, isRateLimited, retryAfterMs, shouldRetryQuery, queryRetryDelay, RATE_LIMIT_MESSAGE } from "./apiEnvelope.ts";
 export type { ApiEnvelope, ApiErrorEnvelope, ApiMeta } from "./apiEnvelope.ts";
 
 export const api = axios.create({ baseURL: "/api/v1", timeout: 10_000 });

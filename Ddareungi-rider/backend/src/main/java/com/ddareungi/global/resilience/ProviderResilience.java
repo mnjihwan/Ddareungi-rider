@@ -18,11 +18,11 @@ public class ProviderResilience {
         var placeBulkhead = new Semaphore(settings.bulkhead().placeMaxConcurrentCalls());
         var routeBulkhead = new Semaphore(settings.bulkhead().routeMaxConcurrentCalls());
         place = new ResilientCaller("place", new CircuitBreaker("place", settings.circuitBreaker()), placeBulkhead,
-                settings, http.place().totalTimeout());
+                settings, http.place().totalTimeout(), http.place().readTimeout());
         walking = new ResilientCaller("walking", new CircuitBreaker("walking", settings.circuitBreaker()), routeBulkhead,
-                settings, http.route().totalTimeout());
+                settings, http.route().totalTimeout(), http.route().readTimeout());
         bicycle = new ResilientCaller("bicycle", new CircuitBreaker("bicycle", settings.circuitBreaker()), routeBulkhead,
-                settings, http.route().totalTimeout());
+                settings, http.route().totalTimeout(), http.route().readTimeout());
     }
 
     /** Fresh state with default settings, for clients created without Spring. */

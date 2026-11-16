@@ -8,8 +8,16 @@ import java.time.Duration;
 
 /**
  * Rate limit settings ({@code ratelimit.*}, phase 2 D6). Draft numbers until traffic is measured:
- * stations/status 120/min with a burst of 30, places 30/min (burst 30), routes 10/min (burst 10).
+ * stations/status 300/min with a burst of 100, places 90/min (burst 30), routes 10/min (burst 10).
  * A group left out of the configuration keeps its own default.
+ *
+ * <p>Why these numbers (review H1, 2026-11-16): the first draft (stations 120/min burst 30, places 30/min) was
+ * tighter than the web client's normal use. One map drag can issue up to 4 station requests, so a few quick
+ * drags emptied a 30-token bucket; place autocomplete fires one places request (plus one station search) per
+ * 350 ms debounce, up to about 2.9/s while typing, which a 30/min refill could not sustain past the burst.
+ * Routes keep 10/10 because each plan fans out to many provider calls. These are still drafts to be tuned
+ * after production measurement; the web 429 backoff (Retry-After) and the shared-IP policy (Vite dev proxy,
+ * carrier-grade NAT, trusted proxies) are follow-up decisions.
  *
  * @param enabled            master switch; false lets every request through
  * @param stations           station and status APIs (instance-local limiter)
@@ -29,8 +37,9 @@ public record RateLimitProperties(
         @DefaultValue("100000") int localMaxEntries,
         @DefaultValue("60s") Duration localCleanupInterval) {
 
-    static final Policy DEFAULT_STATIONS = new Policy(30, 120);
-    static final Policy DEFAULT_PLACES = new Policy(30, 30);
+    // H1: relaxed from (30, 120) and (30, 30) to fit web usage; see the class comment.
+    static final Policy DEFAULT_STATIONS = new Policy(100, 300);
+    static final Policy DEFAULT_PLACES = new Policy(30, 90);
     static final Policy DEFAULT_ROUTES = new Policy(10, 10);
 
     public RateLimitProperties {

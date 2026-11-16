@@ -38,7 +38,11 @@ public class PlanBikeRoute {
                          boolean enabled, Duration deadline) {
         this(stations, walking, bicycle, enabled, deadline, RealtimeFreshnessPolicy.defaults());
     }
-    /** @param freshness the shared FRESH/STALE boundaries (spec v5 11.0); only FRESH stations are route candidates (D2) */
+    /**
+     * @param freshness the shared FRESH/STALE boundaries (spec v5 11.0); departures must be FRESH (D2), arrivals
+     *                  FRESH or STALE (review M3). FRESH needs the collector's 60 s realtime job (spec 11.0/21.2):
+     *                  with only the 5-minute collection most values are STALE and departures fail with 503.
+     */
     public PlanBikeRoute(StationSearchPort stations, WalkingRouteProvider walking, BicycleRouteProvider bicycle,
                          boolean enabled, Duration deadline, RealtimeFreshnessPolicy freshness) {
         if (freshness == null) throw new IllegalArgumentException("freshness policy is required");
@@ -123,26 +127,48 @@ public class PlanBikeRoute {
             var pinned = stations.findByIds(List.of(pinnedId), location).stream()
                     .filter(s -> s.stationId().equals(pinnedId)).findFirst()
                     .orElseThrow(() -> new RouteException(HttpStatus.NOT_FOUND, "PINNED_STATION_NOT_FOUND", "지정한 대여소를 찾지 못했어요. 자동 선택하거나 다른 대여소를 지정해 주세요."));
-            if (!fresh(pinned, now)) throw new RouteException(HttpStatus.SERVICE_UNAVAILABLE, "STATION_STATUS_UNAVAILABLE", "지정한 대여소의 최신 수량을 확인하지 못했어요. 잠시 후 다시 검색하거나 다른 대여소를 선택해 주세요.");
+            // Review M3(a): a pinned departure needs a FRESH count; a pinned arrival only has to be servable
+            // (FRESH or STALE), since return availability is UNKNOWN in v1 either way (spec 11.0 / route contract).
+            if (!(rental ? fresh(pinned, now) : returnable(pinned, now))) throw new RouteException(HttpStatus.SERVICE_UNAVAILABLE, "STATION_STATUS_UNAVAILABLE", "지정한 대여소의 최신 수량을 확인하지 못했어요. 잠시 후 다시 검색하거나 다른 대여소를 선택해 주세요.");
             if (rental && pinned.availableBikeCount() == 0) throw new RouteException(HttpStatus.CONFLICT, "PINNED_STATION_EMPTY", "지정한 대여소에 대여 가능한 자전거가 없어요. 자동 선택하거나 다른 대여소를 지정해 주세요.");
             return List.of(pinned);
         }
         var nearby = stations.findNearby(location, 1000);
-        if (!nearby.isEmpty() && nearby.stream().noneMatch(s -> fresh(s, now)))
-            throw new RouteException(HttpStatus.SERVICE_UNAVAILABLE, "STATION_STATUS_UNAVAILABLE", (rental ? "출발지" : "목적지") + " 주변 대여소는 있지만 최신 수량을 확인하지 못했어요. 잠시 후 다시 검색해 주세요.");
-        var usable = nearby.stream().filter(s -> fresh(s, now))
-                .filter(s -> !rental || s.availableBikeCount() > 0)
+        if (rental) {
+            var usable = nearby.stream().filter(s -> fresh(s, now) && s.availableBikeCount() > 0)
+                    .sorted(Comparator.comparingDouble(s -> location.distanceTo(s.location()))).toList();
+            if (usable.isEmpty() && !nearby.isEmpty()) {
+                // Review M3(b), spec 11.0 decision table: "no bikes" (NO_RENTAL_BIKES -> 422) only when every
+                // candidate is FRESH with 0 bikes. If any candidate is STALE/UNAVAILABLE its stock is unknown, so
+                // the answer is 503 (STATION_STATUS_UNAVAILABLE -> public REALTIME_DATA_UNAVAILABLE), not "no bikes".
+                if (nearby.stream().allMatch(s -> fresh(s, now)))
+                    throw new RouteException(HttpStatus.NOT_FOUND, "NO_RENTAL_BIKES", "출발지 1km 안에 대여소는 있지만 대여 가능한 자전거가 확인되지 않았어요. 출발 장소를 변경하거나 다른 대여소를 지정해 주세요.");
+                throw new RouteException(HttpStatus.SERVICE_UNAVAILABLE, "STATION_STATUS_UNAVAILABLE", "출발지 주변 대여소는 있지만 최신 수량을 확인하지 못했어요. 잠시 후 다시 검색해 주세요.");
+            }
+            return nearest(location, usable);
+        }
+        // Review M3(a): return candidates exclude only UNAVAILABLE stations; STALE ones stay (spec 11.0).
+        var usable = nearby.stream().filter(s -> returnable(s, now))
                 .sorted(Comparator.comparingDouble(s -> location.distanceTo(s.location()))).toList();
-        if (rental && usable.isEmpty() && !nearby.isEmpty())
-            throw new RouteException(HttpStatus.NOT_FOUND, "NO_RENTAL_BIKES", "출발지 1km 안에 대여소는 있지만 대여 가능한 자전거가 확인되지 않았어요. 출발 장소를 변경하거나 다른 대여소를 지정해 주세요.");
+        if (usable.isEmpty() && !nearby.isEmpty())
+            throw new RouteException(HttpStatus.SERVICE_UNAVAILABLE, "STATION_STATUS_UNAVAILABLE", "목적지 주변 대여소는 있지만 최신 수량을 확인하지 못했어요. 잠시 후 다시 검색해 주세요.");
+        return nearest(location, usable);
+    }
+    private static List<Station> nearest(Location location, List<Station> usable) {
         var within500 = usable.stream().filter(s -> location.distanceTo(s.location()) <= 500).toList();
         return (within500.isEmpty() ? usable : within500).stream().limit(3).toList();
     }
-    // D2: a route candidate needs a known stock and a FRESH value under the shared policy (age <= fresh-seconds,
-    // at most 30 s in the future). STALE and UNAVAILABLE values are never route candidates.
+    // D2: a departure candidate needs a known stock and a FRESH value under the shared policy (age <= fresh-seconds,
+    // at most 30 s in the future). STALE and UNAVAILABLE values are never departure candidates.
     private boolean fresh(Station station, Instant now) {
         return station.location() != null && station.availableBikeCount() != null && station.availableBikeCount() >= 0
                 && freshness.classify(station.updatedAt(), now).status() == RealtimeFreshness.FRESH;
+    }
+    // Review M3(a): an arrival candidate only has to be servable (FRESH or STALE, i.e. not UNAVAILABLE). Its bike
+    // count is not used: return availability is UNKNOWN in v1.
+    private boolean returnable(Station station, Instant now) {
+        return station.location() != null
+                && freshness.classify(station.updatedAt(), now).status() != RealtimeFreshness.UNAVAILABLE;
     }
     public record Plan(Location origin, Location destination, Station departureStation, Station arrivalStation,
                        List<RouteProvider.Leg> legs, double distanceMeters, double durationSeconds,

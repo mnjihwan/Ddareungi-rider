@@ -61,17 +61,20 @@ realtime:
     fresh-seconds: ${REALTIME_FRESH_SECONDS:120}
     max-stale-seconds: ${REALTIME_MAX_STALE_SECONDS:600}
 
-# Per-client (remoteAddr hash) token buckets, phase 2 D6 draft numbers until traffic is measured.
+# Per-client (remoteAddr hash; IPv6 grouped per /64) token buckets, phase 2 D6 draft numbers until traffic is measured.
 # stations/status: instance memory; places/routes: Redis Lua shared by instances on the infra profile
 # (local fail-open on Redis errors), memory on the local profile. Defaults also live in RateLimitProperties.
+# Review H1: relaxed for web usage - one map drag issues up to 4 station requests, place autocomplete
+# fires per 350 ms debounce. Tune after production measurement; the web 429 backoff and the shared-IP
+# policy (Vite dev proxy, CGNAT) are follow-up decisions.
 ratelimit:
   enabled: ${RATE_LIMIT_ENABLED:true}
   stations:
-    burst: ${RATE_LIMIT_STATIONS_BURST:30}
-    per-minute: ${RATE_LIMIT_STATIONS_PER_MINUTE:120}
+    burst: ${RATE_LIMIT_STATIONS_BURST:100}
+    per-minute: ${RATE_LIMIT_STATIONS_PER_MINUTE:300}
   places:
     burst: ${RATE_LIMIT_PLACES_BURST:30}
-    per-minute: ${RATE_LIMIT_PLACES_PER_MINUTE:30}
+    per-minute: ${RATE_LIMIT_PLACES_PER_MINUTE:90}
   routes:
     burst: ${RATE_LIMIT_ROUTES_BURST:10}
     per-minute: ${RATE_LIMIT_ROUTES_PER_MINUTE:10}
