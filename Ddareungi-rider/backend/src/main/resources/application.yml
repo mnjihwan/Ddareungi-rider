@@ -53,3 +53,18 @@ routing:
 kakao:
   maps:
     rest-api-key: ${KAKAO_MAPS_REST_API_KEY:}
+
+# Per-client (remoteAddr hash) token buckets, phase 2 D6 draft numbers until traffic is measured.
+# stations/status: instance memory; places/routes: Redis Lua shared by instances on the infra profile
+# (local fail-open on Redis errors), memory on the local profile. Defaults also live in RateLimitProperties.
+ratelimit:
+  enabled: ${RATE_LIMIT_ENABLED:true}
+  stations:
+    burst: ${RATE_LIMIT_STATIONS_BURST:30}
+    per-minute: ${RATE_LIMIT_STATIONS_PER_MINUTE:120}
+  places:
+    burst: ${RATE_LIMIT_PLACES_BURST:30}
+    per-minute: ${RATE_LIMIT_PLACES_PER_MINUTE:30}
+  routes:
+    burst: ${RATE_LIMIT_ROUTES_BURST:10}
+    per-minute: ${RATE_LIMIT_ROUTES_PER_MINUTE:10}
