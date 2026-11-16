@@ -8,11 +8,14 @@ import com.ddareungi.place.PlaceSearchProvider;
 import com.ddareungi.station.domain.KoreanSearch;
 import com.ddareungi.station.domain.Location;
 import com.ddareungi.station.domain.StationSearchPort;
+import com.ddareungi.global.http.ProviderHttpProperties;
 import com.ddareungi.global.resilience.ContextPropagation;
+import com.ddareungi.global.resilience.Deadline;
 import org.jspecify.annotations.Nullable;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -42,25 +45,46 @@ public class PlaceSearchService {
     private final PlaceSearchProvider provider;
     private final StationSearchPort stations;
     private final PlaceSearchCache cache;
+    private final Duration totalTimeout;
 
     public PlaceSearchService(PlaceSearchProvider provider, StationSearchPort stations) {
         this(provider, stations, PlaceSearchCache.NONE);
     }
 
     public PlaceSearchService(PlaceSearchProvider provider, StationSearchPort stations, PlaceSearchCache cache) {
+        this(provider, stations, cache, ProviderHttpProperties.defaults().place().totalTimeout());
+    }
+
+    /** @param totalTimeout budget of one place request across all provider calls and retries (D8: 3s) */
+    public PlaceSearchService(PlaceSearchProvider provider, StationSearchPort stations, PlaceSearchCache cache,
+                              Duration totalTimeout) {
         this.provider = provider;
         this.stations = stations;
         this.cache = cache;
+        this.totalTimeout = totalTimeout;
     }
 
     /** Production wiring: the Redis cache exists only with the infra profile (D9: disabled locally). */
     @Autowired
     public PlaceSearchService(PlaceSearchProvider provider, StationSearchPort stations,
-                              ObjectProvider<PlaceSearchCache> cache) {
-        this(provider, stations, cache.getIfAvailable(() -> PlaceSearchCache.NONE));
+                              ObjectProvider<PlaceSearchCache> cache, ProviderHttpProperties http) {
+        this(provider, stations, cache.getIfAvailable(() -> PlaceSearchCache.NONE), http.place().totalTimeout());
     }
 
     public @Nullable Place reverse(Location location) {
+        return Deadline.after(totalTimeout).supply(() -> reverseWithinDeadline(location));
+    }
+
+    /** {@code term} is already trimmed and validated; {@code center} is optional. */
+    public List<Place> search(String term, @Nullable Location center) {
+        return Deadline.after(totalTimeout).supply(() -> searchWithinDeadline(term, center));
+    }
+
+    public List<Place> nearbySubways(Location center) {
+        return Deadline.after(totalTimeout).supply(() -> nearbySubwaysWithinDeadline(center));
+    }
+
+    private @Nullable Place reverseWithinDeadline(Location location) {
         requireConfigured("주소 조회를 현재 사용할 수 없습니다.");
         try {
             return provider.reverse(location);
@@ -74,8 +98,7 @@ public class PlaceSearchService {
         }
     }
 
-    /** {@code term} is already trimmed and validated; {@code center} is optional. */
-    public List<Place> search(String term, @Nullable Location center) {
+    private List<Place> searchWithinDeadline(String term, @Nullable Location center) {
         requireConfigured("장소 검색을 현재 사용할 수 없습니다.");
         try {
             // Nearby businesses can fill the general first page before a matching station, so the provider's
@@ -115,7 +138,7 @@ public class PlaceSearchService {
         }
     }
 
-    public List<Place> nearbySubways(Location center) {
+    private List<Place> nearbySubwaysWithinDeadline(Location center) {
         requireConfigured("주변 지하철역을 현재 조회할 수 없습니다.");
         try {
             var distinct = new LinkedHashMap<String, Place>();

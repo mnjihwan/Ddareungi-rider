@@ -1,6 +1,10 @@
 package com.ddareungi.routing;
 
+import com.ddareungi.global.http.ProviderHttpProperties;
+import com.ddareungi.global.resilience.ProviderCallException;
+import com.ddareungi.global.resilience.ProviderResilience;
 import com.ddareungi.station.domain.Location;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -20,19 +24,31 @@ public class OpenRouteServiceClient implements RouteProvider {
     private final RestClient client;
     private final JsonMapper mapper;
     private final String key;
+    private final ProviderResilience resilience;
 
-    public OpenRouteServiceClient(RestClient.Builder builder, JsonMapper mapper,
-            @Value("${routing.ors.api-key:}") String key) {
+    /** Uses the builder's own request factory and fresh default resilience state (tests, manual wiring). */
+    public OpenRouteServiceClient(RestClient.Builder builder, JsonMapper mapper, String key) {
+        this(builder, mapper, key, ProviderResilience.defaults());
+    }
+
+    public OpenRouteServiceClient(RestClient.Builder builder, JsonMapper mapper, String key, ProviderResilience resilience) {
         // Current HeiGIT endpoint; the old api.openrouteservice.org URL is deprecated.
         client = builder.baseUrl("https://api.heigit.org/openrouteservice/v2").build();
-        this.mapper = mapper; this.key = key.trim();
+        this.mapper = mapper; this.key = key.trim(); this.resilience = resilience;
+    }
+
+    // Production wiring: ORS-specific connect/read timeouts (D8) instead of the global HTTP client defaults.
+    @Autowired
+    public OpenRouteServiceClient(RestClient.Builder builder, JsonMapper mapper,
+            @Value("${routing.ors.api-key:}") String key, ProviderHttpProperties http, ProviderResilience resilience) {
+        this(builder.requestFactory(http.ors().requestFactory()), mapper, key, resilience);
     }
     @Override public boolean configured() { return !key.isBlank(); }
 
     @Override public Double[][] durations(String profile, List<Location> sources, List<Location> destinations) {
         validateProfile(profile);
         var locations = new ArrayList<Location>(sources); locations.addAll(destinations);
-        var json = request("/matrix/" + profile, Map.of("locations", coordinates(locations),
+        var json = request(profile, "/matrix/" + profile, Map.of("locations", coordinates(locations),
                 "sources", IntStream.range(0, sources.size()).mapToObj(Integer::toString).toList(),
                 "destinations", IntStream.range(sources.size(), locations.size()).mapToObj(Integer::toString).toList(),
                 "metrics", List.of("duration"))).path("durations");
@@ -52,7 +68,7 @@ public class OpenRouteServiceClient implements RouteProvider {
 
     @Override public Leg directions(String profile, Location from, Location to) {
         validateProfile(profile);
-        var response = request("/directions/" + profile + "/geojson", Map.of(
+        var response = request(profile, "/directions/" + profile + "/geojson", Map.of(
                 "coordinates", coordinates(List.of(from, to)), "language", "en", "instructions", true,
                 "radiuses", List.of(50, 50)));
         try {
@@ -76,12 +92,17 @@ public class OpenRouteServiceClient implements RouteProvider {
         } catch (RuntimeException error) { throw invalidResponse(); }
     }
 
-    private JsonNode request(String path, Object body) {
+    private JsonNode request(String profile, String path, Object body) {
         if (!configured()) throw new RouteException(HttpStatus.SERVICE_UNAVAILABLE, "ROUTING_NOT_CONFIGURED", "길찾기 연결을 준비하고 있어요. 잠시 후 다시 이용해 주세요.");
         try {
-            String response = client.post().uri(path).header("Authorization", key)
-                    .contentType(MediaType.APPLICATION_JSON).body(body).retrieve().body(String.class);
+            // POST is not retried (GET-only retry policy); breaker, bulkhead and deadline still apply.
+            var caller = profile.equals("foot-walking") ? resilience.walking() : resilience.bicycle();
+            String response = caller.call(() -> client.post().uri(path).header("Authorization", key)
+                    .contentType(MediaType.APPLICATION_JSON).body(body).retrieve().body(String.class), false);
             return mapper.readTree(response);
+        } catch (ProviderCallException error) {
+            if (error.kind() == ProviderCallException.Kind.TIMEOUT) throw KakaoRouteClient.timeout();
+            throw invalidResponse();
         } catch (RestClientResponseException error) {
             int status = error.getStatusCode().value();
             if (status == 429 || status == 403) throw new RouteException(HttpStatus.SERVICE_UNAVAILABLE, "ROUTING_LIMIT", "길찾기 요청이 많거나 연결을 사용할 수 없어요. 잠시 후 다시 시도해 주세요.");

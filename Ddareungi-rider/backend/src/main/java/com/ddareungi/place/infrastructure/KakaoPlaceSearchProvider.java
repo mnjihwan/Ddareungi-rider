@@ -1,6 +1,8 @@
 package com.ddareungi.place.infrastructure;
 
-import com.ddareungi.global.http.KakaoHttpClientProperties;
+import com.ddareungi.global.http.ProviderHttpProperties;
+import com.ddareungi.global.resilience.ProviderCallException;
+import com.ddareungi.global.resilience.ProviderResilience;
 import com.ddareungi.place.Place;
 import com.ddareungi.place.PlaceProviderException;
 import com.ddareungi.place.PlaceSearchProvider;
@@ -29,19 +31,26 @@ public class KakaoPlaceSearchProvider implements PlaceSearchProvider {
     private final RestClient client;
     private final JsonMapper mapper;
     private final String key;
+    private final ProviderResilience resilience;
 
-    public KakaoPlaceSearchProvider(RestClient.Builder builder, JsonMapper mapper,
-            @Value("${kakao.maps.rest-api-key:}") String key) {
+    /** Uses the builder's own request factory and fresh default resilience state (tests, manual wiring). */
+    public KakaoPlaceSearchProvider(RestClient.Builder builder, JsonMapper mapper, String key) {
+        this(builder, mapper, key, ProviderResilience.defaults());
+    }
+
+    public KakaoPlaceSearchProvider(RestClient.Builder builder, JsonMapper mapper, String key,
+            ProviderResilience resilience) {
         this.client = builder.baseUrl(BASE_URL).build();
         this.mapper = mapper;
         this.key = key.trim();
+        this.resilience = resilience;
     }
 
-    // Production wiring: Kakao-specific connect/read timeouts instead of the global HTTP client defaults.
+    // Production wiring: place-specific connect/read timeouts (D8) and the shared place breaker/bulkhead.
     @Autowired
     public KakaoPlaceSearchProvider(RestClient.Builder builder, JsonMapper mapper,
-            @Value("${kakao.maps.rest-api-key:}") String key, KakaoHttpClientProperties http) {
-        this(builder.requestFactory(http.requestFactory()), mapper, key);
+            @Value("${kakao.maps.rest-api-key:}") String key, ProviderHttpProperties http, ProviderResilience resilience) {
+        this(builder.requestFactory(http.place().requestFactory()), mapper, key, resilience);
     }
 
     @Override public boolean configured() { return !key.isBlank(); }
@@ -111,11 +120,18 @@ public class KakaoPlaceSearchProvider implements PlaceSearchProvider {
                 });
     }
 
-    /** One GET to Kakao Local. Provider bodies (which may echo credentials) are never kept. */
-    String fetch(Function<UriBuilder, URI> uri) {
+    /**
+     * One GET to Kakao Local under the place deadline, breaker, bulkhead and single retry. Provider bodies (which may
+     * echo credentials) are never kept.
+     */
+    @Nullable String fetch(Function<UriBuilder, URI> uri) {
         if (!configured()) throw new PlaceProviderException("Place provider is not configured", false);
         try {
-            return client.get().uri(uri).header("Authorization", "KakaoAK " + key).retrieve().body(String.class);
+            return resilience.place().call(() -> client.get().uri(uri).header("Authorization", "KakaoAK " + key)
+                    .retrieve().body(String.class), true);
+        } catch (ProviderCallException error) {
+            throw new PlaceProviderException("Place provider call stopped: " + error.kind(),
+                    error.kind() == ProviderCallException.Kind.TIMEOUT);
         } catch (RuntimeException error) {
             throw new PlaceProviderException("Place provider request failed", false);
         }

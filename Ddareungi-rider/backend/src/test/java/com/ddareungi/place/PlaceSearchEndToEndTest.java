@@ -64,6 +64,25 @@ class PlaceSearchEndToEndTest {
         server.verify();
     }
 
+    @Test void slowProviderIsCutAtThePlaceBudgetAndAnswersGatewayTimeout() {
+        var builder = RestClient.builder();
+        var slow = MockRestServiceServer.bindTo(builder).ignoreExpectOrder(true).build();
+        slow.expect(org.springframework.test.web.client.ExpectedCount.manyTimes(), anything()).andRespond(request -> {
+            try { Thread.sleep(2_000); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+            return withSuccess("{\"documents\":[]}", MediaType.APPLICATION_JSON).createResponse(request);
+        });
+        var provider = new KakaoPlaceSearchProvider(builder, JsonMapper.builder().build(), "test-secret");
+        var timed = new PlaceSearchController(new PlaceSearchService(provider, mock(StationSearchPort.class),
+                com.ddareungi.place.application.PlaceSearchCache.NONE, java.time.Duration.ofMillis(200)));
+        long started = System.nanoTime();
+        assertThatThrownBy(() -> timed.search("강남역", null, null))
+                .isInstanceOfSatisfying(com.ddareungi.global.exception.ApiException.class, error -> {
+                    assertThat(error.errorCode()).isEqualTo(com.ddareungi.global.exception.ErrorCode.EXTERNAL_API_TIMEOUT);
+                    assertThat(error.getStatusCode().value()).isEqualTo(504);
+                });
+        assertThat(java.time.Duration.ofNanos(System.nanoTime() - started)).isLessThan(java.time.Duration.ofMillis(1_500));
+    }
+
     @Test void nearbySubwaysFiltersCategoryDistanceAndDuplicateLines() {
         server.expect(requestTo("https://dapi.kakao.com/v2/local/search/category.json?category_group_code=SW8&x=127.02&y=37.5&radius=2000&sort=distance&size=15"))
                 .andExpect(header("Authorization", "KakaoAK test-secret"))

@@ -2,7 +2,7 @@ package com.ddareungi.global.resilience;
 
 import org.jspecify.annotations.Nullable;
 import java.time.Duration;
-import java.util.concurrent.Callable;
+import java.util.function.Supplier;
 
 /**
  * A point in time by which a whole user request (e.g. one route plan) must finish. It is attached to the current
@@ -32,11 +32,11 @@ public final class Deadline {
     }
 
     /** Runs {@code task} on this thread with this deadline attached, restoring the previous one afterwards. */
-    public <T> T run(Callable<T> task) throws Exception {
+    public <T> T supply(Supplier<T> task) {
         var previous = current();
         set(this);
         try {
-            return task.call();
+            return task.get();
         } finally {
             set(previous);
         }
