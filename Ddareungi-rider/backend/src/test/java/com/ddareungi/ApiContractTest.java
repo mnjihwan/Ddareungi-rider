@@ -40,8 +40,18 @@ class ApiContractTest {
     @Autowired RequestIdFilter requestIdFilter;
     MockMvc mvc;
 
+    /**
+     * O3 rate limit (stations group: burst 30, keyed by remoteAddr) stays enabled here. The cached context is shared
+     * by every test method, which together send more than 30 station/status requests, so each method gets its own
+     * client address and stays far below the burst (largest method: about 15 requests).
+     */
+    private static final java.util.concurrent.atomic.AtomicInteger CLIENT = new java.util.concurrent.atomic.AtomicInteger();
+
     @BeforeEach void setup() {
-        mvc = MockMvcBuilders.webAppContextSetup(context).addFilters(requestIdFilter).build();
+        String remoteAddr = "10.77.0." + CLIENT.incrementAndGet();
+        mvc = MockMvcBuilders.webAppContextSetup(context).addFilters(requestIdFilter)
+                .defaultRequest(get("/").with(request -> { request.setRemoteAddr(remoteAddr); return request; }))
+                .build();
     }
 
     private static ResultActions failure(ResultActions result, int status, String code) throws Exception {
