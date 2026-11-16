@@ -1,32 +1,49 @@
-import type { Station } from "./types";
+import type { RealtimeStatus, Station } from "./types";
 
-export type Availability = "available" | "low" | "empty" | "unknown";
+/** "stale": last known count is shown but the data is delayed; never counted as rentable. */
+export type Availability = "available" | "low" | "empty" | "stale" | "unknown";
 export const AVAILABILITY_LABEL: Record<Availability, string> = {
   available: "대여 가능",
   low: "조금 남았어요",
   empty: "대여 불가",
+  stale: "갱신 지연",
   unknown: "정보 확인 중",
 };
 
-export function availability(station: Station, now = Date.now()): Availability {
+/** Same boundaries as the backend defaults (spec 11.0, X3); used only when the server status is missing. */
+export const FRESH_SECONDS = 120;
+export const MAX_STALE_SECONDS = 600;
+const MAX_CLOCK_SKEW_MS = 30_000;
+
+type StationStatusFields = Pick<Station, "realtimeUpdatedAt"> & Partial<Pick<Station, "realtimeStatus">>;
+
+/**
+ * Freshness for display. The server's `realtimeStatus` decides FRESH vs STALE. The client clock only downgrades to
+ * UNAVAILABLE (a response kept on screen beyond max-stale, or a collection time more than 30s in the future), and
+ * classifies by age when an older response has no `realtimeStatus`.
+ */
+export function realtimeStatus(station: StationStatusFields, now = Date.now()): RealtimeStatus {
   const updated = station.realtimeUpdatedAt ? Date.parse(station.realtimeUpdatedAt) : NaN;
+  if (!Number.isFinite(updated) || updated - now > MAX_CLOCK_SKEW_MS) return "UNAVAILABLE";
+  const ageSeconds = Math.max(0, Math.floor((now - updated) / 1000));
+  if (ageSeconds > MAX_STALE_SECONDS || station.realtimeStatus === "UNAVAILABLE") return "UNAVAILABLE";
+  if (station.realtimeStatus === "FRESH" || station.realtimeStatus === "STALE") return station.realtimeStatus;
+  return ageSeconds <= FRESH_SECONDS ? "FRESH" : "STALE";
+}
+
+export function availability(station: StationStatusFields & Pick<Station, "parkingBikeTotCnt">, now = Date.now()): Availability {
+  const status = realtimeStatus(station, now);
   const count = station.parkingBikeTotCnt;
-  if (
-    !Number.isFinite(updated) ||
-    now - updated > 5 * 60_000 ||
-    updated - now > 30_000 ||
-    count === null ||
-    !Number.isInteger(count) ||
-    count < 0
-  )
-    return "unknown";
+  if (status === "UNAVAILABLE" || count === null || !Number.isInteger(count) || count < 0) return "unknown";
+  if (status === "STALE") return "stale";
   return count === 0 ? "empty" : count <= 3 ? "low" : "available";
 }
 
-/** Rentable stations first; zero stock second; unavailable or stale data last. */
+/** Rentable stations first; zero stock second; delayed (stale) or unavailable data last. */
+const AVAILABILITY_RANK: Record<Availability, number> = { available: 0, low: 0, empty: 1, stale: 2, unknown: 2 };
+
 export function compareStations(a: Station, b: Station, now = Date.now()): number {
-  const rank: Record<Availability, number> = { available: 0, low: 0, empty: 1, unknown: 2 };
-  return rank[availability(a, now)] - rank[availability(b, now)]
+  return AVAILABILITY_RANK[availability(a, now)] - AVAILABILITY_RANK[availability(b, now)]
     || a.distanceMeters - b.distanceMeters;
 }
 
@@ -38,10 +55,13 @@ export function distanceLabel(meters: number): string {
 
 export function observationLabel(station: Station, now = Date.now()): string {
   if (!station.realtimeUpdatedAt) return "수량 정보 없음";
-  const age = Math.floor((now - Date.parse(station.realtimeUpdatedAt)) / 60_000);
-  if (!Number.isFinite(age) || age < -1) return "갱신 시각 확인 중";
-  if (age > 5) return "갱신 지연";
-  return age <= 0 ? "방금 업데이트" : `${age}분 전 업데이트`;
+  const updated = Date.parse(station.realtimeUpdatedAt);
+  if (!Number.isFinite(updated) || updated - now > MAX_CLOCK_SKEW_MS) return "갱신 시각 확인 중";
+  const age = Math.max(0, Math.floor((now - updated) / 60_000));
+  const status = realtimeStatus(station, now);
+  if (status === "UNAVAILABLE") return "갱신 지연";
+  const when = age <= 0 ? "방금 업데이트" : `${age}분 전 업데이트`;
+  return status === "STALE" ? `${when} · 갱신 지연` : when;
 }
 
 export function forecastAt(
@@ -93,8 +113,7 @@ export function stationOutlook(station: Station, forecast: import("./types").For
   return {state, count};
 }
 export function compareOutlooks(a: Station, b: Station, forecasts: Map<string, import("./types").Forecast>, minutes: number, now = Date.now()) {
-  const rank: Record<Availability, number> = {available: 0, low: 0, empty: 1, unknown: 2};
-  return rank[stationOutlook(a, forecasts.get(a.stationId), minutes, now).state]
-    - rank[stationOutlook(b, forecasts.get(b.stationId), minutes, now).state]
+  return AVAILABILITY_RANK[stationOutlook(a, forecasts.get(a.stationId), minutes, now).state]
+    - AVAILABILITY_RANK[stationOutlook(b, forecasts.get(b.stationId), minutes, now).state]
     || a.distanceMeters - b.distanceMeters;
 }

@@ -69,7 +69,13 @@ class ApiContractTest {
                 .andExpect(jsonPath("$.data[0].stationLongitude").value(127.0276))
                 .andExpect(jsonPath("$.data[0].rackTotCnt").value(20))
                 .andExpect(jsonPath("$.data[0].parkingBikeTotCnt").value(7))
-                .andExpect(jsonPath("$.data[0].shared").value(org.hamcrest.Matchers.nullValue()))
+                // Changed by P2-1 (A3): shared is now provided (sample 7/20 → 35.0, was always null), and
+                // realtimeStatus/realtimeAgeSeconds are new; an all-FRESH list carries no partial/warnings meta.
+                .andExpect(jsonPath("$.data[0].shared").value(35.0))
+                .andExpect(jsonPath("$.data[0].realtimeStatus").value("FRESH"))
+                .andExpect(jsonPath("$.data[0].realtimeAgeSeconds").isNumber())
+                .andExpect(jsonPath("$.meta.partial").doesNotExist())
+                .andExpect(jsonPath("$.meta.warnings").doesNotExist())
                 .andExpect(jsonPath("$.data[0].realtimeUpdatedAt").isString())
                 .andExpect(jsonPath("$.data[0].distanceMeters").isNumber())
                 .andExpect(jsonPath("$.data[0].address").isString())
@@ -81,8 +87,10 @@ class ApiContractTest {
 
     @Test void stationDtoHasNoLegacyFieldNames() {
         var names = Arrays.stream(StationResponse.class.getRecordComponents()).map(RecordComponent::getName).toList();
+        // Changed by P2-1 (A3): realtimeStatus and realtimeAgeSeconds added (spec 11.0 order around realtimeUpdatedAt).
         assertThat(names).containsExactly("stationId", "stationName", "stationLatitude", "stationLongitude",
-                "rackTotCnt", "parkingBikeTotCnt", "shared", "realtimeUpdatedAt", "distanceMeters", "address");
+                "rackTotCnt", "parkingBikeTotCnt", "shared", "realtimeStatus", "realtimeUpdatedAt", "realtimeAgeSeconds",
+                "distanceMeters", "address");
         assertThat(names).doesNotContain("location", "rackTotalCount", "availableBikeCount", "updatedAt");
         var plan = Arrays.stream(RoutePlanResponse.class.getRecordComponents()).map(RecordComponent::getType).toList();
         assertThat(plan).contains(StationResponse.class);

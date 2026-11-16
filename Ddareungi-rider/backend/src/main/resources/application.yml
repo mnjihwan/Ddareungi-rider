@@ -53,3 +53,10 @@ routing:
 kakao:
   maps:
     rest-api-key: ${KAKAO_MAPS_REST_API_KEY:}
+
+realtime:
+  # FRESH/STALE/UNAVAILABLE boundaries (API spec v5 11.0, X3). Validated at startup: 0 < fresh < max-stale.
+  # Keep max-stale-seconds equal to the collector's value (its version TTL/carry-over limits must exceed it).
+  freshness:
+    fresh-seconds: ${REALTIME_FRESH_SECONDS:120}
+    max-stale-seconds: ${REALTIME_MAX_STALE_SECONDS:600}

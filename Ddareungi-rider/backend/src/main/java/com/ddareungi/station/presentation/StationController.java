@@ -2,6 +2,7 @@ package com.ddareungi.station.presentation;
 
 import com.ddareungi.global.response.ApiResponse;
 import com.ddareungi.station.application.FindNearbyStationsUseCase;
+import com.ddareungi.station.application.StationViewMapper;
 import com.ddareungi.station.domain.Station;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
@@ -26,8 +27,12 @@ import java.util.List;
 @RequestMapping("/api/v1/stations")
 public class StationController {
     private final FindNearbyStationsUseCase useCase;
+    private final StationViewMapper mapper;
 
-    public StationController(FindNearbyStationsUseCase useCase) { this.useCase = useCase; }
+    public StationController(FindNearbyStationsUseCase useCase, StationViewMapper mapper) {
+        this.useCase = useCase;
+        this.mapper = mapper;
+    }
 
     @GetMapping("/nearby")
     public ApiResponse<List<StationResponse>> nearby(
@@ -35,29 +40,31 @@ public class StationController {
             @RequestParam @DecimalMin("-180") @DecimalMax("180") double longitude,
             @RequestParam(defaultValue = "1000") @Min(100) @Max(5000) int radiusMeters
     ) {
-        return ApiResponse.ok(toResponses(useCase.execute(latitude, longitude, radiusMeters)));
+        return toResponses(useCase.execute(latitude, longitude, radiusMeters));
     }
 
     @PostMapping("/batch")
     public ApiResponse<List<StationResponse>> batch(@Valid @RequestBody StationBatchRequest request) {
-        return ApiResponse.ok(toResponses(useCase.findByIds(request.stationIds(), request.latitude(), request.longitude())));
+        return toResponses(useCase.findByIds(request.stationIds(), request.latitude(), request.longitude()));
     }
 
     @GetMapping("/viewport")
     public ApiResponse<List<StationResponse>> viewport(@RequestParam double south, @RequestParam double north,
             @RequestParam double west, @RequestParam double east) {
-        return ApiResponse.ok(toResponses(useCase.findInBounds(south, north, west, east)));
+        return toResponses(useCase.findInBounds(south, north, west, east));
     }
 
     @GetMapping("/search")
     public ApiResponse<List<StationResponse>> search(@RequestParam String query,
             @RequestParam @DecimalMin("-90") @DecimalMax("90") double latitude,
             @RequestParam @DecimalMin("-180") @DecimalMax("180") double longitude) {
-        return ApiResponse.ok(toResponses(useCase.searchByName(query, latitude, longitude)));
+        return toResponses(useCase.searchByName(query, latitude, longitude));
     }
 
-    private static List<StationResponse> toResponses(List<Station> stations) {
-        return stations.stream().map(StationResponse::from).toList();
+    /** A3 list rules (UNAVAILABLE removed, STALE kept, meta.partial/warnings) are applied by the mapper. */
+    private ApiResponse<List<StationResponse>> toResponses(List<Station> stations) {
+        var view = mapper.toListView(stations);
+        return ApiResponse.ok(view.items().stream().map(StationResponse::from).toList(), view.meta());
     }
 
     public record StationBatchRequest(

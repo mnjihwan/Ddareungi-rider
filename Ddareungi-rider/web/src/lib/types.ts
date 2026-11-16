@@ -29,6 +29,8 @@ export interface MapBounds {
   west: number;
   east: number;
 }
+export type RealtimeStatus = "FRESH" | "STALE" | "UNAVAILABLE";
+
 /** Public station object (API spec 11.0, source field names since phase 1 / X1). */
 export interface Station {
   stationId: string;
@@ -37,12 +39,20 @@ export interface Station {
   stationLongitude: number;
   /** Rack count; null when the source omits it. Not a return-availability count. */
   rackTotCnt: number | null;
-  /** Rentable bikes at the last successful collection; null while unknown (phase 1). */
+  /** Rentable bikes at the last successful collection. Station lists only contain FRESH/STALE items, where it is set. */
   parkingBikeTotCnt: number | null;
-  /** Source occupancy ratio (%); always null until A3. */
+  /** Source occupancy ratio (%); null when the source omits it. Values above 100 are passed through. */
   shared: number | null;
+  /**
+   * Server-side freshness at response time (spec 11.0): FRESH (age <= 120s), STALE (<= 600s, counts are the
+   * last known values). UNAVAILABLE is internal and only appears outside station lists (e.g. a route's station).
+   * Optional for values cached before A3.
+   */
+  realtimeStatus?: RealtimeStatus;
   /** When the realtime values were collected (not when bikes changed). */
   realtimeUpdatedAt: string | null;
+  /** Whole seconds between collection and response time (floor, min 0); null when unknown. */
+  realtimeAgeSeconds?: number | null;
   distanceMeters: number;
   /** Extension field (not in spec 11.0); may be null. */
   address: string | null;

@@ -1,5 +1,6 @@
 package com.ddareungi.realtime.infrastructure;
 
+import com.ddareungi.realtime.application.RealtimeSnapshot;
 import com.ddareungi.realtime.application.RealtimeSnapshotReader;
 import com.ddareungi.realtime.domain.RealtimeStationStatus;
 import org.springframework.context.annotation.Profile;
@@ -21,7 +22,12 @@ public class RedisRealtimeStationStore {
     private static final String KEY_PREFIX = "station:realtime:";
     private static final String LAST_SUCCESS_KEY = "station:realtime:last-success-at";
     private static final String LAST_ATTEMPT_KEY = "station:realtime:last-attempt-at";
-    private static final Duration TTL = Duration.ofMinutes(5);
+    /**
+     * Physical TTL of legacy per-station hashes: 900 s (X3), longer than {@code realtime.freshness.max-stale-seconds}
+     * (600 s) so a value can still be served as STALE before Redis expires it. Readers judge freshness from the
+     * stored collection time, never from the TTL.
+     */
+    static final Duration TTL = Duration.ofSeconds(900);
     // Bounds the size of one pipelined batch so a full refresh never builds one huge buffer.
     private static final int PIPELINE_CHUNK_SIZE = 500;
     private final StringRedisTemplate redisTemplate;
@@ -39,8 +45,8 @@ public class RedisRealtimeStationStore {
     /**
      * Legacy write path (one hash per station), unchanged until the collector owns Redis writes (roadmap R1/R2).
      * Writes all statuses with pipelined HSET + EXPIRE instead of one round trip per station.
-     * Readers already reject entries whose updatedAt is outside the TTL window, so a
-     * partially applied pipeline can never surface stale counts as fresh.
+     * Readers classify entries by their stored updatedAt (FRESH/STALE/UNAVAILABLE), so a partially applied
+     * pipeline can never surface old counts as fresh. Null rack/shared values are not written (read back as null).
      */
     public void saveAll(List<RealtimeStationStatus> statuses) {
         if (statuses.isEmpty()) return;
@@ -76,18 +82,23 @@ public class RedisRealtimeStationStore {
 
     /**
      * Reads through {@link RealtimeSnapshotReader} (versioned or legacy layout per {@code realtime.redis.read-mode}).
-     * Kept here so existing callers ({@code JdbcStationSearchAdapter}) keep the same signature.
+     * Kept here so existing callers keep the same signature. Public values only (gate-excluded ids are absent).
      */
     public Map<String, RealtimeStationStatus> findAll(List<String> stationIds) {
         return reader.findAll(stationIds);
     }
 
+    /** Public values plus the ids excluded by the publication gate; see {@link RealtimeSnapshotReader#read}. */
+    public RealtimeSnapshot read(List<String> stationIds) {
+        return reader.read(stationIds);
+    }
+
     private static Map<byte[], byte[]> fields(RealtimeStationStatus status) {
         var values = new LinkedHashMap<byte[], byte[]>();
         values.put(bytes("stationName"), bytes(status.stationName()));
-        values.put(bytes("rackTotalCount"), bytes(Integer.toString(status.rackTotalCount())));
+        if (status.rackTotalCount() != null) values.put(bytes("rackTotalCount"), bytes(status.rackTotalCount().toString()));
         values.put(bytes("availableBikeCount"), bytes(Integer.toString(status.availableBikeCount())));
-        values.put(bytes("sharedRate"), bytes(Double.toString(status.sharedRate())));
+        if (status.sharedRate() != null) values.put(bytes("sharedRate"), bytes(status.sharedRate().toString()));
         values.put(bytes("latitude"), bytes(Double.toString(status.latitude())));
         values.put(bytes("longitude"), bytes(Double.toString(status.longitude())));
         values.put(bytes("updatedAt"), bytes(status.updatedAt().toString()));

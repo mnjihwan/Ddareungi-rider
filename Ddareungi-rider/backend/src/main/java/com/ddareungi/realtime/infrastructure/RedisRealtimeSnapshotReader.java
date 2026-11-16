@@ -1,6 +1,8 @@
 package com.ddareungi.realtime.infrastructure;
 
+import com.ddareungi.realtime.application.RealtimeSnapshot;
 import com.ddareungi.realtime.application.RealtimeSnapshotReader;
+import com.ddareungi.realtime.domain.RealtimeFreshnessPolicy;
 import com.ddareungi.realtime.domain.RealtimeStationStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,11 +18,13 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -38,6 +42,10 @@ import java.util.concurrent.atomic.AtomicReference;
  * ({@code EXISTS station:realtime:v{n}}) is an extra round trip made only when HMGET returned no value for any
  * requested id. When the version hash exists, ids it lacks stay unknown and are never filled from legacy.
  * versioned mode never falls back. Final behaviour is to be confirmed when the collector implements R2.
+ *
+ * <p>Values older than {@code realtime.freshness.max-stale-seconds} (600 s by default) or more than 30 s in the
+ * future are dropped (UNAVAILABLE); everything in between is returned and classified FRESH/STALE by the caller.
+ * Versioned values that fail the publication gate are reported in {@link RealtimeSnapshot#excludedIds()} (D3).
  */
 @Profile("infra")
 @Component
@@ -45,41 +53,55 @@ public class RedisRealtimeSnapshotReader implements RealtimeSnapshotReader {
     static final String KEY_PREFIX = "station:realtime:";
     static final String CURRENT_KEY = "station:realtime:current";
     static final String VERSION_KEY_PREFIX = "station:realtime:v";
-    /** Same freshness window the legacy reader always applied (legacy key TTL). FRESH/STALE (120/600s) is A3. */
-    static final Duration MAX_AGE = Duration.ofMinutes(5);
-    static final Duration MAX_CLOCK_SKEW = Duration.ofSeconds(30);
+    static final Duration MAX_CLOCK_SKEW = RealtimeFreshnessPolicy.MAX_CLOCK_SKEW;
     /** Minimum interval between "pointer without version hash" warnings so every request does not log. */
     static final Duration MISSING_HASH_WARN_INTERVAL = Duration.ofMinutes(1);
     private static final Logger log = LoggerFactory.getLogger(RedisRealtimeSnapshotReader.class);
 
     private final StringRedisTemplate redisTemplate;
     private final RealtimeReadMode mode;
-    private final Clock clock;
+    private final RealtimeFreshnessPolicy policy;
     private final AtomicReference<Instant> lastMissingHashWarn = new AtomicReference<>();
 
     @Autowired
     public RedisRealtimeSnapshotReader(StringRedisTemplate redisTemplate,
-                                       @Value("${realtime.redis.read-mode:auto}") String mode) {
-        this(redisTemplate, RealtimeReadMode.parse(mode), Clock.systemUTC());
+                                       @Value("${realtime.redis.read-mode:auto}") String mode,
+                                       RealtimeFreshnessPolicy policy) {
+        this(redisTemplate, RealtimeReadMode.parse(mode), policy);
     }
 
+    /** Default 120/600 s policy on the system clock (tests). */
+    RedisRealtimeSnapshotReader(StringRedisTemplate redisTemplate, String mode) {
+        this(redisTemplate, RealtimeReadMode.parse(mode), RealtimeFreshnessPolicy.defaults());
+    }
+
+    /** Default 120/600 s policy on the given clock (tests). */
     RedisRealtimeSnapshotReader(StringRedisTemplate redisTemplate, RealtimeReadMode mode, Clock clock) {
+        this(redisTemplate, mode, RealtimeFreshnessPolicy.defaults(clock));
+    }
+
+    RedisRealtimeSnapshotReader(StringRedisTemplate redisTemplate, RealtimeReadMode mode, RealtimeFreshnessPolicy policy) {
         this.redisTemplate = redisTemplate;
         this.mode = mode;
-        this.clock = clock;
-        log.info("Realtime Redis read mode: {}", mode.name().toLowerCase());
+        this.policy = policy;
+        log.info("Realtime Redis read mode: {}, max stale {}s", mode.name().toLowerCase(), policy.maxStaleSeconds());
     }
 
     RealtimeReadMode mode() { return mode; }
 
+    /** Upper bound on the age of returned values ({@code realtime.freshness.max-stale-seconds}). */
+    Duration maxAge() { return policy.maxStale(); }
+
     @Override
-    public Map<String, RealtimeStationStatus> findAll(List<String> stationIds) {
-        if (stationIds.isEmpty()) return Map.of();
+    public RealtimeSnapshot read(List<String> stationIds) {
+        if (stationIds.isEmpty()) return RealtimeSnapshot.empty();
         return switch (mode) {
             case LEGACY -> findLegacy(stationIds);
             case VERSIONED -> {
                 OptionalLong version = currentVersion();
-                yield version.isPresent() ? findVersioned(version.getAsLong(), stationIds, false).orElseGet(Map::of) : Map.of();
+                yield version.isPresent()
+                        ? findVersioned(version.getAsLong(), stationIds, false).orElseGet(RealtimeSnapshot::empty)
+                        : RealtimeSnapshot.empty();
             }
             case AUTO -> {
                 OptionalLong version = currentVersion();
@@ -93,7 +115,7 @@ public class RedisRealtimeSnapshotReader implements RealtimeSnapshotReader {
     }
 
     private void warnMissingVersionHash(long version) {
-        Instant now = clock.instant();
+        Instant now = policy.now();
         Instant last = lastMissingHashWarn.get();
         if (last != null && now.isBefore(last.plus(MISSING_HASH_WARN_INTERVAL))) return;
         if (!lastMissingHashWarn.compareAndSet(last, now)) return;
@@ -119,7 +141,7 @@ public class RedisRealtimeSnapshotReader implements RealtimeSnapshotReader {
      * Reads the version hash. When {@code checkExists} is set and no requested id had a value, verifies the hash
      * exists with one EXISTS round trip and returns empty when it does not (the caller decides the fallback).
      */
-    private Optional<Map<String, RealtimeStationStatus>> findVersioned(long version, List<String> stationIds, boolean checkExists) {
+    private Optional<RealtimeSnapshot> findVersioned(long version, List<String> stationIds, boolean checkExists) {
         String key = VERSION_KEY_PREFIX + version;
         List<Object> values = redisTemplate.opsForHash().multiGet(key, List.<Object>copyOf(stationIds));
         if (checkExists && (values == null || values.stream().allMatch(Objects::isNull))
@@ -127,41 +149,48 @@ public class RedisRealtimeSnapshotReader implements RealtimeSnapshotReader {
             return Optional.empty();
         }
         Map<String, RealtimeStationStatus> result = new HashMap<>();
-        Instant now = clock.instant();
+        Set<String> excluded = new HashSet<>();
+        Instant now = policy.now();
         int rejected = 0;
         for (int i = 0; i < stationIds.size(); i++) {
             Object value = values == null || i >= values.size() ? null : values.get(i);
             if (value == null) continue;
             String id = stationIds.get(i);
-            Optional<RealtimeStationStatus> status = RealtimeSnapshotValues.fromVersionedJson(id, value.toString())
-                    .filter(candidate -> fresh(candidate.updatedAt(), now));
-            if (status.isPresent()) result.put(id, status.get());
-            else rejected++;
+            switch (RealtimeSnapshotValues.parseVersioned(id, value.toString())) {
+                case RealtimeSnapshotValues.Valid valid when servable(valid.status().updatedAt(), now) -> result.put(id, valid.status());
+                case RealtimeSnapshotValues.Excluded ignored -> excluded.add(id);
+                default -> rejected++;
+            }
         }
-        if (rejected > 0) log.debug("Realtime version {}: {} entries rejected (corrupt, hidden or not fresh)", version, rejected);
-        return Optional.of(result);
+        if (rejected > 0 || !excluded.isEmpty()) {
+            log.debug("Realtime version {}: {} entries rejected (corrupt or older than max-stale), {} excluded by gate",
+                    version, rejected, excluded.size());
+        }
+        return Optional.of(new RealtimeSnapshot(result, excluded));
     }
 
-    private Map<String, RealtimeStationStatus> findLegacy(List<String> stationIds) {
+    private RealtimeSnapshot findLegacy(List<String> stationIds) {
         List<Object> hashes = redisTemplate.executePipelined((RedisCallback<Object>) connection -> {
             stationIds.forEach(id -> connection.hashCommands().hGetAll(bytes(KEY_PREFIX + id)));
             return null;
         });
         Map<String, RealtimeStationStatus> result = new HashMap<>();
-        Instant now = clock.instant();
+        Instant now = policy.now();
         for (int i = 0; i < stationIds.size() && i < hashes.size(); i++) {
             if (!(hashes.get(i) instanceof Map<?, ?> values) || values.isEmpty()) continue;
             String id = stationIds.get(i);
             // Corrupt entries are unavailable, never interpreted as zero bikes.
             RealtimeSnapshotValues.fromLegacyHash(id, values)
-                    .filter(candidate -> fresh(candidate.updatedAt(), now))
+                    .filter(candidate -> servable(candidate.updatedAt(), now))
                     .ifPresent(status -> result.put(id, status));
         }
-        return result;
+        // The legacy layout has no publication gate, so nothing is ever reported as excluded (D3 limitation).
+        return new RealtimeSnapshot(result, Set.of());
     }
 
-    private static boolean fresh(Instant updatedAt, Instant now) {
-        return !updatedAt.isBefore(now.minus(MAX_AGE)) && !updatedAt.isAfter(now.plus(MAX_CLOCK_SKEW));
+    /** FRESH or STALE under the configured policy; older than max-stale or too far in the future is dropped. */
+    private boolean servable(Instant updatedAt, Instant now) {
+        return policy.classify(updatedAt, now).status().servable();
     }
 
     private static byte[] bytes(String value) {

@@ -13,5 +13,18 @@ public record Meta(
 ) {
     public static Meta of(@Nullable String requestId) { return new Meta(requestId, null, null); }
 
-    public record Warning(String code) {}
+    /**
+     * {@code partial=true} with the given warning codes (duplicates removed, order kept). The requestId is left
+     * null for {@link ApiResponse#ok(Object, Meta)} to fill from the current request.
+     */
+    public static Meta partial(List<WarningCode> codes) {
+        return new Meta(null, true, codes.stream().distinct().map(Warning::of).toList());
+    }
+
+    /** Copy with the requestId replaced. */
+    public Meta withRequestId(@Nullable String requestId) { return new Meta(requestId, partial, warnings); }
+
+    public record Warning(String code) {
+        public static Warning of(WarningCode code) { return new Warning(code.name()); }
+    }
 }
