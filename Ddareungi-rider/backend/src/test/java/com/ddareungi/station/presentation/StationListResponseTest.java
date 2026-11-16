@@ -3,6 +3,7 @@ package com.ddareungi.station.presentation;
 import com.ddareungi.global.web.RequestIdFilter;
 import com.ddareungi.realtime.domain.RealtimeFreshnessPolicy;
 import com.ddareungi.station.application.FindNearbyStationsUseCase;
+import com.ddareungi.station.application.StationQueryService;
 import com.ddareungi.station.application.StationViewMapper;
 import com.ddareungi.station.domain.Location;
 import com.ddareungi.station.domain.Station;
@@ -37,7 +38,8 @@ class StationListResponseTest {
     void setUp() {
         port = mock(StationSearchPort.class);
         var mapper = new StationViewMapper(RealtimeFreshnessPolicy.defaults(Clock.fixed(NOW, ZoneOffset.UTC)));
-        mvc = MockMvcBuilders.standaloneSetup(new StationController(new FindNearbyStationsUseCase(port), mapper))
+        mvc = MockMvcBuilders.standaloneSetup(new StationController(new FindNearbyStationsUseCase(port), mapper,
+                        new StationQueryService(port)))
                 .addFilters(new RequestIdFilter()).build();
     }
 

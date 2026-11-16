@@ -115,6 +115,31 @@ class ApiContractTest {
                 .andExpect(jsonPath("$.data[0].stationName").value(containsString("강남")));
     }
 
+    /** A4: detail, realtime batch and realtime status on the local sample data. */
+    @Test void detailRealtimeBatchAndRealtimeStatus() throws Exception {
+        mvc.perform(get("/api/v1/stations/ST-002")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.stationId").value("ST-002"))
+                .andExpect(jsonPath("$.data.realtimeStatus").value("FRESH"))
+                .andExpect(jsonPath("$.data.distanceMeters").doesNotExist());
+        failure(mvc.perform(get("/api/v1/stations/ST-999")), 404, "STATION_NOT_FOUND");
+        failure(mvc.perform(get("/api/v1/stations/bad_id")), 400, "INVALID_PARAMETER");
+        failure(mvc.perform(get("/api/v1/stations/batch")), 405, "METHOD_NOT_ALLOWED");
+        mvc.perform(get("/api/v1/stations/realtime").param("stationIds", "ST-003,ST-999,ST-001,ST-003"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].stationId").value("ST-003"))
+                .andExpect(jsonPath("$.data.items[1].stationId").value("ST-001"))
+                .andExpect(jsonPath("$.data.notFoundStationIds[0]").value("ST-999"))
+                .andExpect(jsonPath("$.data.excludedStationIds").isArray())
+                .andExpect(jsonPath("$.data.unavailableStationIds").isArray())
+                .andExpect(jsonPath("$.meta.partial").value(true));
+        failure(mvc.perform(get("/api/v1/stations/realtime").param("stationIds", "ST-001,,ST-002")), 400, "INVALID_PARAMETER");
+        mvc.perform(get("/api/v1/status/realtime")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("NORMAL"))
+                .andExpect(jsonPath("$.data.totalStationCount").value(3))
+                .andExpect(jsonPath("$.data.freshStationCount").value(3))
+                .andExpect(jsonPath("$.data.ageSeconds").isNumber());
+    }
+
     @Test void statusEndpointsUseDtos() throws Exception {
         mvc.perform(get("/api/v1/status")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true)).andExpect(jsonPath("$.data.mode").value("sample"));
