@@ -4,7 +4,8 @@ import java.util.List;
 
 /**
  * Station read port. The first four methods keep their Phase 1 signatures (used by routing and place search);
- * the last three are the Phase 2 contract (P2-1) that R3/A4/A5 build on. R3 replaces the implementations
+ * the next three are the Phase 2 contract (P2-1) that R3/A4/A5 build on, and {@link #findCandidatesInBounds} was
+ * added by Phase 3 R4 (server clusters) without changing the others. R3 replaces the implementations
  * (catalog + grid index + snapshot cache) without changing these signatures or meanings.
  *
  * <h2>Common rules (spec v5 11.0)</h2>
@@ -58,4 +59,13 @@ public interface StationSearchPort {
      * R3 serves it from the snapshot cache.
      */
     RealtimeSummary realtimeSummary();
+
+    /**
+     * R4: every public candidate inside {@code bounds} (inclusive box test on the joined location, the same set
+     * {@link #findInBounds} returns) with its FRESH/STALE/UNAVAILABLE status at one evaluation instant, distance
+     * from the bounds centre, ordered by distance ascending then stationId. UNAVAILABLE candidates are included
+     * (without counts, as in {@link #findWithin}) so the caller can apply the A3 partial rule; excluded stations are
+     * absent. Served from memory like the other methods (no storage access on the request path).
+     */
+    List<StationCandidate> findCandidatesInBounds(StationBounds bounds);
 }

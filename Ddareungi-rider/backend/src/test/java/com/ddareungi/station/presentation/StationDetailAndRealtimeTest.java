@@ -5,6 +5,8 @@ import com.ddareungi.global.web.RequestIdFilter;
 import com.ddareungi.realtime.domain.RealtimeFreshness;
 import com.ddareungi.realtime.domain.RealtimeFreshnessPolicy;
 import com.ddareungi.station.application.FindNearbyStationsUseCase;
+import com.ddareungi.station.application.StationMapProperties;
+import com.ddareungi.station.application.StationMapService;
 import com.ddareungi.station.application.StationQueryService;
 import com.ddareungi.station.application.StationViewMapper;
 import com.ddareungi.station.domain.Location;
@@ -54,7 +56,8 @@ class StationDetailAndRealtimeTest {
         var clock = new DefaultListableBeanFactory();
         clock.registerSingleton("clock", Clock.fixed(NOW, ZoneOffset.UTC));
         mvc = MockMvcBuilders.standaloneSetup(new StationController(new FindNearbyStationsUseCase(port), mapper,
-                        new StationQueryService(port)))
+                        new StationQueryService(port),
+                        new StationMapService(port, mapper, StationMapProperties.defaults())))
                 .setControllerAdvice(new GlobalExceptionHandler(clock.getBeanProvider(Clock.class)))
                 .addFilters(new RequestIdFilter()).build();
     }

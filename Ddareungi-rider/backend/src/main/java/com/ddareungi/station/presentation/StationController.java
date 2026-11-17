@@ -8,11 +8,14 @@ import com.ddareungi.station.application.FindNearbyStationsUseCase;
 import com.ddareungi.station.application.NearbyQuery;
 import com.ddareungi.station.application.NearbySort;
 import com.ddareungi.station.application.StationIds;
+import com.ddareungi.station.application.StationMapProperties;
+import com.ddareungi.station.application.StationMapService;
 import com.ddareungi.station.application.StationQueryService;
 import com.ddareungi.station.application.StationView;
 import com.ddareungi.station.application.StationViewMapper;
 import com.ddareungi.station.domain.Location;
 import com.ddareungi.station.domain.Station;
+import com.ddareungi.station.domain.StationBounds;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Max;
@@ -41,12 +44,17 @@ public class StationController {
     private static final String LIMIT_REASON = "1~100의 정수여야 합니다.";
     private final FindNearbyStationsUseCase useCase;
     private final StationViewMapper mapper;
+    private static final String LEVEL_REASON = StationMapProperties.MIN_CLUSTER_LEVEL + "~"
+            + StationMapProperties.MAX_CLUSTER_LEVEL + "의 정수여야 합니다.";
     private final StationQueryService queries;
+    private final StationMapService map;
 
-    public StationController(FindNearbyStationsUseCase useCase, StationViewMapper mapper, StationQueryService queries) {
+    public StationController(FindNearbyStationsUseCase useCase, StationViewMapper mapper, StationQueryService queries,
+                             StationMapService map) {
         this.useCase = useCase;
         this.mapper = mapper;
         this.queries = queries;
+        this.map = map;
     }
 
     /**
@@ -78,10 +86,31 @@ public class StationController {
         return toResponses(useCase.findByIds(request.stationIds(), request.latitude(), request.longitude()));
     }
 
+    /**
+     * Stations in a map box (A3 list rules). R4 adds only the cap: above {@code station.map.viewport-max-items}
+     * (500) FRESH/STALE stations, the nearest to the box centre are returned with {@code meta.partial=true} and
+     * {@code RESULT_TRUNCATED}. Box validation is unchanged ({@link StationBounds}: out-of-range coordinate →
+     * {@code INVALID_COORDINATE}, inverted or wider than 1° → {@code INVALID_PARAMETER}).
+     */
     @GetMapping("/viewport")
     public ApiResponse<List<StationResponse>> viewport(@RequestParam double south, @RequestParam double north,
             @RequestParam double west, @RequestParam double east) {
-        return toResponses(useCase.findInBounds(south, north, west, east));
+        var view = map.viewport(new StationBounds(south, north, west, east));
+        return ApiResponse.ok(view.items().stream().map(StationResponse::from).toList(), view.meta());
+    }
+
+    /**
+     * Server grid clusters for map levels 5..8 (Phase 3 R4, extension API; contract in {@link StationClusterResponse}).
+     * The box follows the viewport rules ({@link StationBounds}); {@code level} outside 5..8, missing or not an
+     * integer → {@code INVALID_PARAMETER}. Same rate-limit group as every {@code /api/v1/stations/**} path.
+     */
+    @GetMapping("/clusters")
+    public ApiResponse<StationClusterResponse> clusters(@RequestParam double south, @RequestParam double north,
+            @RequestParam double west, @RequestParam double east,
+            @RequestParam @Min(value = StationMapProperties.MIN_CLUSTER_LEVEL, message = LEVEL_REASON)
+            @Max(value = StationMapProperties.MAX_CLUSTER_LEVEL, message = LEVEL_REASON) int level) {
+        var view = map.clusters(new StationBounds(south, north, west, east), level);
+        return ApiResponse.ok(StationClusterResponse.from(view), view.meta());
     }
 
     @GetMapping("/search")
@@ -104,7 +133,7 @@ public class StationController {
     /**
      * Station detail (spec 11.2). The path pattern refuses the literal {@code batch} so that {@code GET /batch} is a
      * 405 for the POST-only batch endpoint instead of a lookup of a station called "batch". The other literal GET
-     * paths (nearby, viewport, search, realtime) win over this pattern by Spring's specificity rules.
+     * paths (nearby, viewport, clusters, search, realtime) win over this pattern by Spring's specificity rules.
      */
     @GetMapping("/{stationId:(?!batch$).+}")
     public ApiResponse<StationDetailResponse> detail(

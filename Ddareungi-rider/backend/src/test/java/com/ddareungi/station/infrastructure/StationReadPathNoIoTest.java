@@ -5,6 +5,9 @@ import com.ddareungi.realtime.domain.RealtimeFreshnessPolicy;
 import com.ddareungi.realtime.infrastructure.RealtimeReadMode;
 import com.ddareungi.realtime.infrastructure.RealtimeSnapshotCache;
 import com.ddareungi.realtime.infrastructure.RealtimeSnapshotCacheProperties;
+import com.ddareungi.station.application.StationMapProperties;
+import com.ddareungi.station.application.StationMapService;
+import com.ddareungi.station.application.StationViewMapper;
 import com.ddareungi.station.domain.Location;
 import com.ddareungi.station.domain.StationBounds;
 import com.ddareungi.station.domain.StationCandidate;
@@ -103,8 +106,15 @@ class StationReadPathNoIoTest {
         assertThat(adapter.reloadCatalog()).isTrue();
         assertThat(cache.poll(adapter.catalogStationIds())).isTrue();
         clearInvocations(jdbc, redis, values, hashes);
+        // R4: the map service (viewport cap + clusters) reads the same in-memory port.
+        var map = new StationMapService(adapter, new StationViewMapper(policy()), StationMapProperties.defaults());
+        var bounds = new StationBounds(37.49, 37.51, 127.02, 127.04);
 
         for (int i = 0; i < 3; i++) {
+            assertThat(adapter.findCandidatesInBounds(bounds)).extracting(StationCandidate::status)
+                    .contains(RealtimeFreshness.FRESH);
+            assertThat(map.viewport(bounds).items()).isNotEmpty();
+            for (int level = 5; level <= 8; level++) assertThat(map.clusters(bounds, level).items()).isNotEmpty();
             assertThat(adapter.findNearby(CENTER, 1000)).isNotEmpty();
             assertThat(adapter.findWithin(CENTER, 1000)).extracting(StationCandidate::status).contains(RealtimeFreshness.FRESH);
             assertThat(adapter.findInBounds(new StationBounds(37.49, 37.51, 127.02, 127.04))).isNotEmpty();
