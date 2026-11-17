@@ -24,12 +24,20 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        # prometheus: scraped by deploy/observability over the internal network (phase 3 O8); never on 8080.
+        include: health,info,prometheus
   endpoint:
     health:
       # /actuator/health/liveness and /actuator/health/readiness
       probes:
         enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        # Buckets for the dashboard's p95/p99 panels (histogram_quantile over http_server_requests_seconds_bucket).
+        http.server.requests: true
 
 server:
   port: ${SERVER_PORT:8080}

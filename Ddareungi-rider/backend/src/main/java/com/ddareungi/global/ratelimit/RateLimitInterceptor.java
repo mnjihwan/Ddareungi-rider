@@ -1,5 +1,7 @@
 package com.ddareungi.global.ratelimit;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.jspecify.annotations.Nullable;
@@ -15,7 +17,9 @@ import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.EnumMap;
 import java.util.HexFormat;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
@@ -26,11 +30,16 @@ import java.util.regex.Pattern;
  *
  * <p>The client is identified by {@link HttpServletRequest#getRemoteAddr()} only (D6); client-supplied headers are
  * never trusted here. Behind a reverse proxy the server's forwarding configuration decides what that address is.
+ *
+ * <p>Rejections are counted in {@code ddareungi.ratelimit.rejected{group}} (phase 3 O8) when a meter registry is given.
  */
 public class RateLimitInterceptor implements HandlerInterceptor {
     private final RateLimitProperties properties;
     private final RateLimiter localLimiter;
     private final RateLimiter sharedLimiter;
+    private final Map<RateLimitGroup, Counter> rejected = new EnumMap<>(RateLimitGroup.class);
+
+    public static final String REJECTED_METER = "ddareungi.ratelimit.rejected";
 
     /**
      * @param localLimiter  instance memory limiter for {@link RateLimitGroup#STATIONS}
@@ -38,9 +47,21 @@ public class RateLimitInterceptor implements HandlerInterceptor {
      *                      (Redis on the infra profile, the local one otherwise)
      */
     public RateLimitInterceptor(RateLimitProperties properties, RateLimiter localLimiter, RateLimiter sharedLimiter) {
+        this(properties, localLimiter, sharedLimiter, null);
+    }
+
+    /** @param meterRegistry where rejections are counted; null counts nothing */
+    public RateLimitInterceptor(RateLimitProperties properties, RateLimiter localLimiter, RateLimiter sharedLimiter,
+                                @Nullable MeterRegistry meterRegistry) {
         this.properties = properties;
         this.localLimiter = localLimiter;
         this.sharedLimiter = sharedLimiter;
+        if (meterRegistry != null) {
+            for (RateLimitGroup group : RateLimitGroup.values()) {
+                rejected.put(group, Counter.builder(REJECTED_METER).description("Requests rejected with 429")
+                        .tag("group", group.key()).register(meterRegistry));
+            }
+        }
     }
 
     @Override
@@ -51,7 +72,11 @@ public class RateLimitInterceptor implements HandlerInterceptor {
         RateLimiter limiter = group == RateLimitGroup.STATIONS ? localLimiter : sharedLimiter;
         RateLimitDecision decision = limiter.tryAcquire(group.key() + ":" + clientHash(request.getRemoteAddr()),
                 properties.policy(group));
-        if (!decision.allowed()) throw new RateLimitExceededException(decision.retryAfterSeconds());
+        if (!decision.allowed()) {
+            Counter counter = rejected.get(group);
+            if (counter != null) counter.increment();
+            throw new RateLimitExceededException(decision.retryAfterSeconds());
+        }
         return true;
     }
 
