@@ -228,6 +228,15 @@ OD CSV/ZIP은 `bikeseoul_data/data/oa-21229`, 이용통계 CSV는 `bikeseoul_dat
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\collect-data-once.ps1
 ```
 
+## 배포 (EC2, Phase 3 O7 초안)
+
+main에 push되어 CI가 성공하면 `.github/workflows/deploy.yml`이 `production` 환경 승인 후 GitHub OIDC로 AWS 역할을 맡아 이미지를 ECR에 커밋 SHA 태그로 올리고, SSM Run Command로 EC2의 `deploy/ec2/deploy.sh`를 실행합니다. 스크립트는 blue/green(127.0.0.1:18081/18082)으로 새 컨테이너의 readiness를 확인한 뒤 nginx upstream을 바꾸고, 스모크가 실패하면 되돌립니다. 롤백은 Deploy 워크플로를 수동 실행하며 `image_tag`에 이전 SHA를 넣습니다.
+
+- AWS 계정·리전·저장소·역할·인스턴스 값은 저장소에 없고 GitHub Environment 변수와 자리표시자로만 둡니다. 런타임 비밀은 SSM Parameter Store SecureString입니다.
+- 실제 AWS에서는 아직 실행하지 않았습니다. EC2 준비는 [deploy/ec2/bootstrap.md](deploy/ec2/bootstrap.md), 사용자 제공 값·첫 배포 체크리스트·미검증 항목은 [docs/deploy-ec2.md](docs/deploy-ec2.md)를 참고하세요.
+- 배포 전 필수 확인: 프록시 forwarded 설정(틀리면 모든 사용자가 한 Rate Limit 키를 공유해 대량 429), MySQL 대여소 데이터(없으면 readiness 실패로 기존 버전 유지).
+- 스크립트 검증: `deploy/ec2/test/run-harness.sh`(가짜 docker·nginx·curl·aws, 루트·AWS 불필요).
+
 ## 운영 범위
 
 현재 웹 화면은 카카오 지도·장소/대여소 검색·주변 목록·즐겨찾기·도보/따릉이/도보 길찾기와 예측 표시 인터페이스를 제공합니다. Python `ai/`에는 별도 오프라인 학습 코드가 있고 웹 화면의 잔여 수량 예측에는 아직 연결하지 않았습니다. 기존 v5 API/ERD 문서는 설계안이며 모든 계약이 구현된 상태는 아닙니다.

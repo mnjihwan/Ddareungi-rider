@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Fake curl for host-side smoke requests through "nginx".
+# /api/... -> 200 if the live upstream port belongs to a running container (502 otherwise);
+#             FAKE_SMOKE_FAIL_COLOR=<color> -> 503 when that color is live.
+# other    -> 200 if $WEB_ROOT/current/index.html exists, else 404; FAKE_WEB_SMOKE_FAIL=1 -> 500.
+# Prints the status code when called with -w (deploy.sh uses -w '%{http_code}').
+set -euo pipefail
+S=${FAKE_STATE:?}
+url=${*: -1}
+echo "curl $url" >>"$S/calls.log"
+code=502
+if [[ $url == */api/* ]]; then
+  port=$(grep -Eo '127\.0\.0\.1:[0-9]+' "$S/live-upstream" 2>/dev/null | head -1 | cut -d: -f2 || true)
+  for d in "$S"/containers/*/; do
+    [[ -f $d/port && $(cat "$d/port") == "$port" && $(cat "$d/running") == true ]] || continue
+    if [[ ${FAKE_SMOKE_FAIL_COLOR:-} == "$(cat "$d/color")" ]]; then code=503; else code=200; fi
+  done
+else
+  if [[ ${FAKE_WEB_SMOKE_FAIL:-0} == 1 ]]; then code=500
+  elif [[ -f ${WEB_ROOT:?}/current/index.html ]]; then code=200; else code=404; fi
+fi
+if [[ " $* " == *" -w "* ]]; then printf '%s' "$code"; fi
+[[ $code == 200 ]]

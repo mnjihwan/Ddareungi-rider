@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Fake aws CLI: ECR login token and SSM Parameter Store (text output, Name<TAB>Value lines).
+set -euo pipefail
+S=${FAKE_STATE:?}
+echo "aws $*" >>"$S/calls.log"
+case "$1 $2" in
+  "ecr get-login-password") echo "fake-ecr-token" ;;
+  "ssm get-parameters-by-path")
+    printf '%s\t%s\n' "/ddareungi/production/backend/MYSQL_PASSWORD" "fake-db-pass" \
+      "/ddareungi/production/backend/KAKAO_MAPS_REST_API_KEY" "fake-kakao-key" ;;
+  *) echo "fake aws: unsupported $*" >&2; exit 1 ;;
+esac
