@@ -96,6 +96,8 @@ export function retryAfterMs(error: unknown, now = Date.now()): number | null {
  */
 export function shouldRetryQuery(failureCount: number, error: unknown): boolean {
   if (failureCount >= 1) return false;
+  // Phase 3 A7: maintenance (503 MAINTENANCE_MODE) switches to the maintenance screen; an immediate retry cannot help.
+  if (apiError(error)?.code === "MAINTENANCE_MODE") return false;
   if (!isRateLimited(error)) return true;
   const wait = retryAfterMs(error);
   return wait !== null && wait <= MAX_RETRY_AFTER_MS;

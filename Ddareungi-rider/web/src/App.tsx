@@ -9,11 +9,14 @@ import {
   searchPlaces,
   searchStations,
   viewportStations,
+  stationClusters,
   nearbySubways,
   forecastPath, loadForecasts,
   unwrap, type ApiEnvelope, apiErrorMessage,
 } from "./lib/api";
-import { INITIAL_LOCATION, stationLocation, type Coordinates, type Station, type MapBounds, type BikeRoute, type Place, type RouteEndpointRole } from "./lib/types";
+import { INITIAL_LOCATION, stationLocation, type Coordinates, type Station, type MapBounds, type RoutePlan, type Place, type RouteEndpointRole } from "./lib/types";
+import { fetchClientConfig, loadMaintenanceState, onMaintenance, type MaintenanceState } from "./lib/clientConfig";
+import { clusterLevel, clusterRequestBounds, mapQueryMode } from "./lib/mapClusters";
 import {useRecentPlaces} from './lib/useRecentPlaces';
 import { useFavorites } from "./lib/useFavorites";
 import { availability, compareOutlooks, stationOutlook } from "./lib/status";
@@ -28,11 +31,49 @@ import {bestSearchScore, searchMatchLabel} from './lib/koreanSearch';
 import { useTheme } from "./lib/useTheme";
 import { ThemeToggle } from "./components/ThemeToggle";
 
+/**
+ * Phase 3 A7: `GET /api/client-config` runs alongside the normal start (no added delay); maintenance=true, or any
+ * API call answered with 503 MAINTENANCE_MODE, shows the maintenance screen. A failed or slow config request is
+ * ignored (spec 6), so the app starts normally.
+ */
 export default function App() {
+  const [maintenance, setMaintenance] = useState<MaintenanceState>({active: false});
+  const [checking, setChecking] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadMaintenanceState(fetchClientConfig, controller.signal).then(state => {
+      if (!controller.signal.aborted && state.active) setMaintenance(state);
+    });
+    const unsubscribe = onMaintenance(setMaintenance);
+    return () => { controller.abort(); unsubscribe(); };
+  }, []);
+  async function retry() {
+    setChecking(true);
+    // Failure on retry also lets the user in: if maintenance is still on, the next API call brings the screen back.
+    const state = await loadMaintenanceState();
+    setChecking(false);
+    setMaintenance(state);
+  }
+  if (maintenance.active) return (
+    <main className="maintenance-screen" aria-labelledby="maintenance-title">
+      <img className="brand-logo" src="/branding/ddareung-rider-logo.png" alt="따릉라이더" width={2172} height={724} />
+      <Icon name="info" size={34} />
+      <h1 id="maintenance-title">서비스 점검 중</h1>
+      <p role="status">{maintenance.message}</p>
+      <button className="primary-button" onClick={() => void retry()} disabled={checking}>
+        <Icon name="refresh" size={18} />{checking ? "확인하고 있어요…" : "다시 시도"}
+      </button>
+    </main>
+  );
+  return <MainApp />;
+}
+
+function MainApp() {
   const {theme, changeTheme} = useTheme();
   const [initialMap] = useState(()=>loadMapLocation() ?? {location: INITIAL_LOCATION, label: "강남역 주변"});
   const [center, setCenter] = useState(initialMap.location);
   const [viewport, setViewport] = useState<MapBounds | null>(null);
+  const [mapLevel, setMapLevel] = useState<number | null>(null);
   const [nearbyLimit, setNearbyLimit] = useState<number | null>(5);
   const [focus, setFocus] = useState({
     location: initialMap.location,
@@ -61,7 +102,10 @@ export default function App() {
     locate(true);
   }, []);
   const [forecastMinutes, setForecastMinutes] = useState(0);
-  const [route, setRoute] = useState<BikeRoute | null>(null);
+  const [routePlan, setRoutePlan] = useState<RoutePlan | null>(null);
+  const [routeIndex, setRouteIndex] = useState(0);
+  const route = routePlan ? routePlan.routes[routeIndex] ?? routePlan.routes[0] ?? null : null;
+  function setRoute(plan: RoutePlan | null) { setRoutePlan(plan); setRouteIndex(0); }
   const [planningRoute, setPlanningRoute] = useState(false);
   const [pinnedRouteStations, setPinnedRouteStations] = useState<Station[]>([]);
   const hideStationMarkers = view === "route" && (planningRoute || route !== null);
@@ -102,14 +146,26 @@ export default function App() {
     enabled: favorites.ids.length > 0,
     refetchInterval: 60000,
   });
+  // Phase 3 R4: levels 1..4 load individual stations, levels 5..8 server grid clusters (with a cell-aligned padded box).
+  const mapMode = mapQueryMode(mapLevel);
+  const clusterBox = viewport && mapMode === "clusters" ? clusterRequestBounds(viewport, mapLevel!) : null;
   const mapStations = useQuery({
     queryKey: ["viewport", viewport],
     queryFn: ({signal}) => viewportStations(viewport!, signal),
-    enabled: !!viewport && mapReady,
+    enabled: !!viewport && mapReady && mapMode === "viewport",
     placeholderData: previous => previous,
     staleTime: 30000,
     refetchInterval: 60000,
   });
+  const mapClusters = useQuery({
+    queryKey: ["clusters", clusterBox, mapLevel === null ? null : clusterLevel(mapLevel)],
+    queryFn: ({signal}) => stationClusters(clusterBox!, clusterLevel(mapLevel!), signal),
+    enabled: !!clusterBox && mapReady && !hideStationMarkers,
+    placeholderData: previous => previous,
+    staleTime: 30000,
+    refetchInterval: 60000,
+  });
+  const activeMapQuery = mapMode === "clusters" ? mapClusters : mapStations;
   const selectedQuery = useQuery({
     queryKey: ["selected", selectedId, center],
     queryFn: ({ signal }) => favoriteStations([selectedId!], center, signal),
@@ -156,7 +212,7 @@ export default function App() {
   [
     ...(route ? [route.departureStation, route.arrivalStation] : []),
     ...(stations.data ?? []),
-    ...(mapStations.data ?? []),
+    ...(mapStations.data?.stations ?? []),
     ...(saved.data ?? []),
     ...(search.data?.stations ?? []),
     ...(selectedQuery.data ?? []),
@@ -412,7 +468,8 @@ export default function App() {
             <div hidden={view !== "route"} className={selected ? "route-planner-container mobile-hidden" : "route-planner-container"}>
               <RoutePlanner onStationSelectionChange={setPinnedRouteStations} onPlanningChange={setPlanningRoute} active={view === "route"} favoriteStations={(saved.data ?? []).filter(station=>favorites.ids.includes(station.stationId))}
                 favoritesLoading={saved.isFetching} favoritesError={saved.isError}
-                userLocation={userLocation} endpointSelection={endpointSelection} plan={route}
+                userLocation={userLocation} endpointSelection={endpointSelection} plan={routePlan}
+                selectedRouteIndex={routeIndex} onSelectRoute={setRouteIndex}
                 onPlaceSelected={focusPlace}
                 searchCenter={center} onSearchStart={()=>setFocusedPlace(null)}
                 userLocationAccuracy={userLocationAccuracy} pickedEndpoint={pickedEndpoint}
@@ -632,7 +689,8 @@ export default function App() {
             focus={focus}
             userLocation={userLocation}
             onSelect={select}
-            onViewport={setViewport}
+            onViewport={(bounds, level) => {setViewport(bounds);setMapLevel(level);}}
+            clusters={mapMode === "clusters" && !hideStationMarkers ? mapClusters.data ?? null : null}
             onUserPan={location => {
               allowInitialLocation.current=false;
               setCenter(location);
@@ -653,9 +711,12 @@ export default function App() {
           <div className="map-top-label">
             <Icon name="pin" size={16} />
             {view === "route" ? "따릉이 길찾기" : label}
-            {view !== "route" && <span>목록 {radius < 1000 ? `${radius}m` : `${radius / 1000}km`} · {mapStations.isFetching ? "지도 갱신 중" : `지도 ${mapStations.data?.length ?? 0}곳`}</span>}
+            {view !== "route" && <span>목록 {radius < 1000 ? `${radius}m` : `${radius / 1000}km`} · {activeMapQuery.isFetching ? "지도 갱신 중"
+              : `지도 ${mapMode === "clusters" ? (mapClusters.data?.items ?? []).reduce((sum, item) => sum + item.stationCount, 0) : mapStations.data?.stations.length ?? 0}곳`}</span>}
+            {view !== "route" && mapMode === "viewport" && mapStations.data?.truncated &&
+              <span className="map-truncated-badge" role="status">가까운 곳만 표시 중 · 확대하면 모두 보여요</span>}
           </div>
-          {!hideStationMarkers && mapStations.isError && <button className="search-this-area" onClick={() => void mapStations.refetch()}>
+          {!hideStationMarkers && activeMapQuery.isError && <button className="search-this-area" onClick={() => void activeMapQuery.refetch()}>
             <Icon name="refresh" size={17} />지도 대여소 다시 불러오기
           </button>}
           <button

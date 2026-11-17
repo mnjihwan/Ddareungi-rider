@@ -1598,6 +1598,22 @@ p {
   .app-header nav button { padding: 11px 12px; }
 }
 
+/* Phase 3 A6: recommended route and alternatives. */
+.route-options { display: grid; gap: 8px; margin-top: 18px; }
+.route-options button { display: grid; gap: 3px; width: 100%; padding: 11px 12px; border: 1px solid var(--theme-line, #dce3ed); border-radius: 10px; text-align: left; background: var(--surface, #fff); }
+.route-options button[aria-pressed="true"] { background: var(--selected-surface, #eaf0f8); border-color: #8da7ce; }
+.route-options b { font-size: 13px; }
+.route-options small { color: var(--theme-muted, #52657c); font-size: 10px; overflow-wrap: anywhere; }
+/* Phase 3 R4: server grid clusters (same shape as the client clusters) and the viewport cap notice. */
+.cluster-marker.server-cluster small { font-size: 9px; }
+.map-top-label .map-truncated-badge { color: var(--theme-warning, #8a5a00); background: var(--warning-surface, #fff4dc); border-radius: 6px; padding: 2px 6px; }
+/* Phase 3 A7: maintenance screen. */
+.maintenance-screen { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px 16px; text-align: center; background: var(--raised-surface, #f7f8fa); color: var(--theme-text, #252f3e); }
+.maintenance-screen .brand-logo { display: block; width: min(220px, 60vw); height: auto; }
+.maintenance-screen h1 { margin: 0; font-size: 22px; }
+.maintenance-screen p { margin: 0; max-width: 420px; line-height: 1.7; color: var(--theme-muted, #52657c); overflow-wrap: anywhere; }
+.maintenance-screen .primary-button { display: inline-flex; align-items: center; gap: 6px; }
+
 :root { color-scheme: light; }
 :root[data-theme="dark"] {
   color-scheme: dark;

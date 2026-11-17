@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { loadKakaoMaps, coordinatesOf } from "../lib/kakaoMaps";
 import { clusterPoints, separateMarkerGroups, type MarkerGroup } from "../lib/clusters";
-import { stationLocation, type Coordinates, type Station, type MapBounds, type BikeRoute, type Place, type RouteEndpointRole } from "../lib/types";
+import { CLUSTER_MIN_LEVEL, clusterZoomLevel, mergeOverlappingClusters, type ClusterMarker } from "../lib/mapClusters";
+import { stationLocation, type Coordinates, type Station, type MapBounds, type BikeRoute, type Place, type RouteEndpointRole, type StationClusters } from "../lib/types";
 import { availability, AVAILABILITY_LABEL } from "../lib/status";
 import { Icon } from "./Icon";
 import { MapMarker } from "./MapMarker";
@@ -14,7 +15,14 @@ interface Props {
   focus: { location: Coordinates; revision: number };
   userLocation: Coordinates | null;
   onSelect: (station: Station) => void;
-  onViewport: (bounds: MapBounds) => void;
+  /** Debounced after every map move, with the Kakao level (1..8) the bounds belong to. */
+  onViewport: (bounds: MapBounds, level: number) => void;
+  /**
+   * Server grid clusters for levels 5..8 (phase 3 R4). While set and the map is at level 5 or above, they replace
+   * the client overlap clusters; `stations` then only contributes the selected station as an individual marker.
+   * Null keeps the previous behaviour (e.g. clusters not loaded yet, failed, or route mode).
+   */
+  clusters?: StationClusters | null;
   onUserPan: (location: Coordinates) => void;
   onReady: (ready: boolean) => void;
   route?: BikeRoute | null;
@@ -36,6 +44,7 @@ export function StationMap({
   onViewport,
   onUserPan,
   onReady,
+  clusters = null,
   route,
   pickingEndpoint,
   onPickEndpoint,
@@ -55,6 +64,7 @@ export function StationMap({
   const [version, setVersion] = useState(0);
   const [retry, setRetry] = useState(0);
   const [groups, setGroups] = useState<MarkerGroup[]>([]);
+  const [clusterMarkers, setClusterMarkers] = useState<ClusterMarker[]>([]);
 
   useEffect(() => {
     const map = mapRef.current, sdk = window.kakao?.maps;
@@ -112,7 +122,7 @@ export function StationMap({
             if (disposed) return;
             const bounds = map.getBounds();
             callbacks.current.onViewport({south: bounds.getSouthWest().getLat(), north: bounds.getNorthEast().getLat(),
-              west: bounds.getSouthWest().getLng(), east: bounds.getNorthEast().getLng()});
+              west: bounds.getSouthWest().getLng(), east: bounds.getNorthEast().getLng()}, map.getLevel());
           }, 200);
         };
         idle = () => {
@@ -182,7 +192,18 @@ export function StationMap({
     if (!host.current) return;
     const width = host.current.clientWidth,
       height = host.current.clientHeight;
-    const points = stations
+    const visible = (point: {x: number; y: number}) =>
+      point.x >= -30 && point.x <= width + 30 && point.y >= 20 && point.y <= height - 40;
+    const serverClusters = state === "ready" && map && sdk && clusters && !routeStationsOnly && map.getLevel() >= CLUSTER_MIN_LEVEL;
+    if (serverClusters) {
+      const projection = map.getProjection();
+      setClusterMarkers(mergeOverlappingClusters(clusters.items.map(item => {
+        const point = projection.containerPointFromCoords(new sdk.LatLng(item.latitude, item.longitude));
+        return {...item, x: point.x, y: point.y};
+      }).filter(visible)));
+    } else setClusterMarkers([]);
+    // With server clusters only the selected station keeps an individual marker (it is also counted in its cell).
+    const points = (serverClusters ? stations.filter(station => station.stationId === selectedId) : stations)
       .map((station) => {
         if (state === "ready" && map && sdk) {
           const point = map
@@ -208,21 +229,21 @@ export function StationMap({
               height,
         };
       })
-      .filter(
-        (point) => routeStationsOnly || (
-          point.x >= -30 &&
-          point.x <= width + 30 &&
-          point.y >= 20 &&
-          point.y <= height - 40),
-      );
-    const showIndividual=state==="ready" && map && (routeStationsOnly || map.getLevel()<=4);
+      .filter((point) => routeStationsOnly || visible(point));
+    const showIndividual=state==="ready" && map && (routeStationsOnly || serverClusters || map.getLevel()<=4);
     const grouped=clusterPoints(points, selectedId,showIndividual ? 0 : 72,48);
     setGroups(showIndividual ? separateMarkerGroups(grouped,selectedId) : grouped);
-  }, [stations, selectedId, version, state, focus, routeStationsOnly]);
+  }, [stations, selectedId, version, state, focus, routeStationsOnly, clusters]);
 
   function zoom(delta: number) {
     const map = mapRef.current;
     if (map && state === "ready") map.setLevel(map.getLevel() - delta, {animate: true});
+  }
+
+  function zoomToCluster(marker: ClusterMarker) {
+    const map = mapRef.current, sdk = window.kakao?.maps;
+    if (!map || !sdk || state !== "ready") return;
+    map.setLevel(clusterZoomLevel(map.getLevel()), {animate: true, anchor: new sdk.LatLng(marker.latitude, marker.longitude)});
   }
 
   function selectGroup(group: MarkerGroup) {
@@ -358,6 +379,15 @@ export function StationMap({
             <MapMarker key={point.name} map={mapRef.current!} sdk={window.kakao!.maps} location={point.location} selected>
               <span className={`route-endpoint ${point.name==='대여'||point.name==='반납'?'station':''}`}>{point.name}</span>
             </MapMarker>)}
+        {state === "ready" && mapRef.current && window.kakao?.maps && clusterMarkers.map(marker =>
+          <MapMarker key={marker.id} map={mapRef.current!} sdk={window.kakao!.maps} location={marker}>
+            <button className="cluster-marker server-cluster" style={{left: 0, top: 0}} onClick={() => zoomToCluster(marker)}
+              aria-label={`대여소 ${marker.stationCount}곳, 자전거 ${marker.parkingBikeTotCnt}대, 확대`}
+              title={marker.freshCount < marker.stationCount ? "일부 대여소는 갱신이 지연된 수량이에요" : undefined}>
+              {marker.stationCount}
+              <small>{marker.parkingBikeTotCnt}대</small>
+            </button>
+          </MapMarker>)}
         {groups.map((group) => {
           const members = stations.filter(station => group.stationIds.includes(station.stationId));
           const anchored = (button: ReactNode) => state === "ready" && mapRef.current && window.kakao?.maps
