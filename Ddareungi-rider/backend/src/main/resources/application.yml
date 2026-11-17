@@ -109,6 +109,10 @@ client:
     maintenance-message: ${CLIENT_WEB_MAINTENANCE_MESSAGE:}
 
 # Deprecated API paths (spec 32): entries of pattern, deprecation, sunset (RFC 3339) and optional link.
-# Default none; /api/v1/routes/plan is added after A6 (decision 23). See DeprecationProperties.
+# /api/v1/routes/plan is superseded by POST /api/v1/routes/search (phase 3 decisions 1 and 23); it keeps working
+# until the sunset date. See DeprecationProperties.
 api:
-  deprecations: []
+  deprecations:
+    - pattern: /api/v1/routes/plan
+      deprecation: 2026-11-17T00:00:00Z
+      sunset: 2027-06-30T23:59:59Z
