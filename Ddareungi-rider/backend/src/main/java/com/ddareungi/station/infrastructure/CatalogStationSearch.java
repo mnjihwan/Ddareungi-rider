@@ -60,8 +60,19 @@ abstract class CatalogStationSearch implements StationSearchPort {
 
     @Override
     public List<Station> findInBounds(StationBounds bounds) {
-        StationCatalog catalog = catalogs.require();
+        return inBounds(bounds, policy.now());
+    }
+
+    /** Same set and order as {@link #findInBounds}, classified at the same single instant (R4 clusters). */
+    @Override
+    public List<StationCandidate> findCandidatesInBounds(StationBounds bounds) {
         Instant now = policy.now();
+        return inBounds(bounds, now).stream().map(station -> candidate(station, now)).toList();
+    }
+
+    /** Public, non-excluded stations whose joined location is inside the box, nearest to its centre first. */
+    private List<Station> inBounds(StationBounds bounds, Instant now) {
+        StationCatalog catalog = catalogs.require();
         CachedRealtimeSnapshot snapshot = realtime.current(now);
         Location center = bounds.center();
         List<Station> result = new ArrayList<>();

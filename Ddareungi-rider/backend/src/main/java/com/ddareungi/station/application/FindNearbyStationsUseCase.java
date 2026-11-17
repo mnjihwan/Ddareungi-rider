@@ -3,7 +3,6 @@ package com.ddareungi.station.application;
 import com.ddareungi.station.domain.Location;
 import com.ddareungi.station.domain.Station;
 import com.ddareungi.station.domain.StationSearchPort;
-import com.ddareungi.station.domain.StationBounds;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -22,10 +21,6 @@ public class FindNearbyStationsUseCase {
 
     public List<Station> findByIds(List<String> ids, double latitude, double longitude) {
         return stationSearchPort.findByIds(ids.stream().distinct().toList(), new Location(latitude, longitude));
-    }
-
-    public List<Station> findInBounds(double south, double north, double west, double east) {
-        return stationSearchPort.findInBounds(new StationBounds(south, north, west, east));
     }
 
     public List<Station> searchByName(String query, double latitude, double longitude) {

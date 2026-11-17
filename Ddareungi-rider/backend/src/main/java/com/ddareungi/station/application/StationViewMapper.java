@@ -33,22 +33,39 @@ public class StationViewMapper {
 
     /** One evaluation instant for the whole list. */
     public StationListView toListView(List<Station> stations) {
+        return toListView(stations, Integer.MAX_VALUE);
+    }
+
+    /**
+     * {@link #toListView(List)} with an item cap (R4 viewport). The input order is kept and the first
+     * {@code maxItems} FRESH/STALE items are returned; when more would have been returned the list is partial with
+     * {@link WarningCode#RESULT_TRUNCATED} (after the A3 warnings). {@code STALE_DATA} refers to returned items only;
+     * {@code REALTIME_DATA_UNAVAILABLE} to any UNAVAILABLE input, returned position or not.
+     */
+    public StationListView toListView(List<Station> stations, int maxItems) {
+        if (maxItems < 1) throw new IllegalStateException("maxItems must be positive: " + maxItems);
         Instant now = policy.now();
-        List<StationView> items = new ArrayList<>(stations.size());
+        List<StationView> items = new ArrayList<>(Math.min(stations.size(), maxItems));
         boolean stale = false;
         boolean dropped = false;
+        boolean truncated = false;
         for (Station station : stations) {
             StationView view = toView(station, now);
             if (view.realtimeStatus() == RealtimeFreshness.UNAVAILABLE) {
                 dropped = true;
                 continue;
             }
+            if (items.size() >= maxItems) {
+                truncated = true;
+                continue;
+            }
             stale |= view.realtimeStatus() == RealtimeFreshness.STALE;
             items.add(view);
         }
-        List<WarningCode> warnings = new ArrayList<>(2);
+        List<WarningCode> warnings = new ArrayList<>(3);
         if (stale) warnings.add(WarningCode.STALE_DATA);
         if (dropped) warnings.add(WarningCode.REALTIME_DATA_UNAVAILABLE);
-        return new StationListView(items, stale || dropped, warnings);
+        if (truncated) warnings.add(WarningCode.RESULT_TRUNCATED);
+        return new StationListView(items, stale || dropped || truncated, warnings);
     }
 }
