@@ -93,3 +93,17 @@ place:
     # Redis cache of Kakao Local answers (infra profile only; local never caches). Fails open on Redis errors.
     enabled: ${PLACE_CACHE_ENABLED:true}
     ttl: 5m
+
+# Client version/maintenance policy (spec 6, phase 3 A7). Defaults live in ClientConfigProperties (@DefaultValue):
+# platforms.android|ios.minimum-version/latest-version 0.1.0, store-url none, supported-api-versions [v1].
+# Maintenance (decision 21) is server-wide: every platform sees it and /api/v1/** answers 503 MAINTENANCE_MODE
+# (/api/client-config and actuator stay available).
+client:
+  web:
+    maintenance: ${CLIENT_WEB_MAINTENANCE:false}
+    maintenance-message: ${CLIENT_WEB_MAINTENANCE_MESSAGE:}
+
+# Deprecated API paths (spec 32): entries of pattern, deprecation, sunset (RFC 3339) and optional link.
+# Default none; /api/v1/routes/plan is added after A6 (decision 23). See DeprecationProperties.
+api:
+  deprecations: []
