@@ -16,7 +16,7 @@ import {
 } from "./lib/api";
 import { INITIAL_LOCATION, stationLocation, type Coordinates, type Station, type MapBounds, type RoutePlan, type Place, type RouteEndpointRole } from "./lib/types";
 import { fetchClientConfig, loadMaintenanceState, onMaintenance, type MaintenanceState } from "./lib/clientConfig";
-import { clusterLevel, clusterRequestBounds, mapQueryMode } from "./lib/mapClusters";
+import { clusterLevel, clusterRequestBounds, mapQueryMode, visibleClusterStationCount } from "./lib/mapClusters";
 import {useRecentPlaces} from './lib/useRecentPlaces';
 import { useFavorites } from "./lib/useFavorites";
 import { availability, compareOutlooks, stationOutlook } from "./lib/status";
@@ -712,7 +712,7 @@ function MainApp() {
             <Icon name="pin" size={16} />
             {view === "route" ? "따릉이 길찾기" : label}
             {view !== "route" && <span>목록 {radius < 1000 ? `${radius}m` : `${radius / 1000}km`} · {activeMapQuery.isFetching ? "지도 갱신 중"
-              : `지도 ${mapMode === "clusters" ? (mapClusters.data?.items ?? []).reduce((sum, item) => sum + item.stationCount, 0) : mapStations.data?.stations.length ?? 0}곳`}</span>}
+              : `지도 ${mapMode === "clusters" ? visibleClusterStationCount(mapClusters.data?.items ?? [], viewport) : mapStations.data?.stations.length ?? 0}곳`}</span>}
             {view !== "route" && mapMode === "viewport" && mapStations.data?.truncated &&
               <span className="map-truncated-badge" role="status">가까운 곳만 표시 중 · 확대하면 모두 보여요</span>}
           </div>

@@ -43,6 +43,9 @@ COPY --from=extractor /extract/extracted/snapshot-dependencies/ ./
 COPY --from=extractor /extract/extracted/application/ ./
 USER 10001:10001
 ENV JDK_JAVA_OPTIONS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
+# Review L2: the base image has no locale set (POSIX), so the JVM would decode non-ASCII environment values
+# (e.g. Korean CLIENT_WEB_MAINTENANCE_MESSAGE) as ASCII. C.UTF-8 ships with the image and needs no locale package.
+ENV LANG=C.UTF-8
 # 8080: API. The actuator management port (MANAGEMENT_SERVER_PORT, default 8090) is internal and not exposed here.
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "/app/application.jar"]

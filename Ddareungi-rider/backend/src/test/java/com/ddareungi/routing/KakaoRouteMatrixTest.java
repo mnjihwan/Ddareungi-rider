@@ -55,6 +55,63 @@ class KakaoRouteMatrixTest {
                 });
     }
 
+    /** Review H1: 3 × 3 = 9 cycling cells against {@link FakeKakaoRouting}, every answer delayed by 50 ms. */
+    private final FakeKakaoRouting fake = new FakeKakaoRouting();
+    private final List<Location> sources = List.of(s1, s2, new Location(37.505, 127.025));
+    private final List<Location> destinations = List.of(d1, d2, new Location(37.525, 127.045));
+
+    private KakaoRouteClient fakeClient() {
+        fake.delayMillis = 50;
+        return new KakaoRouteClient(RestClient.builder().requestFactory(fake), JsonMapper.builder().build(), "private-test-key");
+    }
+
+    @Test void quotaStopsTheRemainingCellsAndLaterMatricesOfTheSameRequest() {
+        var client = fakeClient();
+        fake.failing = uri -> true;
+        var request = client.forRequest();
+        var matrix = request.matrix(RouteProvider.CYCLING, sources, destinations);
+        // Without the stop all 9 cells were called; now only the first parallel round (6) can reach the provider.
+        assertThat(fake.calls.get()).isLessThanOrEqualTo(KakaoRouteClient.MAX_PARALLEL_CALLS);
+        for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) {
+            assertThat(matrix.cell(i, j).failed()).isTrue();
+            assertThat(matrix.cell(i, j).failure().code).isEqualTo("ROUTING_LIMIT");
+        }
+        int afterFirst = fake.calls.get();
+        var walking = request.matrix(RouteProvider.WALKING, sources, destinations);
+        assertThat(fake.calls.get()).isEqualTo(afterFirst);
+        assertThat(walking.cell(2, 2).failure().code).isEqualTo("ROUTING_LIMIT");
+        assertThatThrownBy(() -> request.directions(RouteProvider.CYCLING, s1, d1))
+                .isInstanceOfSatisfying(RouteException.class, error -> assertThat(error.code).isEqualTo("ROUTING_LIMIT"));
+        assertThat(fake.calls.get()).isEqualTo(afterFirst);
+        // The stop belongs to that request only: the next request asks the provider again.
+        client.forRequest().matrix(RouteProvider.CYCLING, sources, destinations);
+        assertThat(fake.calls.get()).isGreaterThan(afterFirst);
+    }
+
+    @Test void rejectedCredentialsStopTheRequestToo() {
+        var client = fakeClient();
+        fake.failing = uri -> true;
+        fake.failure = HttpStatus.UNAUTHORIZED;
+        var matrix = client.forRequest().matrix(RouteProvider.CYCLING, sources, destinations);
+        assertThat(fake.calls.get()).isLessThanOrEqualTo(KakaoRouteClient.MAX_PARALLEL_CALLS);
+        assertThat(matrix.cell(2, 2).failure().code).isEqualTo("ROUTING_AUTH");
+    }
+
+    @Test void serverErrorsStayPerCellAndTheOtherCellsGoOn() {
+        var client = fakeClient();
+        fake.failing = uri -> FakeKakaoRouting.between(uri, s1, d1);
+        fake.failure = HttpStatus.INTERNAL_SERVER_ERROR;
+        var request = client.forRequest();
+        var matrix = request.matrix(RouteProvider.CYCLING, sources, destinations);
+        assertThat(matrix.cell(0, 0).failure().code).isEqualTo("ROUTING_UNAVAILABLE");
+        for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++)
+            if (i + j > 0) assertThat(matrix.cell(i, j).routed()).as("cell %d,%d", i, j).isTrue();
+        // 9 cells + 1 retry of the failing one; nothing was stopped, so a later call still reaches the provider.
+        assertThat(fake.calls.get()).isEqualTo(10);
+        request.directions(RouteProvider.WALKING, s2, d2);
+        assertThat(fake.calls.get()).isEqualTo(11);
+    }
+
     private void expect(Location from, Location to, String body) {
         server.expect(requestTo("https://dapi.kakao.com/v2/routing/bicycle?start_x=" + from.longitude() + "&start_y=" + from.latitude()
                         + "&end_x=" + to.longitude() + "&end_y=" + to.latitude()

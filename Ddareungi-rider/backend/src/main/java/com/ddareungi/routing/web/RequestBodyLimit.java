@@ -2,6 +2,7 @@ package com.ddareungi.routing.web;
 
 import com.ddareungi.global.exception.ApiException;
 import com.ddareungi.global.exception.ErrorCode;
+import com.ddareungi.global.web.InterceptorOrder;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.jspecify.annotations.Nullable;
@@ -11,8 +12,6 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpInputMessage;
 import org.springframework.http.converter.HttpMessageConverter;
 import org.springframework.web.bind.annotation.ControllerAdvice;
-import org.springframework.web.context.request.RequestContextHolder;
-import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.web.servlet.HandlerInterceptor;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
@@ -32,17 +31,21 @@ import java.lang.reflect.Type;
  *       raises {@link PayloadTooLargeException}, which the JSON converter wraps in an
  *       {@code HttpMessageNotReadableException} that {@code GlobalExceptionHandler} answers with 413.</li>
  * </ul>
- * Kept in the routing module because the route search introduced the limit (A6); it applies to every
- * {@code @RequestBody} under {@code /api/v1}.
+ * Kept in the routing module because the route search introduced the limit (A6). Review L1: the limited stream is
+ * applied to every {@code @RequestBody} of the application (today all of them live under {@code /api/v1}) instead of
+ * judging the raw request URI, which a path parameter variant such as {@code /api/v1;x=1/routes/search} slipped past
+ * while Spring still routed it to the controller. The {@code Content-Length} interceptor is mapped with path patterns,
+ * which Spring matches against the parsed path (path parameters removed), so it already covers such variants.
  */
 @Configuration(proxyBeanMethods = false)
 public class RequestBodyLimit implements WebMvcConfigurer {
     public static final int MAX_BYTES = 16 * 1024;
-    static final String API_PREFIX = "/api/v1/";
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        registry.addInterceptor(new Interceptor()).addPathPatterns("/api/v1/**");
+        // Review L11: explicit order, after maintenance and before the rate limit (InterceptorOrder).
+        registry.addInterceptor(new Interceptor()).addPathPatterns("/api/v1", "/api/v1/**")
+                .order(InterceptorOrder.REQUEST_BODY_LIMIT);
     }
 
     /** Thrown by the limited stream; found in the cause chain of the converter's exception. */
@@ -50,7 +53,8 @@ public class RequestBodyLimit implements WebMvcConfigurer {
         public PayloadTooLargeException() { super("request body exceeds " + MAX_BYTES + " bytes"); }
     }
 
-    static final class Interceptor implements HandlerInterceptor {
+    // Public only so InterceptorOrderTest (another package) can name it on the handler chain (review L11).
+    public static final class Interceptor implements HandlerInterceptor {
         @Override
         public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
             if ("POST".equalsIgnoreCase(request.getMethod()) && request.getContentLengthLong() > MAX_BYTES)
@@ -64,8 +68,8 @@ public class RequestBodyLimit implements WebMvcConfigurer {
         @Override
         public boolean supports(MethodParameter parameter, Type targetType,
                                 Class<? extends HttpMessageConverter<?>> converterType) {
-            return RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes attributes
-                    && attributes.getRequest().getRequestURI().startsWith(API_PREFIX);
+            // Review L1: unconditional. The former raw-URI prefix check was bypassed by path parameter variants.
+            return true;
         }
 
         @Override

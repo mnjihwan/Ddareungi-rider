@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Fake docker for the deploy.sh harness. State lives in $FAKE_STATE/containers/<name>/.
+# Effective env of a container (env files in order, then -e) is kept in containers/<name>/env.
 # Knobs: FAKE_READY_FAIL_COLOR=blue|green  -> readiness probe (docker exec ... curl) fails for that color
 #        FAKE_EXIT_ON_START_COLOR=...      -> container of that color is "exited" right after start
 #        FAKE_PULL_FAIL=1                  -> docker pull fails
@@ -30,7 +31,7 @@ case $cmd in
       create) touch "$S/networks/$name"; echo "net-$name" ;;
     esac ;;
   run)
-    name=""; color=""; port=""; args=("$@")
+    name=""; color=""; port=""; args=("$@"); rm -f "$S/pending-env"
     while [[ $# -gt 0 ]]; do
       case $1 in
         --name) name=$2; shift 2 ;;
@@ -38,9 +39,10 @@ case $cmd in
         --label) [[ $2 == ddareungi.color=* ]] && color=${2#ddareungi.color=}; shift 2 ;;
         --env-file)
           [[ -f $2 ]] || { echo "env file not found: $2" >&2; exit 125; }
-          mkdir -p "$S/envfiles"; cp "$2" "$S/envfiles/$(basename "$2")"; shift 2 ;;
+          mkdir -p "$S/envfiles"; cp "$2" "$S/envfiles/$(basename "$2")"; cat "$2" >>"$S/pending-env"; shift 2 ;;
+        -e) echo "$2" >>"$S/pending-env"; shift 2 ;;
         -d) shift ;;
-        --network|--restart|-e) shift 2 ;;
+        --network|--restart) shift 2 ;;
         *) image=$1; shift ;;
       esac
     done
@@ -49,6 +51,7 @@ case $cmd in
     mkdir -p "$C/$name"
     echo "$image" >"$C/$name/image"; echo "$port" >"$C/$name/port"; echo "$color" >"$C/$name/color"
     printf '%s\n' "${args[@]}" >"$C/$name/args"
+    mv "$S/pending-env" "$C/$name/env" 2>/dev/null || : >"$C/$name/env"
     if [[ ${FAKE_EXIT_ON_START_COLOR:-} == "$color" ]]; then echo false >"$C/$name/running"; else echo true >"$C/$name/running"; fi
     echo "cid-$name" ;;
   exec)
@@ -56,7 +59,12 @@ case $cmd in
     [[ -d $d && $(cat "$d/running") == true ]] || { echo "container not running" >&2; exit 1; }
     if [[ ${FAKE_READY_FAIL_COLOR:-} == "$(cat "$d/color")" ]]; then exit 22; fi
     exit 0 ;;
-  logs) echo "(fake logs of ${*: -1})" ;;
+  logs)
+    # Includes secret-looking content so the harness can check the rollback log masking.
+    echo "(fake logs of ${*: -1})"
+    echo "WARN datasource url=jdbc:mysql://db/ddareungi password=hunter2 user=app"
+    echo "DEBUG leaked value fake-db-pass in a stack trace"
+    echo "DEBUG header Authorization: Bearer eyJhbGciOi.fake.sig" ;;
   rm)
     [[ ${1:-} == -f ]] && shift
     for n in "$@"; do rm -rf "${C:?}/$n"; done ;;

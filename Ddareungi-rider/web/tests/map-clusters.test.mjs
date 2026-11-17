@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   mapQueryMode, clusterLevel, clusterRequestBounds, clusterZoomLevel, isTruncated, mergeOverlappingClusters,
-  CLUSTER_CELL_DEGREES, MAX_BOX_DEGREES,
+  visibleClusterStationCount, CLUSTER_CELL_DEGREES, MAX_BOX_DEGREES,
 } from "../src/lib/mapClusters.ts";
 import { api, viewportStations, stationClusters } from "../src/lib/api.ts";
 
@@ -37,6 +37,53 @@ test("cluster request box never exceeds the server's 1° limit or the coordinate
   const edge = clusterRequestBounds({ south: 89.99, north: 90, west: 179.99, east: 180 }, 8);
   assert.equal(edge.north, 90);
   assert.equal(edge.east, 180);
+});
+
+const onGrid = (box, cell) => ["south", "north", "west", "east"].every(key => {
+  const cells = box[key] / cell;
+  return Math.abs(cells - Math.round(cells)) < 1e-6;
+});
+
+test("a box shrunk to the 1° limit stays on the cell grid at every level and still covers the centre", () => {
+  const views = [
+    { south: 37.0, north: 37.99, west: 126.5, east: 127.49 },
+    { south: 37.0001, north: 38.2, west: 126.3007, east: 127.7 },
+    { south: -0.6, north: 0.6, west: -0.7, east: 0.65 },
+  ];
+  for (const view of views) {
+    for (const level of [5, 6, 7, 8]) {
+      const cell = CLUSTER_CELL_DEGREES[level];
+      const box = clusterRequestBounds(view, level);
+      assert.ok(onGrid(box, cell), `level ${level} ${JSON.stringify(box)} on the grid`);
+      assert.ok(box.north - box.south <= MAX_BOX_DEGREES + 1e-9 && box.east - box.west <= MAX_BOX_DEGREES + 1e-9);
+      // Shrunk by whole cells only: as wide as the limit allows (within one cell).
+      assert.ok(box.north - box.south > MAX_BOX_DEGREES - cell - 1e-9);
+      const midLat = (view.south + view.north) / 2, midLng = (view.west + view.east) / 2;
+      assert.ok(box.south <= midLat && midLat <= box.north && box.west <= midLng && midLng <= box.east);
+      assert.ok(Math.abs((box.south + box.north) / 2 - midLat) <= cell * 2, "kept around the centre");
+    }
+  }
+  // Level 8 (0.02°): 49 cells = 0.98°.
+  const wide = clusterRequestBounds({ south: 37.0, north: 37.99, west: 126.5, east: 127.49 }, 8);
+  assert.ok(Math.abs(wide.north - wide.south - 0.98) < 1e-9);
+  // A box under the limit is unchanged by the shrink step (padding and snapping only).
+  assert.deepEqual(clusterRequestBounds({ south: 37.4951, north: 37.5049, west: 127.0201, east: 127.0399 }, 8),
+    { south: 37.46, north: 37.54, west: 127.0, east: 127.06 });
+});
+
+test("cluster mode label counts only cells whose marker position is on screen (not the padded request box)", () => {
+  const item = (latitude, longitude, stationCount) => ({ latitude, longitude, stationCount, parkingBikeTotCnt: 0, freshCount: 0 });
+  const view = { south: 37.49, north: 37.51, west: 127.02, east: 127.04 };
+  const items = [
+    item(37.50, 127.03, 5),     // inside
+    item(37.49, 127.04, 2),     // on the edge: counted
+    item(37.48, 127.03, 7),     // padding below the screen
+    item(37.50, 127.05, 4),     // padding right of the screen
+  ];
+  assert.equal(visibleClusterStationCount(items, view), 7);
+  assert.equal(visibleClusterStationCount([], view), 0);
+  // Without bounds (not reported yet) the whole response is counted, as before.
+  assert.equal(visibleClusterStationCount(items, null), 18);
 });
 
 test("cluster click zooms in two levels and stops at level 4 (individual markers)", () => {

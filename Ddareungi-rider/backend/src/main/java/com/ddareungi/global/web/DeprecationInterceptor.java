@@ -13,7 +13,7 @@ import org.springframework.web.servlet.HandlerInterceptor;
  * deprecation headers. Both header names are already exposed by the CORS configuration.
  */
 public class DeprecationInterceptor implements HandlerInterceptor {
-    public static final int ORDER = -200;
+    public static final int ORDER = InterceptorOrder.DEPRECATION;
     public static final String DEPRECATION = "Deprecation";
     public static final String SUNSET = "Sunset";
 

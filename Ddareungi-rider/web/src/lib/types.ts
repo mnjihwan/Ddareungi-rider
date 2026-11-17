@@ -50,6 +50,16 @@ export interface RouteSearchOptions {
   maxCandidates?: number;
 }
 
+/** `GET /routes/status` data. */
+export interface RoutingStatus {
+  configured: boolean;
+  /**
+   * Whether the bicycle engine honours `preferBikeRoad` both ways. Added later by the server: absent on older
+   * servers, where the planner keeps omitting the option.
+   */
+  bikeRoadPreferenceSupported?: boolean;
+}
+
 // ---- View model used by the planner and the map (polylines decoded, request endpoints kept) ----
 
 export interface RouteLeg {

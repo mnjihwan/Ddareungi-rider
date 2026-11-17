@@ -176,7 +176,9 @@ class ApiContractTest {
         mvc.perform(get("/api/v1/status")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true)).andExpect(jsonPath("$.data.mode").value("sample"));
         mvc.perform(get("/api/v1/routes/status")).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.configured").value(false));
+                .andExpect(jsonPath("$.data.configured").value(false))
+                // Review L3: the default engine (Kakao) honours preferBikeRoad both ways, even without a key.
+                .andExpect(jsonPath("$.data.bikeRoadPreferenceSupported").value(true));
     }
 
     @Test void invalidCoordinatesAndRadius() throws Exception {

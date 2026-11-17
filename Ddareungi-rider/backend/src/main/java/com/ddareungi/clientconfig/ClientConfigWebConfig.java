@@ -9,7 +9,8 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
  * Registers {@link MaintenanceInterceptor} for {@code /api/v1/**} (decision 21). Its order puts it before the rate
- * limit interceptor (registered with the default order 0), so blocked requests never consume rate limit tokens.
+ * limit interceptor ({@link com.ddareungi.global.web.InterceptorOrder}), so blocked requests never consume rate limit
+ * tokens.
  * {@code /api/client-config} lies outside the pattern and actuator runs on the management port; both are excluded
  * explicitly as well.
  */

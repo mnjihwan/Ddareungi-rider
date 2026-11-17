@@ -1,8 +1,8 @@
 import axios from "axios";
 import type { Coordinates, Forecast, Place, Station, MapBounds, NearbyStations, RoutePlan, RouteSearchOptions,
-  RouteSearchResult, StationClusters, ViewportStations } from "./types.ts";
+  RouteSearchResult, RoutingStatus, StationClusters, ViewportStations } from "./types.ts";
 import { unwrap, type ApiEnvelope } from "./apiEnvelope.ts";
-import { toRoutePlan } from "./routeSearch.ts";
+import { buildRouteSearchBody, toRoutePlan, type RouteStationChoice } from "./routeSearch.ts";
 import { isTruncated } from "./mapClusters.ts";
 
 export { unwrap, apiError, apiErrorMessage, isRateLimited, retryAfterMs, shouldRetryQuery, queryRetryDelay, RATE_LIMIT_MESSAGE } from "./apiEnvelope.ts";
@@ -10,15 +10,15 @@ export type { ApiEnvelope, ApiErrorEnvelope, ApiMeta } from "./apiEnvelope.ts";
 
 export const api = axios.create({ baseURL: "/api/v1", timeout: 10_000 });
 /**
- * `POST /routes/search` (spec 13.1, phase 3 A6; replaces the deprecated `/routes/plan`). Undefined station IDs and
- * options are left out of the JSON body (the server rejects explicit nulls). Polylines are decoded into the
- * planner/map view model; `routes[0]` is the recommended route.
+ * `POST /routes/search` (spec 13.1, phase 3 A6; replaces the deprecated `/routes/plan`). The body comes from
+ * `buildRouteSearchBody` (chosen stations lift the walking limit; `status` decides `preferBikeRoad`; no nulls).
+ * Polylines are decoded into the planner/map view model; `routes[0]` is the recommended route.
  */
 export async function searchBikeRoutes(origin: Coordinates, destination: Coordinates,
-  stations: {departureStationId?: string; arrivalStationId?: string} = {}, signal?: AbortSignal,
-  options?: RouteSearchOptions): Promise<RoutePlan> {
+  stations: RouteStationChoice = {}, signal?: AbortSignal, options?: RouteSearchOptions,
+  status?: Pick<RoutingStatus, "bikeRoadPreferenceSupported"> | null): Promise<RoutePlan> {
   const body = (await api.post<ApiEnvelope<RouteSearchResult>>("/routes/search",
-    {origin, destination, ...stations, ...(options ? {options} : {})}, {signal, timeout: 90_000})).data;
+    buildRouteSearchBody(origin, destination, stations, status, options), {signal, timeout: 90_000})).data;
   return toRoutePlan(unwrap(body), body.meta, origin, destination);
 }
 /** Server maximum of `limit` (spec 11.1). D11: lists may be cut at 100 stations (e.g. the 3km tab). */
@@ -40,6 +40,10 @@ export async function nearby(
   ).data);
   if (!data || !Array.isArray(data.items)) throw new Error("Invalid nearby stations response");
   return data.items;
+}
+/** `GET /routes/status`: whether routing is configured (and, on newer servers, the bike-road preference support). */
+export async function routingStatus(signal?: AbortSignal): Promise<RoutingStatus> {
+  return unwrap((await api.get<ApiEnvelope<RoutingStatus>>("/routes/status", {signal})).data);
 }
 /** `GET /stations/viewport`; `truncated` when the server returned only its nearest 500 (phase 3 R4). */
 export async function viewportStations(bounds: MapBounds, signal?: AbortSignal): Promise<ViewportStations> {

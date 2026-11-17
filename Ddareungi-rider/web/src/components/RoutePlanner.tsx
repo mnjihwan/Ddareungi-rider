@@ -2,8 +2,8 @@ import {requestLocation, MAX_LOCATION_ACCURACY} from "../lib/location";
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import axios from 'axios';
 import { useQuery } from '@tanstack/react-query';
-import { api, nearby, searchBikeRoutes, reversePlace, unwrap, type ApiEnvelope } from '../lib/api';
-import { routeErrorMessage } from '../lib/routeSearch';
+import { nearby, searchBikeRoutes, reversePlace, routingStatus } from '../lib/api';
+import { hasChosenStation, routeErrorMessage } from '../lib/routeSearch';
 import { reportApiError } from '../lib/clientConfig';
 import { stationLocation, type BikeRoute, type Coordinates, type Place, type RoutePlan, type Station, type RouteEndpointRole } from '../lib/types';
 import { availability, AVAILABILITY_LABEL, compareStations, distanceLabel, observationLabel } from '../lib/status';
@@ -49,9 +49,7 @@ export function RoutePlanner({onStationSelectionChange, onPlanningChange, active
   const request = useRef<AbortController | null>(null);
   const resultElement = useRef<HTMLDivElement>(null);
   const plan: BikeRoute | null = routePlan ? routePlan.routes[selectedRouteIndex] ?? routePlan.routes[0] ?? null : null;
-  const status = useQuery({queryKey:['routing-status'], queryFn: async ({signal}) =>
-    unwrap((await api.get<ApiEnvelope<{configured:boolean}>>('/routes/status',{signal})).data),
-    staleTime:30_000});
+  const status = useQuery({queryKey:['routing-status'], queryFn: ({signal}) => routingStatus(signal), staleTime:30_000});
   const nearbyCenter = (activeEndpoint === 'origin' ? origin : destination)?.location ?? searchCenter;
   const nearbyStations = useQuery({
     queryKey: ['route-nearby', nearbyCenter],
@@ -127,15 +125,17 @@ export function RoutePlanner({onStationSelectionChange, onPlanningChange, active
     if (!origin || !destination || pending) return;
     const controller = new AbortController(); request.current?.abort(); request.current = controller;
     setPending(true); setError(''); onPlan(null);
+    const stations = {departureStationId: pinned?.stationId, arrivalStationId: arrival?.stationId};
     try {
-      const result = await searchBikeRoutes(origin.location, destination.location,
-        {departureStationId: pinned?.stationId, arrivalStationId: arrival?.stationId}, controller.signal);
+      // Chosen stations lift the walking limit; an unloaded/failed status keeps preferBikeRoad omitted (as before).
+      const result = await searchBikeRoutes(origin.location, destination.location, stations, controller.signal,
+        undefined, status.data);
       if (request.current === controller && !controller.signal.aborted) onPlan(result);
     } catch (failure) {
       // Phase 3 A6: route codes/statuses map to guidance (routeErrorMessage); other envelopes still show
       // error.message; 503 MAINTENANCE_MODE switches the app to the maintenance screen.
       if (!controller.signal.aborted && !reportApiError(failure)) setError(axios.isAxiosError(failure)
-        ? routeErrorMessage(failure)
+        ? routeErrorMessage(failure, {stationChosen: hasChosenStation(stations)})
         : '길찾기 연결을 확인해 주세요.');
     } finally { if (request.current === controller) {setPending(false);request.current=null;} }
   }

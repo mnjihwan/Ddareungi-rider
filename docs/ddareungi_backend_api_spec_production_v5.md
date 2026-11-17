@@ -2328,3 +2328,64 @@ Kubernetes는 서비스의 가용성·확장성·배포 안정성 요구에 따�
 | 데이터 출처 충돌 | 선택 규칙 미정 | Raw 보존과 Canonical 우선순위/정정 정책 |
 
 문서의 JSON 예시는 구조 설명이며 표/본문의 필드 계약이 우선한다. 실제 구현 전 OpenAPI 3.1 문서에 required, nullable, enum, HTTP 응답과 예시를 옮겨 기계 검증해야 한다. 이 검토본은 운영 배포 완료나 외부 Provider 연결 검증을 의미하지 않는다.
+
+---
+
+# 42. Phase 3 구현 확장·차이 (2026-11-17 기록)
+
+이 장은 Phase 3([phase3-2026-11-17.md](phase3-2026-11-17.md)) 구현이 위 본문과 **다르거나 본문에 없는** 계약을 모은 것이다. 본문을 고쳐 쓰지 않고 차이로 남긴다. 구현 근거는 백엔드 코드이며, "작업 트리"로 표시한 항목은 기록 시점 독립 리뷰 반영 중(미커밋)이다.
+
+## 42.1 경로 검색(13.1) 확장 필드
+
+| 항목 | 위치 | 계약 |
+|---|---|---|
+| `departureStationId`, `arrivalStationId` | 요청 최상위 | 선택, 최대 30자. 지정하면 그 대여소를 대여/반납 지점으로 고정(ID로 조회, 자동 반경과 무관). 없거나 공개 대상이 아니면 `404 STATION_NOT_FOUND`, 지정 출발지의 수량이 없으면 `422 NO_AVAILABLE_ORIGIN_STATION`. 확장 필드(결정 2) |
+| `data.attribution` | 응답 | 경로 출처 문자열(예: 카카오). 확장 필드 |
+| `segments[].steps` | 응답 각 구간 | `[{instruction, distanceMeters, durationSeconds}]`, Provider의 한국어 안내. 없으면 빈 배열. 확장 필드 |
+| `segments[].bikeRoadPreferred` | 응답 | BIKE 구간에만 포함(WALK에는 필드 없음) |
+| 옵션 이름 | 요청 `options` | `preferBikeRoad`(본문과 같음). 명시적 `null`은 400 `INVALID_PARAMETER`, 생략은 기본값 |
+| `origin`·`destination` 에코 | 응답 | 포함하지 않음(옛 `/routes/plan`에는 있음) |
+
+동작 차이·구체화:
+- `maxWalkingDistanceMeters` 때문에 모든 후보가 제외되면 `404 ROUTE_NOT_FOUND`(결정 4).
+- Kakao: `preferBikeRoad=true` → 자전거 `BIKE_ONLY`, `false` → `SHORTEST`. ORS 엔진에서 `true`는 `422 UNSUPPORTED_ROUTE_OPTION`(조용히 무시하지 않음). `GET /api/v1/routes/status`의 `data.bikeRoadPreferenceSupported`가 지원 여부를 알린다(작업 트리, 리뷰 L3).
+- 후보는 한쪽 최대 3개(`routing.search.max-station-candidates`), Kakao 호출은 검색 1건당 최대 15회(도보 6 + 자전거 9). 대안 경로는 같은 요청에서 계산한 값으로 만들어 추가 호출이 없다.
+- 부분 실패: 완성 경로가 1개 이상이면 `200`, `meta.partial=true`, `meta.warnings=[{code: PROVIDER_PARTIAL_FAILURE}]`. 0개면 가장 앞선 오류 코드.
+- 재조회: 추천 경로 출발지의 수량이 사라지면 다음 유효 대안을 추천으로 올리고(추가 호출 없음), 남은 대안이 없을 때만 `409 RENTAL_STOCK_CHANGED`. `excludeStationsWithoutBikes=false`면 409 없음.
+- 숫자: 구간 거리·시간은 정수로 반올림하고 합계는 반올림한 구간의 합(결정 8).
+- `routeId`: `route-` + 12 hex, 저장하지 않는다.
+
+## 42.2 본문 크기 상한 413
+
+`/api/v1` 아래 JSON `POST`는 16 KiB(16,384 bytes)가 상한이다. `Content-Length`가 넘으면 본문을 읽기 전에, 길이 없는(chunked) 본문은 읽는 도중 넘는 순간 `413 PAYLOAD_TOO_LARGE`. 경로 변형(`;param`)도 같은 규칙(작업 트리, 리뷰 L1).
+
+## 42.3 `/routes/plan` 병행과 Deprecation 설정(32장 구체화)
+
+`POST /api/v1/routes/plan`은 `/routes/search`의 추천 경로를 옛 응답 형식(`legs`, `departureStation`/`arrivalStation`, `path` 좌표 배열)으로 돌려주는 어댑터로 한 릴리스 유지한다(결정 1·23). 응답에 `Deprecation: @<unix초>`, `Sunset: <HTTP-date>` 헤더를 붙이며 오류 응답에도 붙는다. 설정은 `application.yml`의 `api.deprecations[]`(`pattern`, `deprecation`, `sunset`(RFC 3339), 선택 `link` → `Link: <...>; rel="deprecation"`), 기동 시 `sunset >= deprecation`을 검증한다. 현재 값: deprecation `2026-11-17T00:00:00Z`, sunset `2027-06-30T23:59:59Z`. 웹은 `/routes/search`를 사용한다.
+
+## 42.4 지도 영역 API (R4, 확장)
+
+- `GET /api/v1/stations/clusters?south&north&west&east&level` (확장 API): `level` 5~8(정수, 그 밖·누락은 `400 INVALID_PARAMETER`), 영역 규칙은 viewport와 같다(좌표 범위 `INVALID_COORDINATE`, 뒤집힘·1° 초과 `INVALID_PARAMETER`). `data = {level, cellDegrees, items[{latitude, longitude, stationCount, parkingBikeTotCnt, freshCount}]}`. 셀 크기 기본 5→0.003°, 6→0.005°, 7→0.01°, 8→0.02°(`station.map.cluster-cell-degrees`), 좌표는 셀 안 FRESH/STALE 대여소의 평균. `parkingBikeTotCnt`는 FRESH+STALE 합(UNAVAILABLE 제외). STALE 포함·UNAVAILABLE 제외 시 `meta.partial=true`와 `STALE_DATA`/`REALTIME_DATA_UNAVAILABLE` 경고. Rate Limit `stations` 그룹.
+- `GET /api/v1/stations/viewport` 상한: FRESH/STALE 결과가 500개(`station.map.viewport-max-items`)를 넘으면 영역 중심에서 가까운 500개와 `meta.partial=true`, `meta.warnings=[{code: RESULT_TRUNCATED}]`.
+
+## 42.5 client-config·점검(6장 구체화)
+
+- `GET /api/client-config`는 `/api/v1` 밖이며 점검 중에도 200, Rate Limit 대상 아님, `Cache-Control: no-store`. `platform`은 소문자 `android|ios|web`만(그 밖 400 `INVALID_PARAMETER`), 모바일은 `appVersion` 필수(누락·형식 오류 400), `buildNumber`는 받기만 한다. `web`은 본문 6장과 같이 버전 null·업데이트 false.
+- 설정(환경 변수): `CLIENT_WEB_MAINTENANCE`(기본 false) — 이름과 달리 **서버 전체** 점검 스위치이며 모든 플랫폼 응답의 `maintenance`에 반영되고 `/api/v1/**`를 `503 MAINTENANCE_MODE`로 막는다(`/api/client-config`·actuator 제외, CORS preflight 제외). `CLIENT_WEB_MAINTENANCE_MESSAGE`(비우면 `MAINTENANCE_MODE` 기본 문구). 모바일 정책은 `client.platforms.android|ios.{minimum-version, latest-version, store-url}`(기본 0.1.0, 없음), `client.supported-api-versions`(기본 `[v1]`).
+- 비ASCII 문구는 컨테이너 `LANG=C.UTF-8`이 필요하다(이미지에 설정, 작업 트리·리뷰 L2).
+- 운영 전환: 점검 값은 런타임에 바뀌지 않으므로 컨테이너를 다시 만든다. EC2에서는 Deploy 워크플로 `action=maintenance-on|off`(→ `deploy.sh maintenance on|off`, blue/green 재생성) — [deploy-ec2.md](deploy-ec2.md) 8장.
+- 인터셉터 순서: Deprecation → 점검 → 본문 상한 → Rate Limit. 점검으로 막힌 요청도 Deprecation 헤더를 받고 Rate Limit 토큰을 쓰지 않는다.
+
+## 42.6 Observability(33장 구체화)
+
+- Prometheus: 관리 포트 **8090**의 `/actuator/prometheus`(노출 `health,info,prometheus`). API 포트 8080에서는 404. 공통 태그 `application`, `http.server.requests` 히스토그램 버킷 켬. EC2에서는 같은 Docker 네트워크의 Prometheus(`127.0.0.1:9090`)·Grafana(`127.0.0.1:3000`)가 수집·표시하고 SSM 포트 포워딩으로 본다.
+- 앱 meter: `ddareungi.provider.calls`(Timer, `provider`·`outcome`), `ddareungi.provider.circuit.state`, `ddareungi.realtime.snapshot.age.seconds`, `ddareungi.realtime.stations{status}`, `ddareungi.station.catalog.size`, `ddareungi.station.catalog.age.seconds`, `ddareungi.ratelimit.rejected{group}`. 태그에 좌표·대여소 ID 없음.
+- 구조화 로그: `infra` 프로필에서 Spring Boot 내장 ECS JSON 한 줄(`logging.structured.format.console=ecs`), `local`은 텍스트. 접근 로그는 key-value `method`, `path`(쿼리 제외, 길이 제한), `status`, `elapsedMs`와 MDC `requestId`; actuator 제외. 33장 예시의 필드 구성과 같지만 ECS 필드명 아래에 담긴다.
+
+## 42.7 CI/CD·이미지(34·35장과 차이)
+
+- `latest` 태그를 쓰지 않는다. 태그는 40자 커밋 SHA만, ECR immutable, 배포는 digest, lifecycle 최근 20개.
+- 배포: `workflow_run`(CI 성공·main push) → OIDC → ECR → SSM 전용 Command 문서(`ddareungi-deploy`) → EC2 `deploy.sh` blue/green(127.0.0.1:18081/18082, readiness 후 nginx upstream 원자 교체, 새 색 직접 스모크 + nginx 경유 스모크, 실패 시 복원). 스모크는 `client-config`의 `maintenance` 일치와 `/routes/status`의 `"configured":true`를 본다.
+- 수동 실행(`workflow_dispatch`): `action = deploy(롤백) | force-restart | maintenance-on | maintenance-off`. 상세는 [deploy-ec2.md](deploy-ec2.md).
+- 실제 AWS·Actions 실행은 기록 시점 미검증이다.
+

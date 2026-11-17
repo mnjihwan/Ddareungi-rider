@@ -230,12 +230,27 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\collect-data-once.
 
 ## 배포 (EC2, Phase 3 O7 초안)
 
-main에 push되어 CI가 성공하면 `.github/workflows/deploy.yml`이 `production` 환경 승인 후 GitHub OIDC로 AWS 역할을 맡아 이미지를 ECR에 커밋 SHA 태그로 올리고, SSM Run Command로 EC2의 `deploy/ec2/deploy.sh`를 실행합니다. 스크립트는 blue/green(127.0.0.1:18081/18082)으로 새 컨테이너의 readiness를 확인한 뒤 nginx upstream을 바꾸고, 스모크가 실패하면 되돌립니다. 롤백은 Deploy 워크플로를 수동 실행하며 `image_tag`에 이전 SHA를 넣습니다.
+main에 push되어 CI가 성공하면 `.github/workflows/deploy.yml`이 `production` 환경 승인 후 GitHub OIDC로 AWS 역할을 맡아 이미지를 ECR에 커밋 SHA 태그로 올리고, **전용 SSM Command 문서**(`deploy/aws/ssm-document-deploy.json`, 기본 이름 `ddareungi-deploy`)로 EC2에 설치된 `deploy/ec2/deploy.sh`를 실행합니다. 문서는 호스트 스크립트의 sha256이 배포 커밋과 같을 때만 실행하므로 `deploy.sh`가 바뀐 커밋은 관리자가 먼저 호스트 스크립트를 갱신해야 합니다. 스크립트는 blue/green(127.0.0.1:18081/18082)으로 새 컨테이너의 readiness를 확인하고, 새 색 포트를 직접 스모크한 뒤 nginx upstream을 바꾸고, nginx 경유 스모크가 실패하면 되돌립니다(INT/TERM 신호도 롤백). 스모크는 `/api/client-config?platform=web`의 `maintenance` 값과 `/api/v1/routes/status`의 `"configured":true`를 확인합니다.
 
-- AWS 계정·리전·저장소·역할·인스턴스 값은 저장소에 없고 GitHub Environment 변수와 자리표시자로만 둡니다. 런타임 비밀은 SSM Parameter Store SecureString입니다.
-- 실제 AWS에서는 아직 실행하지 않았습니다. EC2 준비는 [deploy/ec2/bootstrap.md](deploy/ec2/bootstrap.md), 사용자 제공 값·첫 배포 체크리스트·미검증 항목은 [docs/deploy-ec2.md](docs/deploy-ec2.md)를 참고하세요.
+- 수동 실행(Actions → Deploy → Run workflow): `action=deploy` + `image_tag`(이전 SHA로 롤백), `action=force-restart` + `image_tag`(같은 이미지를 바뀐 env·비밀로 재생성), `action=maintenance-on|off`(`image_tag` 비움, 점검 켜기·끄기).
+- AWS 계정·리전·저장소·역할·인스턴스 값은 저장소에 없고 GitHub Environment 변수(`SSM_DEPLOY_DOCUMENT` 선택)와 자리표시자로만 둡니다. 런타임 비밀은 SSM Parameter Store SecureString이며, 조회 실패나 0개면 배포를 중단합니다.
+- 실제 AWS에서는 아직 실행하지 않았습니다. EC2 준비는 [deploy/ec2/bootstrap.md](deploy/ec2/bootstrap.md), 사용자 제공 값·첫 배포 체크리스트·운영 절차·미검증 항목은 [docs/deploy-ec2.md](docs/deploy-ec2.md)를 참고하세요.
 - 배포 전 필수 확인: 프록시 forwarded 설정(틀리면 모든 사용자가 한 Rate Limit 키를 공유해 대량 429), MySQL 대여소 데이터(없으면 readiness 실패로 기존 버전 유지).
-- 스크립트 검증: `deploy/ec2/test/run-harness.sh`(가짜 docker·nginx·curl·aws, 루트·AWS 불필요).
+- **공개 저장소 주의**: 배포 실패 시 새 컨테이너 로그 일부(`ROLLBACK_LOG_LINES`, 기본 30줄, 비밀 값·`password=` 등 마스킹)가 SSM을 거쳐 Actions 로그에 남습니다. 공개 저장소라면 `/etc/ddareungi/deploy.env`에 `ROLLBACK_LOG_LINES=0`을 고려하세요.
+- 스크립트 검증: `deploy/ec2/test/run-harness.sh`(가짜 docker·nginx·curl·aws, 루트·AWS 불필요, 2026-11-17 86개 검사 통과).
+
+### 클라이언트 설정·점검 모드 (Phase 3 A7)
+
+- `GET /api/client-config?platform=web|android|ios`(모바일은 `appVersion` 필수): `/api/v1` 밖이라 점검 중에도 200이고 Rate Limit 대상이 아니며 `Cache-Control: no-store`입니다. 웹은 시작할 때 조회해 `maintenance=true`면 점검 화면을 보여 줍니다(조회 실패는 무시).
+- 환경 변수: `CLIENT_WEB_MAINTENANCE`(기본 `false`; 이름과 달리 **서버 전체** 점검으로 `/api/v1/**`가 503 `MAINTENANCE_MODE`, client-config·actuator는 제외), `CLIENT_WEB_MAINTENANCE_MESSAGE`(한 줄 안내 문구, 비우면 기본 문구). 런타임에 바뀌지 않으므로 컨테이너를 다시 만들어야 하며, EC2에서는 위 `maintenance-on|off` 실행을 사용합니다. 최상위 `compose.yaml`의 backend `environment`는 현재 이 두 변수를 전달하지 않으므로, 로컬에서 점검을 시험하려면 그 목록에 추가하거나 `gradlew :backend:bootRun` 실행 환경에 지정합니다.
+- 한글 안내 문구 등 비ASCII 환경 변수는 JVM이 UTF-8로 읽어야 하므로 백엔드 이미지에 `LANG=C.UTF-8`을 설정합니다(리뷰 L2). jar를 직접 실행하는 환경에서도 `LANG=C.UTF-8`(또는 다른 UTF-8 로케일)을 지정하세요.
+- `POST /api/v1/routes/plan`은 `POST /api/v1/routes/search`로 대체되어 `Deprecation`·`Sunset`(2027-06-30) 헤더가 붙습니다. 계약은 [docs/routing.md](docs/routing.md)와 명세 13.1·42장을 참고하세요.
+
+### 관측 (Phase 3 O8)
+
+- Prometheus 지표는 관리 포트 **8090**의 `/actuator/prometheus`에서만 노출됩니다(API 포트 8080은 404, 8090은 호스트에 publish하지 않음). 로컬에서는 `docker compose exec backend curl -s localhost:8090/actuator/prometheus | head`로 확인합니다.
+- EC2에서는 `deploy/observability/`의 Prometheus(`127.0.0.1:9090`)·Grafana(`127.0.0.1:3000`)를 같은 Docker 네트워크에 띄우고 SSM 포트 포워딩으로 봅니다.
+- `infra` 프로필 로그는 ECS JSON 한 줄 형식이고, 접근 로그는 좌표·쿼리 없이 `method`·`path`·`status`·`elapsedMs`만 남깁니다.
 
 ## 운영 범위
 

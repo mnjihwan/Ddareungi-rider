@@ -25,7 +25,7 @@ public class RouteController {
 
     @GetMapping("/status")
     public ApiResponse<RouteStatusResponse> status() {
-        return ApiResponse.ok(new RouteStatusResponse(planner.configured()));
+        return ApiResponse.ok(new RouteStatusResponse(planner.configured(), planner.supportsBikeRoadPreference()));
     }
 
     /** Spec 13.1 route search: recommended + alternatives; partial provider failures are reported in {@code meta}. */

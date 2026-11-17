@@ -1,5 +1,6 @@
 package com.ddareungi.global.ratelimit;
 
+import com.ddareungi.global.web.InterceptorOrder;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -52,6 +53,8 @@ public class RateLimitWebConfig implements WebMvcConfigurer {
         // Every path: classification uses the matched controller pattern, and unknown paths are not limited.
         registry.addInterceptor(interceptor.getObject())
                 .addPathPatterns("/**")
-                .excludePathPatterns("/actuator", "/actuator/**");
+                .excludePathPatterns("/actuator", "/actuator/**")
+                // Review L11: explicit (was the default 0), last of the API interceptors; see InterceptorOrder.
+                .order(InterceptorOrder.RATE_LIMIT);
     }
 }

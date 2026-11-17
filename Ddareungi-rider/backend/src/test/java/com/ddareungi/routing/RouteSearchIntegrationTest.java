@@ -225,6 +225,56 @@ class RouteSearchIntegrationTest {
                 .andExpect(status().is(413));
     }
 
+    @Test void pathParameterVariantsCannotSkipTheBodyLimit() throws Exception {
+        // Review L1: Spring routes /api/v1;x=1/routes/search to the controller (path parameters are not part of the
+        // matched path). Before, the limited stream judged the raw URI prefix "/api/v1/" and was skipped for such a
+        // path, so a body without Content-Length was read without limit.
+        String over = padded("{" + ENDPOINTS + "}", 16 * 1024 + 1);
+        String exact = padded("{" + ENDPOINTS + "}", 16 * 1024);
+        for (String path : List.of("/api/v1;x=1/routes/search", "/api/v1/routes;x=1/search", "/api;v=1/v1/routes/search")) {
+            // Declared length: the interceptor (path pattern matched on the parsed path).
+            mvc.perform(post(path).contentType(MediaType.APPLICATION_JSON).content(over))
+                    .andExpect(status().is(413))
+                    .andExpect(jsonPath("$.error.code").value("PAYLOAD_TOO_LARGE"));
+            // No length (chunked): the limited stream.
+            var chunked = MockMvcBuilders.webAppContextSetup(context).addFilters(requestIdFilter, withoutLength()).build();
+            chunked.perform(post(path).contentType(MediaType.APPLICATION_JSON).content(over))
+                    .andExpect(status().is(413))
+                    .andExpect(jsonPath("$.error.code").value("PAYLOAD_TOO_LARGE"));
+            chunked.perform(post(path).contentType(MediaType.APPLICATION_JSON).content(exact))
+                    .andExpect(status().isOk());
+        }
+    }
+
+    @Test void statusReportsWhetherTheEngineSupportsTheBikeRoadPreference() throws Exception {
+        // Review L3: lets clients decide whether to offer preferBikeRoad=true before searching.
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/routes/status"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.configured").value(true))
+                .andExpect(jsonPath("$.data.bikeRoadPreferenceSupported").value(true));
+        when(engine.supportsBikeRoadPreference()).thenReturn(false);
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/routes/status"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.configured").value(true))
+                .andExpect(jsonPath("$.data.bikeRoadPreferenceSupported").value(false));
+    }
+
+    /** Hides the body length, as for a chunked request: the 16 KiB check then relies on the limited stream. */
+    private static jakarta.servlet.Filter withoutLength() {
+        return (request, response, chain) -> chain.doFilter(
+                new jakarta.servlet.http.HttpServletRequestWrapper((jakarta.servlet.http.HttpServletRequest) request) {
+                    @Override public int getContentLength() { return -1; }
+                    @Override public long getContentLengthLong() { return -1; }
+                    @Override public String getHeader(String name) {
+                        return "Content-Length".equalsIgnoreCase(name) ? null : super.getHeader(name);
+                    }
+                    @Override public java.util.Enumeration<String> getHeaders(String name) {
+                        return "Content-Length".equalsIgnoreCase(name) ? java.util.Collections.emptyEnumeration()
+                                : super.getHeaders(name);
+                    }
+                }, response);
+    }
+
     /** JSON padded with trailing spaces to exactly {@code size} bytes (ASCII body). */
     private static String padded(String json, int size) {
         return json + " ".repeat(size - json.length());

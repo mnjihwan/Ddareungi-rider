@@ -192,9 +192,14 @@ class RouteSearchTest {
         var bike = new RouteException(HttpStatus.BAD_GATEWAY, "BIKE_ROUTE_PROVIDER_ERROR", "b");
         cycle(new RouteMatrix.Cell[][]{{RouteMatrix.Cell.failed(bike), RouteMatrix.Cell.failed(bike)},
                 {RouteMatrix.Cell.failed(bike), RouteMatrix.Cell.failed(bike)}});
-        last(RouteMatrix.Cell.failed(walk), cell(100, 300));
-        // Pair d1>a1 fails on its bike segment before its last walk: the bike error is first.
+        // Every walk routed: pair d1>a1 fails on its bike segment, the bike error is first.
         assertThatThrownBy(() -> search(options(1000, true, true, 5))).isSameAs(bike);
+        last(RouteMatrix.Cell.failed(walk), cell(100, 300));
+        // Review H1 (changed expectation): before, pair d1>a1 answered its bike error first (segment order walk →
+        // bike → walk). Cycling is now only asked for arrivals whose last walk is routed, so d1>a1 has no bike answer
+        // and its last-walk failure is its error; pair order still decides (d1>a1 before d1>a2's bike error).
+        assertThatThrownBy(() -> search(options(1000, true, true, 5))).isSameAs(walk);
+        verify(bicycle).matrix(List.of(d1.location(), d2.location()), List.of(a2.location()));
         first(RouteMatrix.Cell.failed(walk), RouteMatrix.Cell.failed(walk));
         assertThatThrownBy(() -> search(options(1000, true, true, 5))).isSameAs(walk);
     }

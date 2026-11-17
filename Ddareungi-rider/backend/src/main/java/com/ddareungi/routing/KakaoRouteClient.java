@@ -23,13 +23,19 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Component
 @ConditionalOnProperty(name = "routing.provider", havingValue = "kakao", matchIfMissing = true)
 public class KakaoRouteClient implements RouteProvider {
     // Kakao has no matrix endpoint, so each candidate pair is one directions call.
     // Run them concurrently but cap in-flight requests to stay within provider quotas.
-    private static final int MAX_PARALLEL_CALLS = 6;
+    static final int MAX_PARALLEL_CALLS = 6;
+    /**
+     * Review H1: provider answers that will not get better within the same request (quota exhausted, key refused).
+     * After the first one, the request-scoped provider stops calling Kakao and fails the remaining cells at once.
+     */
+    static final java.util.Set<String> REQUEST_STOPPING_CODES = java.util.Set.of("ROUTING_LIMIT", "ROUTING_AUTH");
     public static final String DEFAULT_BASE_URL = "https://dapi.kakao.com";
 
     private final RestClient client;
@@ -79,18 +85,29 @@ public class KakaoRouteClient implements RouteProvider {
             // A future per pair lets concurrent matrix tasks share one in-flight call.
             // A completed null value means the provider confirmed there is no road route.
             private final ConcurrentHashMap<Pair, CompletableFuture<Leg>> legs = new ConcurrentHashMap<>();
+            // Review H1: the first 429/401/403 of this request. Set before the failing call returns (and so before its
+            // matrix permit is released), so every call started later sees it and makes no HTTP request. Only calls
+            // already in flight at that moment (at most MAX_PARALLEL_CALLS per matrix) can still reach the provider.
+            private final AtomicReference<RouteException> stopped = new AtomicReference<>();
             @Override public boolean configured() { return KakaoRouteClient.this.configured(); }
             @Override public String attribution() { return KakaoRouteClient.this.attribution(); }
             @Override public boolean supportsBikeRoadPreference() { return KakaoRouteClient.this.supportsBikeRoadPreference(); }
             @Override public Leg directions(String profile, Location from, Location to) {
                 var pair = new Pair(profile, from, to);
                 var created = new CompletableFuture<Leg>();
-                var existing = legs.putIfAbsent(pair, created);
+                // Legs already answered (or in flight) are still served after a stop; only new calls are refused.
+                var existing = legs.get(pair);
+                if (existing == null) {
+                    var stop = stopped.get();
+                    if (stop != null) throw copy(stop);
+                    existing = legs.putIfAbsent(pair, created);
+                }
                 if (existing == null) {
                     existing = created;
                     try {
                         created.complete(KakaoRouteClient.this.directions(profile, from, to));
                     } catch (RouteException error) {
+                        if (REQUEST_STOPPING_CODES.contains(error.code)) stopped.compareAndSet(null, error);
                         if (!error.code.equals("NO_ROAD_ROUTE")) {
                             // Transient failures are not cached; a later lookup may retry.
                             legs.remove(pair, created);
@@ -119,6 +136,10 @@ public class KakaoRouteClient implements RouteProvider {
             }
         };
     }
+    /** A fresh exception per refused cell, so cells never share (and mutate the cause of) one instance. */
+    private static RouteException copy(RouteException error) {
+        return new RouteException(error.status, error.code, error.getMessage());
+    }
     // The profile carries the route mode (walk, BIKE_ONLY, SHORTEST), so the per-request cache never mixes modes.
     private record Pair(String profile, Location from, Location to) {}
     private record Pending(int row, int column, Future<RouteMatrix.Cell> cell) {}
@@ -130,7 +151,9 @@ public class KakaoRouteClient implements RouteProvider {
     /**
      * One directions call per pair. A6: a provider failure of one pair is recorded in its cell instead of cancelling
      * the comparison, so the search can still answer with the other pairs (spec 13.1 partial results). The number of
-     * calls is unchanged (one per pair; the caller keeps the 6 + 9 = 15 budget).
+     * calls is at most one per pair (the caller keeps the 6 + 9 = 15 budget). Review H1: on the request-scoped provider,
+     * a quota (429) or credential (401/403) failure stops the request: cells not yet started fail at once without a
+     * call. Other failures (5xx after retry, timeouts, invalid answers) stay per cell and the other cells go on.
      */
     private static RouteMatrix matrix(RouteProvider provider, String profile, List<Location> sources, List<Location> destinations) {
         var result = new RouteMatrix.Cell[sources.size()][destinations.size()];

@@ -25,25 +25,44 @@ export function clusterLevel(level: number): number {
 const round6 = (value: number) => Math.round(value * 1e6) / 1e6;
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
-function limitSpan(low: number, high: number, min: number, max: number): [number, number] {
+/**
+ * Shrinks a grid-aligned span wider than MAX_BOX_DEGREES around its centre by whole cells, so both ends stay on the
+ * cell grid (a cut cell would show a partial count) and the span stays within the limit.
+ */
+function limitSpan(low: number, high: number, cell: number): [number, number] {
   if (high - low <= MAX_BOX_DEGREES) return [low, high];
-  const middle = (low + high) / 2;
-  return [clamp(middle - MAX_BOX_DEGREES / 2, min, max), clamp(middle + MAX_BOX_DEGREES / 2, min, max)];
+  const lowIndex = Math.round(low / cell), highIndex = Math.round(high / cell);
+  const maxCells = Math.floor(round6(MAX_BOX_DEGREES / cell));
+  const start = lowIndex + Math.floor((highIndex - lowIndex - maxCells) / 2);
+  return [round6(start * cell), round6((start + maxCells) * cell)];
 }
 
 /**
  * Request box for the clusters query. The server only aggregates stations inside the box, so a cell cut by the
  * box edge would show a partial count (StationClusterResponse). The visible box is padded by one cell on every side
  * and snapped outward to the cell grid (anchored at 0,0), which makes edge cells complete and keeps the query key
- * stable while the map pans within a cell. The result never exceeds the 1° limit (it is shrunk around the centre).
+ * stable while the map pans within a cell. The result never exceeds the 1° limit: it is shrunk around the centre by
+ * whole cells, so it stays on the grid. The coordinate limits (±90, ±180) are multiples of every cell size.
  */
 export function clusterRequestBounds(bounds: MapBounds, level: number): MapBounds {
   const cell = CLUSTER_CELL_DEGREES[clusterLevel(level)] ?? CLUSTER_CELL_DEGREES[CLUSTER_MAX_LEVEL];
   const down = (value: number) => round6(Math.floor(round6(value / cell) - 1) * cell);
   const up = (value: number) => round6(Math.ceil(round6(value / cell) + 1) * cell);
-  const [south, north] = limitSpan(clamp(down(bounds.south), -90, 90), clamp(up(bounds.north), -90, 90), -90, 90);
-  const [west, east] = limitSpan(clamp(down(bounds.west), -180, 180), clamp(up(bounds.east), -180, 180), -180, 180);
+  const [south, north] = limitSpan(clamp(down(bounds.south), -90, 90), clamp(up(bounds.north), -90, 90), cell);
+  const [west, east] = limitSpan(clamp(down(bounds.west), -180, 180), clamp(up(bounds.east), -180, 180), cell);
   return { south: round6(south), north: round6(north), west: round6(west), east: round6(east) };
+}
+
+/**
+ * Stations the user can see in cluster mode: the request box is padded beyond the screen, so summing every item
+ * overstates the count. Markers are drawn at each cell's mean station position, so a cell counts when that position
+ * is inside the visible bounds (edges inclusive). A cell straddling the screen edge counts wholly or not at all, like
+ * its marker; this approximates the stations on screen rather than counting them exactly. Without bounds, all items.
+ */
+export function visibleClusterStationCount(items: readonly StationClusterItem[], bounds: MapBounds | null | undefined): number {
+  if (!bounds) return items.reduce((sum, item) => sum + item.stationCount, 0);
+  return items.reduce((sum, item) => item.latitude >= bounds.south && item.latitude <= bounds.north
+    && item.longitude >= bounds.west && item.longitude <= bounds.east ? sum + item.stationCount : sum, 0);
 }
 
 /** Viewport responses cut at the server cap (500): `meta.partial` with RESULT_TRUNCATED. */

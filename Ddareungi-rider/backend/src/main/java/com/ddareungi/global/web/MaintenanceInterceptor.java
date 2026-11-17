@@ -12,11 +12,11 @@ import org.springframework.web.servlet.HandlerInterceptor;
  * the response is the usual error envelope with {@code meta.requestId}, and as a handler interceptor it runs after
  * Spring's CORS processing (cross-origin callers can read the error). CORS preflight is never blocked.
  *
- * <p>Ordering: {@link DeprecationInterceptor#ORDER} &lt; {@link #ORDER} &lt; 0 (rate limit, default order), so a
+ * <p>Ordering ({@link InterceptorOrder}): deprecation &lt; maintenance &lt; body limit &lt; rate limit, so a
  * blocked request still carries deprecation headers and never reaches the rate limiter.
  */
 public class MaintenanceInterceptor implements HandlerInterceptor {
-    public static final int ORDER = -100;
+    public static final int ORDER = InterceptorOrder.MAINTENANCE;
 
     private final boolean maintenance;
     private final String message;

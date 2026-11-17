@@ -26,11 +26,19 @@
       ]
     },
     {
-      "Sid": "RunDeployScriptOnTheOneInstance",
+      "Sid": "RunOnlyTheDeployDocumentOnTheOneInstance",
       "Effect": "Allow",
       "Action": "ssm:SendCommand",
       "Resource": [
-        "arn:aws:ssm:<REGION>::document/AWS-RunShellScript",
+        "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:document/<SSM_DEPLOY_DOCUMENT>",
+        "arn:aws:ec2:<REGION>:<ACCOUNT_ID>:instance/<EC2_INSTANCE_ID>"
+      ]
+    },
+    {
+      "Sid": "CancelOnlyOnTheOneInstance",
+      "Effect": "Allow",
+      "Action": "ssm:CancelCommand",
+      "Resource": [
         "arn:aws:ec2:<REGION>:<ACCOUNT_ID>:instance/<EC2_INSTANCE_ID>"
       ]
     },
@@ -39,8 +47,7 @@
       "Effect": "Allow",
       "Action": [
         "ssm:GetCommandInvocation",
-        "ssm:ListCommandInvocations",
-        "ssm:CancelCommand"
+        "ssm:ListCommandInvocations"
       ],
       "Resource": "*"
     }

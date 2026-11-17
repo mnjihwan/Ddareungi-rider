@@ -58,8 +58,12 @@ class KakaoRouteSearchTest {
     PlanBikeRoute planner(Duration deadline) { return planner(deadline, "https://dapi.kakao.com"); }
 
     PlanBikeRoute planner(Duration deadline, String baseUrl) {
+        return planner(deadline, baseUrl, ProviderResilience.defaults());
+    }
+
+    PlanBikeRoute planner(Duration deadline, String baseUrl, ProviderResilience resilience) {
         var engine = new KakaoRouteClient(RestClient.builder().requestFactory(kakao), JsonMapper.builder().build(),
-                "test-key", ProviderResilience.defaults(), baseUrl);
+                "test-key", resilience, baseUrl);
         return new PlanBikeRoute(stations, new EngineWalkingRouteProvider(engine), new EngineBicycleRouteProvider(engine),
                 true, deadline, RealtimeFreshnessPolicy.defaults(Clock.fixed(NOW, ZoneOffset.UTC)));
     }
@@ -104,13 +108,107 @@ class KakaoRouteSearchTest {
     }
 
     @Test void oneFailedCyclingPairIsAPartialResultNotANoRoute() {
+        // Review H1: this pair used to fail with 429, which now stops the whole request (see the quota tests below).
+        // A per-cell failure is now a 5xx; retries are switched off here so the 15-call budget assertion keeps its
+        // meaning (oneFailedCyclingPairIsRetriedOnceAndTheOtherPairsGoOn covers the default retry).
         kakao.failing = uri -> uri.getPath().endsWith("/bicycle") && FakeKakaoRouting.between(uri, d1.location(), a1.location());
-        var result = search(options(5));
+        kakao.failure = HttpStatus.INTERNAL_SERVER_ERROR;
+        var result = planner(Duration.ofSeconds(10), "https://dapi.kakao.com", noRetry())
+                .search(new RouteSearchCriteria(ORIGIN, DESTINATION, options(5), null, null));
         assertThat(result.partial()).isTrue();
         assertThat(result.ranked()).hasSize(5).noneMatch(route ->
                 route.departure().stationId().equals("D1") && route.arrival().stationId().equals("A1"));
-        // The failed pair is not retried later (429 is never retried) and the budget holds.
+        // The failed pair is not retried later and the budget holds.
         assertThat(kakao.calls.get()).isLessThanOrEqualTo(15);
+    }
+
+    @Test void oneFailedCyclingPairIsRetriedOnceAndTheOtherPairsGoOn() {
+        // Review H1: a 5xx stays a per-cell failure; only its own call is retried (default 1 retry), nothing stops.
+        kakao.failing = uri -> uri.getPath().endsWith("/bicycle") && FakeKakaoRouting.between(uri, d1.location(), a1.location());
+        kakao.failure = HttpStatus.SERVICE_UNAVAILABLE;
+        var result = search(options(5));
+        assertThat(result.partial()).isTrue();
+        assertThat(result.ranked()).hasSize(5);
+        assertThat(kakao.count("/v2/routing/walk")).isEqualTo(6);
+        assertThat(kakao.count("/v2/routing/bicycle")).isEqualTo(9 + 1);
+    }
+
+    @Test void quotaExhaustedStopsTheRequestWithinOneRoundOfParallelCalls() {
+        // Review H1: every call answers 429. Before, all 15 calls were made; now the first 429 stops the request:
+        // only calls already in flight (at most MAX_PARALLEL_CALLS) reach the provider, the last walking matrix
+        // makes none and no cycling pair is asked (none has both walks).
+        kakao.failing = uri -> true;
+        kakao.delayMillis = 30;
+        assertThatThrownBy(() -> search(options(5))).isInstanceOfSatisfying(RouteException.class, error -> {
+            assertThat(error.code).isEqualTo("WALK_ROUTE_PROVIDER_ERROR");
+            assertThat(error.status).isEqualTo(HttpStatus.BAD_GATEWAY);
+            assertThat(error.getCause()).isInstanceOfSatisfying(RouteException.class,
+                    cause -> assertThat(cause.code).isEqualTo("ROUTING_LIMIT"));
+        });
+        assertThat(kakao.calls.get()).isLessThanOrEqualTo(KakaoRouteClient.MAX_PARALLEL_CALLS);
+        assertThat(kakao.count("/v2/routing/bicycle")).isZero();
+    }
+
+    @Test void rejectedCredentialsStopTheRequestLikeTheQuota() {
+        for (var status : List.of(HttpStatus.UNAUTHORIZED, HttpStatus.FORBIDDEN)) {
+            kakao.calls.set(0);
+            kakao.uris.clear();
+            kakao.failing = uri -> true;
+            kakao.failure = status;
+            assertThatThrownBy(() -> search(options(5))).isInstanceOfSatisfying(RouteException.class, error -> {
+                assertThat(error.code).isEqualTo("WALK_ROUTE_PROVIDER_ERROR");
+                assertThat(error.getCause()).isInstanceOfSatisfying(RouteException.class,
+                        cause -> assertThat(cause.code).isEqualTo("ROUTING_AUTH"));
+            });
+            assertThat(kakao.calls.get()).as("calls for %s", status).isLessThanOrEqualTo(KakaoRouteClient.MAX_PARALLEL_CALLS);
+        }
+    }
+
+    @Test void quotaExhaustedOnCyclingStopsTheRemainingCyclingPairs() {
+        // The walks succeed (6 calls); the cycling API answers 429: at most one parallel round of cycling calls.
+        kakao.failing = uri -> uri.getPath().endsWith("/bicycle");
+        kakao.delayMillis = 30;
+        assertThatThrownBy(() -> search(options(5))).isInstanceOfSatisfying(RouteException.class,
+                error -> assertThat(error.code).isEqualTo("BIKE_ROUTE_PROVIDER_ERROR"));
+        assertThat(kakao.count("/v2/routing/walk")).isEqualTo(6);
+        assertThat(kakao.count("/v2/routing/bicycle")).isLessThanOrEqualTo(KakaoRouteClient.MAX_PARALLEL_CALLS);
+    }
+
+    @Test void legacyPlanAdapterStopsOnTheQuotaToo() {
+        // /routes/plan runs the same search (RouteSearchOptions.legacyPlan()), so it gets the same stop.
+        kakao.failing = uri -> true;
+        kakao.delayMillis = 30;
+        assertThatThrownBy(() -> planner(Duration.ofSeconds(10)).execute(ORIGIN, DESTINATION, null))
+                .isInstanceOfSatisfying(RouteException.class,
+                        error -> assertThat(error.code).isEqualTo("WALK_ROUTE_PROVIDER_ERROR"));
+        assertThat(kakao.calls.get()).isLessThanOrEqualTo(KakaoRouteClient.MAX_PARALLEL_CALLS);
+    }
+
+    @Test void cyclingIsOnlyAskedForPairsWhoseWalksAreRouted() {
+        // Review H1: the first walk to D1 fails (5xx, retried once) -> the 3 cycling pairs from D1 are never asked.
+        kakao.failing = uri -> uri.getPath().endsWith("/walk") && FakeKakaoRouting.between(uri, ORIGIN, d1.location());
+        kakao.failure = HttpStatus.INTERNAL_SERVER_ERROR;
+        var result = search(options(5));
+        assertThat(result.partial()).isTrue();
+        assertThat(result.ranked()).hasSize(5).noneMatch(route -> route.departure().stationId().equals("D1"));
+        assertThat(kakao.count("/v2/routing/bicycle")).isEqualTo(6);
+        for (var arrival : List.of(a1, a2, a3))
+            assertThat(kakao.uris).noneMatch(uri -> uri.getPath().endsWith("/bicycle")
+                    && FakeKakaoRouting.between(uri, d1.location(), arrival.location()));
+        // Ranking is unchanged for the pairs left: the recommended route is the minimum of the D2/D3 pairs.
+        var best = List.of(d2, d3).stream().flatMap(d -> List.of(a1, a2, a3).stream().map(a -> List.of(d, a)))
+                .min(java.util.Comparator.comparingLong(pair -> total(pair.get(0), pair.get(1)))).orElseThrow();
+        assertThat(result.recommended().departure().stationId()).isEqualTo(best.get(0).stationId());
+        assertThat(result.recommended().arrival().stationId()).isEqualTo(best.get(1).stationId());
+    }
+
+    /** Default resilience without retries (5xx answered once). */
+    static ProviderResilience noRetry() {
+        var defaults = com.ddareungi.global.resilience.ResilienceProperties.defaults();
+        return new ProviderResilience(com.ddareungi.global.http.ProviderHttpProperties.defaults(),
+                new com.ddareungi.global.resilience.ResilienceProperties(
+                        new com.ddareungi.global.resilience.ResilienceProperties.Retry(0, Duration.ZERO),
+                        defaults.circuitBreaker(), defaults.bulkhead()));
     }
 
     @Test void everyCyclingCallFailingIsTheBikeProviderErrorWithinTheBudget() {

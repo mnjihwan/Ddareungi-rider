@@ -32,7 +32,7 @@ sudo systemctl enable --now docker nginx
 command -v flock curl aws   # util-linux, curl, AWS CLI v2
 ```
 
-`deploy.sh`는 root로 실행되며(`AWS-RunShellScript`) `docker`, `nginx`, `curl`, `aws`, `flock`, GNU `mv -T`를 사용한다.
+`deploy.sh`는 전용 SSM 문서(`ddareungi-deploy`)를 통해 root로 실행되며 `docker`, `nginx`, `curl`, `aws`, `flock`, `awk`, GNU `sed`·`mv -T`, `sha256sum`을 사용한다.
 
 ## 3. 디렉터리와 설정 파일
 
@@ -52,11 +52,29 @@ sudo sed -i 's/<DOMAIN>/<실제 도메인>/' /etc/nginx/conf.d/ddareungi.conf
 - 첫 배포 전에는 웹 번들이 없어 `/`가 404이고 `/api`는 502다. 정상이다.
 - `sudo nginx -t && sudo systemctl reload nginx`
 
-`deploy.sh`(`/opt/ddareungi/bin/deploy.sh`)는 워크플로가 **매 배포마다 SSM 명령에 실어 설치**하므로 직접 복사할 필요가 없다(sha256 검증 후 교체).
+`deploy.sh`는 **관리자가 직접 설치**한다(리뷰 L8: GitHub 역할은 더 이상 임의 셸 명령을 보낼 수 없다). 배포 때 SSM 문서가 이 파일의 sha256을 배포 커밋의 `deploy/ec2/deploy.sh`와 비교해 다르면 exit 3으로 거부한다.
+
+```bash
+sudo install -m 0755 -o root -g root deploy.sh /opt/ddareungi/bin/deploy.sh   # 저장소 deploy/ec2/deploy.sh
+sha256sum /opt/ddareungi/bin/deploy.sh                                        # 배포할 커밋의 값과 같아야 함
+```
+
+이후 `deploy.sh`가 바뀐 커밋은 [docs/deploy-ec2.md](../../docs/deploy-ec2.md) 8장 "deploy.sh 갱신" 절차로 먼저 바꾼다.
+
+## 3-1. 전용 SSM 배포 문서 (리뷰 L8)
+
+[`deploy/aws/ssm-document-deploy.json`](../aws/ssm-document-deploy.json)을 그대로 Command 문서로 만든다. 이 문서는 `/opt/ddareungi/bin/deploy.sh`만 실행하고, 파라미터(`action` 허용값, `backendRef`/`webRef` digest 정규식, `scriptSha256` 64 hex)를 SSM이 검증한다.
+
+```bash
+aws ssm create-document --name ddareungi-deploy --document-type Command --document-format JSON \
+  --content file://deploy/aws/ssm-document-deploy.json
+```
+
+다른 이름을 쓰면 GitHub `vars.SSM_DEPLOY_DOCUMENT`와 역할 정책의 `<SSM_DEPLOY_DOCUMENT>`를 같은 값으로 맞춘다. 문서 수정 권한(`ssm:UpdateDocument` 등)은 GitHub 역할에 주지 않는다.
 
 ## 4. 런타임 비밀 (SSM Parameter Store SecureString)
 
-파라미터 이름의 마지막 부분이 그대로 환경 변수 이름이 된다. 값은 **한 줄**이어야 한다.
+파라미터 이름의 마지막 부분이 그대로 환경 변수 이름이 된다. 값은 **한 줄**이어야 한다. 경로에 파라미터가 하나도 없거나 조회가 실패하면(권한·리전 오류) `deploy.sh`는 컨테이너를 만들기 전에 중단한다. `CLIENT_WEB_MAINTENANCE`는 SSM에 두지 않는다(점검 전환은 `backend.env`를 바꾸므로 SSM 값이 있으면 덮어써 거부된다).
 
 ```bash
 read -rs V && aws ssm put-parameter --type SecureString --name /ddareungi/production/backend/MYSQL_PASSWORD --value "$V" && unset V
@@ -94,12 +112,13 @@ aws iam put-role-policy --role-name <GITHUB_DEPLOY_ROLE_NAME> --policy-name depl
 ```
 
 신뢰 정책은 `sub = repo:mnjihwan/Ddareungi-rider:environment:production`만 허용한다. 즉 `environment: production` 잡만 역할을 맡을 수 있다.
+역할 정책은 `ssm:SendCommand`를 전용 문서(`<SSM_DEPLOY_DOCUMENT>`, 3-1)와 그 인스턴스에만, `ssm:CancelCommand`를 그 인스턴스에만 허용한다. `AWS-RunShellScript`는 허용하지 않는다. `CancelCommand`의 리소스 수준 권한 지원 여부는 [미검증]이며, 거부되더라도 문서의 `executionTimeout`(기본 1200초)이 실행을 끝낸다.
 create-open-id-connect-provider의 thumbprint 요구 여부는 CLI 버전에 따라 다를 수 있다 [미검증].
 
 ## 7. GitHub Environment `production`
 
 - Settings → Environments → `production`: Required reviewers(승인자), Deployment branches = `main`만.
-- Environment variables: `AWS_REGION`, `AWS_DEPLOY_ROLE_ARN`, `ECR_BACKEND_REPOSITORY`, `ECR_WEB_REPOSITORY`, `EC2_INSTANCE_ID`, `KAKAO_MAPS_JAVASCRIPT_KEY`, 선택 `IMAGE_PLATFORM`.
+- Environment variables: `AWS_REGION`, `AWS_DEPLOY_ROLE_ARN`, `ECR_BACKEND_REPOSITORY`, `ECR_WEB_REPOSITORY`, `EC2_INSTANCE_ID`, `KAKAO_MAPS_JAVASCRIPT_KEY`, 선택 `IMAGE_PLATFORM`, 선택 `SSM_DEPLOY_DOCUMENT`(기본 `ddareungi-deploy`).
 - 장기 AWS 키(Access Key)는 저장하지 않는다.
 
 ## 8. MySQL·Redis 연결

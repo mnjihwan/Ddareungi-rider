@@ -42,48 +42,75 @@ docker compose --env-file .env --profile real up -d --no-deps --build --wait --w
 
 ## 대여소 선택과 경로 계산
 
-자동 선택은 출발·도착 위치의 직선 반경 500m 안에서 각 최대 3개 후보를 선택합니다. 사용 가능한 후보가 없으면 1km로 확대합니다. 출발 후보는 FRESH(수집 시각 기준 120초 이하, `realtime.freshness.fresh-seconds`) 수량이 1대 이상이어야 하며 STALE·UNAVAILABLE 대여소는 제외합니다. 반납 후보와 지정 반납 대여소는 UNAVAILABLE(600초 초과 또는 수집 이력 없음)만 제외하고 STALE(120초 초과 600초 이하)도 허용합니다(명세 11.0, 반납 가능 여부는 v1에서 항상 UNKNOWN). 출발 후보 중 FRESH·1대 이상이 없을 때, 모든 후보가 FRESH·0대이면 '대여 가능한 자전거 없음'(422), STALE·UNAVAILABLE이 하나라도 섞여 있으면 수량을 확인할 수 없으므로 503입니다. FRESH 120초는 수집기의 60초 주기 실시간 Redis 갱신 job(명세 11.0·21.2, R2)을 전제로 합니다. 5분 주기 수집만으로는 대부분 STALE이 되어 출발 후보가 없고 길찾기가 503으로 실패합니다. 직접 지정한 출발 대여소는 자동 선택 반경과 무관하게 ID로 조회합니다. 지정 대여소의 수량이 없거나 확인되지 않으면 해당 원인을 안내하며 임의로 다른 대여소를 지정하지 않습니다. 주변 대여소 없음·대여 가능한 자전거 없음·최신 수량 확인 불가는 각각 다른 오류로 안내합니다.
+> 2026-11-17 갱신(Phase 3 A6, 리뷰 L10): 웹은 `POST /api/v1/routes/search`를 사용합니다. `POST /api/v1/routes/plan`은 한 릴리스 동안 옛 형식으로 유지되며 `Deprecation`·`Sunset` 헤더가 붙습니다(아래 API 장). 이 문서에 언급된 브라우저 점검 스크립트(`check-kakao-web`, `check-shared-route-tools`, `check-route-station-markers` 등)는 아직 `/routes/plan` 기준이라 갱신이 필요합니다([phase3 9.5](phase3-2026-11-17.md)).
 
-후보별 실제 도보·자전거 경로를 조회해 세 구간의 예상 시간 합이 가장 짧은 조합을 선택합니다. 같은 대여소를 출발·반납 지점으로 선택하지 않습니다. 연결할 수 없는 조합은 제외하며 직선거리로 경로나 시간을 대체하지 않습니다. 후보가 양쪽 모두 3개라면 도보 최대 6회, 자전거 최대 9회로 검색 한 건에 최대 15회 호출합니다. 선택된 구간은 그 요청에서 이미 조회한 응답을 사용하므로 최종 표시를 위해 다시 호출하지 않습니다. 응답은 해당 검색 요청 동안에만 보관하며 다른 요청과 공유하거나 DB·Redis에 저장하지 않습니다.
+자동 선택은 출발·도착 위치의 직선 반경 `min(500m, stationSearchRadiusMeters)` 안에서 각 최대 3개 후보를 선택합니다(`routing.search.max-station-candidates`). 사용 가능한 후보가 없으면 `stationSearchRadiusMeters`(기본 1km)로 확대합니다. 출발 후보는 FRESH(수집 시각 기준 120초 이하, `realtime.freshness.fresh-seconds`) 수량이 1대 이상이어야 하며 STALE·UNAVAILABLE 대여소는 제외합니다. 반납 후보와 지정 반납 대여소는 UNAVAILABLE(600초 초과 또는 수집 이력 없음)만 제외하고 STALE(120초 초과 600초 이하)도 허용합니다(명세 11.0, 반납 가능 여부는 v1에서 항상 UNKNOWN). 출발 후보 중 FRESH·1대 이상이 없을 때, 모든 후보가 FRESH·0대이면 '대여 가능한 자전거 없음'(422), STALE·UNAVAILABLE이 하나라도 섞여 있으면 수량을 확인할 수 없으므로 503입니다. FRESH 120초는 수집기의 60초 주기 실시간 Redis 갱신 job(명세 11.0·21.2, R2)을 전제로 합니다. 5분 주기 수집만으로는 대부분 STALE이 되어 출발 후보가 없고 길찾기가 503으로 실패합니다. 직접 지정한 출발 대여소는 자동 선택 반경과 무관하게 ID로 조회합니다. 지정 대여소의 수량이 없거나 확인되지 않으면 해당 원인을 안내하며 임의로 다른 대여소를 지정하지 않습니다. 주변 대여소 없음·대여 가능한 자전거 없음·최신 수량 확인 불가는 각각 다른 오류로 안내합니다.
 
-최종 경로를 계산한 뒤 출발 대여소의 수량을 다시 조회합니다. 수량이 없어지거나 정보가 오래됐으면 다시 검색하도록 알립니다. 서비스 자체의 출발·목적지 50km 제한은 2026-10-11 제거했습니다. 대여소가 있고 공급자가 연결 가능한 경로를 반환하는 조건으로 판단합니다. 실제 대여 수량이 없는 샘플 프로필에서는 길찾기를 비활성화합니다.
+후보별 실제 도보·자전거 경로를 조회해 세 구간의 예상 시간 합이 가장 짧은 조합을 추천(`recommended`)으로, 다음 조합들을 대안(`alternatives`, 최대 `maxCandidates - 1`개)으로 반환합니다. 정렬은 총 소요시간 → 도보거리 → 총거리 → 출발 ID → 도착 ID이며, 두 도보 구간의 실제 거리 합이 `maxWalkingDistanceMeters`를 넘는 조합은 제외합니다. 같은 대여소를 출발·반납 지점으로 선택하지 않습니다. 연결할 수 없는 조합은 제외하며 직선거리로 경로나 시간을 대체하지 않습니다. 후보가 양쪽 모두 3개라면 도보 최대 6회, 자전거 최대 9회로 검색 한 건에 최대 15회 호출합니다. 선택된 구간은 그 요청에서 이미 조회한 응답을 사용하므로 최종 표시를 위해 다시 호출하지 않습니다. 응답은 해당 검색 요청 동안에만 보관하며 다른 요청과 공유하거나 DB·Redis에 저장하지 않습니다.
+
+최종 경로를 계산한 뒤 출발 대여소의 수량을 다시 조회합니다. 추천 경로 출발지의 수량이 사라지면 다음 유효 대안을 추천으로 올리고(추가 호출 없음), 남은 대안이 없을 때만 다시 검색하도록 알립니다(409). 서비스 자체의 출발·목적지 50km 제한은 2026-10-11 제거했습니다. 대여소가 있고 공급자가 연결 가능한 경로를 반환하는 조건으로 판단합니다. 실제 대여 수량이 없는 샘플 프로필에서는 길찾기를 비활성화합니다.
 
 반납 후보는 FRESH 또는 STALE 수량 정보가 있는 목적지 주변 대여소이며 대여 수량 0인 곳도 포함될 수 있습니다. 현재 데이터만으로 반납 공간을 확정할 수 없으므로 `거치대 수 - 대여 수량`을 빈자리라고 보장하지 않습니다. 대여·반납에 드는 시간은 예상 이동 시간에 포함되지 않습니다. 이동 중 GPS에 따른 자동 재탐색이나 음성 안내는 현재 구현에 포함되지 않습니다.
 
 ## API
 
-모든 응답은 공통 형식(명세 8장)을 따릅니다. 성공은 `{ "success": true, "data": …, "meta": { "requestId": "…" }, "timestamp": "…" }`, 실패는 `{ "success": false, "error": { "code", "message", "details" }, "meta": { "requestId" }, "timestamp" }`이며 실패 응답에는 `data`가 없습니다.
+모든 응답은 공통 형식(명세 8장)을 따릅니다. 성공은 `{ "success": true, "data": …, "meta": { "requestId": "…" }, "timestamp": "…" }`, 실패는 `{ "success": false, "error": { "code", "message", "details" }, "meta": { "requestId" }, "timestamp" }`이며 실패 응답에는 `data`가 없습니다. 계약 원문은 명세 13.1, 구현 확장·차이는 명세 42장입니다.
 
-- `GET /api/v1/routes/status`: `{ "success": true, "data": { "configured": true 또는 false }, "meta": { "requestId": "…" }, "timestamp": "…" }`. 키 설정 여부이며 인증 성공 여부를 의미하지 않습니다. 키 자체는 반환하지 않습니다.
-- `POST /api/v1/routes/plan`: 카카오 장소 검색·현재 위치에서 얻은 좌표를 전달합니다. 좌표를 직접 입력하는 사용자 화면은 없습니다.
+- `GET /api/v1/routes/status`: `data = { "configured": true|false, "bikeRoadPreferenceSupported": true|false }`. `configured`는 키 설정·활성 여부이며 인증 성공을 뜻하지 않습니다(배포 스모크가 `true`를 확인). `bikeRoadPreferenceSupported`는 현재 엔진이 `preferBikeRoad` true/false를 모두 따를 수 있는지입니다(카카오 true; 리뷰 L3 반영, 작업 트리).
+- `POST /api/v1/routes/search`(웹 사용): 카카오 장소 검색·현재 위치에서 얻은 좌표를 전달합니다.
 
 ```json
 {
   "origin": { "latitude": 37.4979, "longitude": 127.0276 },
   "destination": { "latitude": 37.5006, "longitude": 127.0364 },
-  "departureStationId": "선택 사항: 출발 대여소 ID",
-  "arrivalStationId": "선택 사항: 도착 대여소 ID"
+  "options": {
+    "stationSearchRadiusMeters": 1000,
+    "maxWalkingDistanceMeters": 1000,
+    "preferBikeRoad": true,
+    "excludeStationsWithoutBikes": true,
+    "maxCandidates": 5
+  },
+  "departureStationId": "선택 사항(확장): 출발 대여소 ID",
+  "arrivalStationId": "선택 사항(확장): 도착 대여소 ID"
 }
 ```
 
-성공 응답의 `data`에는 `origin`, `destination`, `departureStation`, `arrivalStation`(대여소 공통 형식), `legs`(walk/bicycle/walk), 구간별 `path`, `steps`, 거리(m), 시간(s), 생성 시각(`generatedAt`)과 출처(`attribution`)가 포함됩니다.
+| 옵션 | 기본 | 범위·의미 |
+|---|---|---|
+| `stationSearchRadiusMeters` | 1000 | 100~5000, 최대 탐색 반경 |
+| `maxWalkingDistanceMeters` | 1000 | 0~10000, 두 도보 구간 실제 거리 합 상한 |
+| `preferBikeRoad` | true | 카카오 true → `BIKE_ONLY`, false → `SHORTEST`. 지원하지 않는 엔진(ORS)에서 true는 422 |
+| `excludeStationsWithoutBikes` | true | true: 출발지는 FRESH·1대 이상만. false: STALE·0대도 포함하고 `rentalAvailability`로 표시(409 없음) |
+| `maxCandidates` | 5 | 1~5, 추천 포함 반환 경로 수 |
+
+`options`와 각 옵션은 생략할 수 있고(기본값), 명시적 `null`·형식 오류는 400 `INVALID_PARAMETER`입니다. 대여소 ID는 최대 30자입니다.
+
+성공 응답의 `data`는 `{ recommended, alternatives[], attribution }`입니다. 각 경로는 `routeId`(`route-`+12 hex, 저장 안 함), `totalDistanceMeters`, `estimatedDurationSeconds`, `walkingDistanceMeters`, `bikeDistanceMeters`(구간을 정수로 반올림한 합), `originStation`·`destinationStation`(대여소 공통 형식, 최신성 포함), `segments`(WALK → BIKE → WALK, 각 `type`, `distanceMeters`, `durationSeconds`, `encodedPolyline`(Google Encoded Polyline, 위도·경도, 1e5), BIKE에만 `bikeRoadPreferred`, 확장 `steps[{instruction, distanceMeters, durationSeconds}]`), `rentalAvailability`(`AVAILABLE_AT_FETCH`/`UNAVAILABLE_AT_FETCH`/`UNKNOWN`), `returnAvailability`(항상 `UNKNOWN`)를 가집니다. 0거리 도보 구간도 2점 polyline으로 유지합니다.
+
+**부분 실패**: 일부 조합만 공급자 오류로 계산되지 않았고 완성 경로가 1개 이상이면 200과 `meta.partial=true`, `meta.warnings=[{"code":"PROVIDER_PARTIAL_FAILURE"}]`입니다. 완성 경로가 없으면 아래 표에서 가장 앞선 원인의 오류입니다. 공급자 오류를 "경로 없음"으로 바꾸지 않습니다.
 
 실패는 `error.code`로 구분합니다(HTTP 상태는 코드 기준, `GlobalExceptionHandler`·`ErrorCode`).
 
 | 상황 | HTTP | `error.code` |
 |---|---|---|
-| 좌표 범위 위반 / 필드 누락·형식 오류·대여소 ID 길이 초과 | 400 | `INVALID_COORDINATE` / `INVALID_PARAMETER` |
-| 출발지 주변 대여소 없음, 대여 가능한 자전거 없음(모든 후보가 FRESH·0대), 지정 출발 대여소 0대(`PINNED_STATION_EMPTY`) | 422 | `NO_AVAILABLE_ORIGIN_STATION` |
+| 좌표 범위 위반 / 필드 누락·`null`·형식 오류·옵션 범위 초과·대여소 ID 길이 초과 | 400 | `INVALID_COORDINATE` / `INVALID_PARAMETER` |
+| JSON 본문 16 KiB 초과(`Content-Length` 또는 chunked 읽기 중) | 413 | `PAYLOAD_TOO_LARGE` |
+| 엔진이 지원하지 않는 `preferBikeRoad=true`(ORS) | 422 | `UNSUPPORTED_ROUTE_OPTION` |
+| 출발지 주변 대여소 없음, 대여 가능한 자전거 없음(모든 후보가 FRESH·0대), 지정 출발 대여소 0대 | 422 | `NO_AVAILABLE_ORIGIN_STATION` |
 | 목적지 주변 반납 대여소 없음 | 422 | `NO_AVAILABLE_RETURN_STATION` |
 | 지정 대여소를 찾지 못함 | 404 | `STATION_NOT_FOUND` |
-| 연결되는 도보·자전거 경로 없음(후보 조합 전부 미연결 또는 공급자가 경로 없음 응답) | 404 | `ROUTE_NOT_FOUND` |
-| 도보 구간 공급자 장애·한도 초과·인증 실패 | 502 | `WALK_ROUTE_PROVIDER_ERROR` |
-| 자전거 구간 공급자 장애·한도 초과·인증 실패 | 502 | `BIKE_ROUTE_PROVIDER_ERROR` |
-| 후보·지정 대여소의 최신 수량 확인 불가(출발: FRESH·1대 이상 없음 + STALE/UNAVAILABLE 포함, 반납: 전부 UNAVAILABLE) | 503 | `REALTIME_DATA_UNAVAILABLE` |
+| 연결되는 경로 없음(전부 미연결·공급자 경로 없음, 또는 `maxWalkingDistanceMeters`로 전부 제외) | 404 | `ROUTE_NOT_FOUND` |
+| 도보 / 자전거 구간 공급자 장애·한도 초과·인증 실패(완성 경로 0개) | 502 | `WALK_ROUTE_PROVIDER_ERROR` / `BIKE_ROUTE_PROVIDER_ERROR` |
+| 후보·지정 대여소의 최신 수량 확인 불가 | 503 | `REALTIME_DATA_UNAVAILABLE` |
 | 외부 경로 공급자 응답 지연(요청 전체 deadline 10초 초과 포함) | 504 | `EXTERNAL_API_TIMEOUT` |
 | 요청 한도 초과(routes 분당 10, burst 10, `Retry-After` 헤더) | 429 | `RATE_LIMIT_EXCEEDED` |
+| 서비스 점검 중(`CLIENT_WEB_MAINTENANCE=true`) | 503 | `MAINTENANCE_MODE` |
 | 길찾기 키 미설정·비활성, 데이터 저장소(Redis/DB) 장애 | 503 | `SERVICE_UNAVAILABLE` |
-| 경로 계산 후 출발 대여소 수량 변경(확장 코드) | 409 | `RENTAL_STOCK_CHANGED` |
+| 재조회 시 추천·대안 출발지 모두 수량 소진(확장 코드, `excludeStationsWithoutBikes=true`일 때만) | 409 | `RENTAL_STOCK_CHANGED` |
+
+검색 1건의 카카오 호출은 최대 15회(도보 6 + 자전거 9)이며 대안 경로는 같은 요청의 결과로 만들어 추가 호출이 없습니다.
+
+- `POST /api/v1/routes/plan`(**Deprecated**, 한 릴리스 병행): 요청 `{origin, destination, departureStationId?, arrivalStationId?}`, 응답은 옛 형식(`origin`, `destination`, `departureStation`, `arrivalStation`, `legs[{mode, path, steps, distanceMeters, durationSeconds}]`, `distanceMeters`, `durationSeconds`, `generatedAt`, `attribution`)으로 `/routes/search`의 추천 경로를 돌려줍니다(옵션 없음: 반경 1km, 도보 상한 없음, 엔진 기본 모드, 422 없음). 성공·오류 응답 모두 `Deprecation: @1794873600`(2026-11-17T00:00:00Z), `Sunset: Wed, 30 Jun 2027 23:59:59 GMT` 헤더가 붙습니다(`application.yml`의 `api.deprecations`). 새 클라이언트는 사용하지 마세요.
 
 외부 응답 본문이나 인증 정보는 사용자에게 전달하지 않으며 상세 원인은 요청 ID와 함께 서버 로그에만 남깁니다.
 

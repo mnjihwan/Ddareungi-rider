@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { api, searchBikeRoutes } from "../src/lib/api.ts";
-import { routeErrorMessage, toRoutePlan, ROUTE_ERROR_MESSAGES, ROUTE_FALLBACK_MESSAGE } from "../src/lib/routeSearch.ts";
+import { routeErrorMessage, toRoutePlan, buildRouteSearchBody, defaultRouteSearchOptions, hasChosenStation,
+  ROUTE_ERROR_MESSAGES, ROUTE_FALLBACK_MESSAGE, ROUTE_NOT_FOUND_CHOSEN_STATION_MESSAGE, MAX_WALKING_DISTANCE_METERS,
+} from "../src/lib/routeSearch.ts";
 import { RATE_LIMIT_MESSAGE } from "../src/lib/apiEnvelope.ts";
 
 const origin = { latitude: 37.4979, longitude: 127.0276 }, destination = { latitude: 37.5047, longitude: 127.0489 };
@@ -65,11 +67,63 @@ test("searchBikeRoutes posts to /routes/search with station IDs only when chosen
   t.after(() => { api.post = original; });
   const plan = await searchBikeRoutes(origin, destination, { departureStationId: "ST-1", arrivalStationId: undefined });
   assert.equal(calls[0].url, "/routes/search");
-  assert.deepEqual(calls[0].body, { origin, destination, departureStationId: "ST-1" });
+  // A chosen station lifts only the walking limit (M1); no arrivalStationId key, no null.
+  assert.deepEqual(calls[0].body, { origin, destination, departureStationId: "ST-1",
+    options: { maxWalkingDistanceMeters: 10_000 } });
   assert.equal(calls[0].config.timeout, 90_000);
   assert.equal(plan.routes.length, 3);
   await searchBikeRoutes(origin, destination, {}, undefined, { maxCandidates: 3, preferBikeRoad: false });
   assert.deepEqual(calls[1].body, { origin, destination, options: { maxCandidates: 3, preferBikeRoad: false } });
+  // A plain search keeps every server default: no options key at all.
+  await searchBikeRoutes(origin, destination);
+  assert.deepEqual(calls[2].body, { origin, destination });
+  // L3: the routing status decides preferBikeRoad.
+  await searchBikeRoutes(origin, destination, {}, undefined, undefined, { bikeRoadPreferenceSupported: false });
+  assert.deepEqual(calls[3].body, { origin, destination, options: { preferBikeRoad: false } });
+});
+
+test("request body: chosen stations lift only the walking limit to the spec maximum; plain search sends no options", () => {
+  assert.equal(MAX_WALKING_DISTANCE_METERS, 10_000);
+  const lifted = { maxWalkingDistanceMeters: 10_000 };
+  // Both chosen.
+  assert.deepEqual(buildRouteSearchBody(origin, destination, { departureStationId: "D", arrivalStationId: "A" }),
+    { origin, destination, departureStationId: "D", arrivalStationId: "A", options: lifted });
+  // Only one of them.
+  assert.deepEqual(buildRouteSearchBody(origin, destination, { departureStationId: "D" }),
+    { origin, destination, departureStationId: "D", options: lifted });
+  assert.deepEqual(buildRouteSearchBody(origin, destination, { departureStationId: undefined, arrivalStationId: "A" }),
+    { origin, destination, arrivalStationId: "A", options: lifted });
+  // None chosen (absent, undefined or empty IDs): server defaults, no options and no station keys.
+  for (const stations of [undefined, {}, { departureStationId: undefined, arrivalStationId: undefined },
+    { departureStationId: "", arrivalStationId: "" }]) {
+    const body = buildRouteSearchBody(origin, destination, stations);
+    assert.deepEqual(body, { origin, destination });
+    assert.equal("options" in body, false);
+    assert.equal(defaultRouteSearchOptions(stations), undefined);
+    assert.equal(hasChosenStation(stations), false);
+  }
+  // Other options are never sent by default (stationSearchRadiusMeters etc. stay server defaults).
+  const options = buildRouteSearchBody(origin, destination, { arrivalStationId: "A" }).options;
+  assert.deepEqual(Object.keys(options), ["maxWalkingDistanceMeters"]);
+  // The serialized JSON has no null anywhere.
+  assert.equal(JSON.stringify(buildRouteSearchBody(origin, destination, { departureStationId: "D", arrivalStationId: undefined },
+    null, { maxCandidates: undefined, preferBikeRoad: null })).includes("null"), false);
+  // Explicit options win over the defaults and are merged with them.
+  assert.deepEqual(buildRouteSearchBody(origin, destination, { departureStationId: "D" }, null,
+    { maxWalkingDistanceMeters: 2000, maxCandidates: 3 }).options, { maxWalkingDistanceMeters: 2000, maxCandidates: 3 });
+});
+
+test("request body: preferBikeRoad=false only when the status says the engine does not support it (L3)", () => {
+  assert.deepEqual(buildRouteSearchBody(origin, destination, {}, { bikeRoadPreferenceSupported: false }),
+    { origin, destination, options: { preferBikeRoad: false } });
+  for (const status of [undefined, null, {}, { configured: true }, { bikeRoadPreferenceSupported: true }]) {
+    assert.deepEqual(buildRouteSearchBody(origin, destination, {}, status), { origin, destination });
+  }
+  assert.deepEqual(buildRouteSearchBody(origin, destination, { departureStationId: "D" },
+    { configured: true, bikeRoadPreferenceSupported: false }).options,
+    { maxWalkingDistanceMeters: 10_000, preferBikeRoad: false });
+  assert.deepEqual(buildRouteSearchBody(origin, destination, { arrivalStationId: "A" },
+    { bikeRoadPreferenceSupported: true }).options, { maxWalkingDistanceMeters: 10_000 });
 });
 
 const failure = (status, code, message = "서버 메시지") => ({ isAxiosError: true, response: { status, headers: {},
@@ -80,6 +134,15 @@ test("route error codes and statuses map to guidance (422/404/409/413/502/504/42
   assert.equal(routeErrorMessage(failure(422, "NO_AVAILABLE_RETURN_STATION")), ROUTE_ERROR_MESSAGES.NO_AVAILABLE_RETURN_STATION);
   assert.equal(routeErrorMessage(failure(422, "UNSUPPORTED_ROUTE_OPTION")), ROUTE_ERROR_MESSAGES.UNSUPPORTED_ROUTE_OPTION);
   assert.equal(routeErrorMessage(failure(404, "ROUTE_NOT_FOUND")), ROUTE_ERROR_MESSAGES.ROUTE_NOT_FOUND);
+  // Plain search (default walking limit): suggest moving closer to a station or choosing one.
+  assert.match(ROUTE_ERROR_MESSAGES.ROUTE_NOT_FOUND, /대여소 가까이/);
+  assert.match(ROUTE_ERROR_MESSAGES.ROUTE_NOT_FOUND, /대여소를 직접 골라/);
+  assert.equal(routeErrorMessage(failure(404, "ROUTE_NOT_FOUND"), { stationChosen: false }), ROUTE_ERROR_MESSAGES.ROUTE_NOT_FOUND);
+  // A chosen station already lifted the limit: point at that station instead.
+  assert.equal(routeErrorMessage(failure(404, "ROUTE_NOT_FOUND"), { stationChosen: true }), ROUTE_NOT_FOUND_CHOSEN_STATION_MESSAGE);
+  assert.equal(routeErrorMessage(failure(422, "NO_AVAILABLE_ORIGIN_STATION"), { stationChosen: true }),
+    ROUTE_ERROR_MESSAGES.NO_AVAILABLE_ORIGIN_STATION);
+  assert.equal(routeErrorMessage(failure(429, "RATE_LIMIT_EXCEEDED"), { stationChosen: true }), RATE_LIMIT_MESSAGE);
   assert.equal(routeErrorMessage(failure(409, "RENTAL_STOCK_CHANGED")), ROUTE_ERROR_MESSAGES.RENTAL_STOCK_CHANGED);
   assert.equal(routeErrorMessage(failure(413, "PAYLOAD_TOO_LARGE")), ROUTE_ERROR_MESSAGES.PAYLOAD_TOO_LARGE);
   assert.match(routeErrorMessage(failure(502, "WALK_ROUTE_PROVIDER_ERROR")), /응답을 받지 못했어요/);

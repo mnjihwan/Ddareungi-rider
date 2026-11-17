@@ -26,8 +26,8 @@ import java.util.concurrent.TimeoutException;
 
 /**
  * Bike route search (spec 13.1, A6). Up to {@code routing.search.max-station-candidates} departures × arrivals are
- * compared with real walking/cycling routes (Kakao: 6 + 9 = 15 directions calls, every later leg comes from the
- * per-request cache), ranked by total duration → walking distance → total distance → departure id → arrival id, and the
+ * compared with real walking/cycling routes (Kakao: at most 6 + 9 = 15 directions calls, every later leg comes from
+ * the per-request cache; cycling pairs are only asked when both of their walks are routed, review H1), ranked by total duration → walking distance → total distance → departure id → arrival id, and the
  * best {@code maxCandidates} are returned. {@link #execute} is the legacy {@code /routes/plan} entry point: the same
  * search with {@link RouteSearchOptions#legacyPlan()}, answering the recommended route in the former shape.
  */
@@ -74,6 +74,8 @@ public class PlanBikeRoute {
         this(stations, walking, bicycle, enabled, http.route().totalTimeout(), freshness, search);
     }
     public boolean configured() { return enabled && walking.configured() && bicycle.configured(); }
+    /** Review L3: whether {@code preferBikeRoad} can be honoured both ways by the current engine ({@code /routes/status}). */
+    public boolean supportsBikeRoadPreference() { return bicycle.supportsBikeRoadPreference(); }
 
     public Plan execute(Location origin, Location destination, String departureStationId) {
         return execute(origin, destination, departureStationId, null);
@@ -139,19 +141,44 @@ public class PlanBikeRoute {
         boolean bikeRoadPreferred = !Boolean.FALSE.equals(options.preferBikeRoad()) && bicycle.supportsBikeRoadPreference();
         var first = walk.matrix(List.of(origin), starts);
         var last = walk.matrix(ends, List.of(destination));
-        var cycle = ride.matrix(starts, ends);
+        // Review H1: a pair can only be ranked when both of its walks are routed, so the cycling matrix is asked only
+        // for departures whose first walk and arrivals whose last walk are routed (the walks depend on one side each,
+        // so those pairs are exactly this sub-matrix). Saves cycling calls (quota) after walking failures or "no road"
+        // answers; ranking is unchanged because the skipped pairs could never be ranked. rideRow/rideColumn map a
+        // candidate index to its index in the cycling matrix (-1: not asked).
+        var rideRow = new int[starts.size()];
+        var rideColumn = new int[ends.size()];
+        var rideStarts = new ArrayList<Location>();
+        var rideEnds = new ArrayList<Location>();
+        for (int i = 0; i < starts.size(); i++) {
+            rideRow[i] = first.cell(0, i).routed() ? rideStarts.size() : -1;
+            if (rideRow[i] >= 0) rideStarts.add(starts.get(i));
+        }
+        for (int j = 0; j < ends.size(); j++) {
+            rideColumn[j] = last.cell(j, 0).routed() ? rideEnds.size() : -1;
+            if (rideColumn[j] >= 0) rideEnds.add(ends.get(j));
+        }
+        var cycle = rideStarts.isEmpty() || rideEnds.isEmpty() ? null : ride.matrix(rideStarts, rideEnds);
 
         // Evaluate every pair (same station excluded). A pair with a "no road" segment is unreachable; one with a
         // failed segment is unknown and makes the answer partial, never "no route" (spec 13.1).
+        // Review H1: the walks are judged first (cycling was not asked when one of them is not routed). Compared with
+        // judging all three segments at once this only differs when a walk failed and the (now unasked) cycling
+        // segment would have been "no road" or failed as well: such a pair now counts as the walk failure.
         var ranked = new ArrayList<Ranked>();
         var failures = new ArrayList<RouteException>();
         int overWalkingLimit = 0;
         for (int i = 0; i < starts.size(); i++) for (int j = 0; j < ends.size(); j++) {
             if (departures.get(i).stationId().equals(arrivals.get(j).stationId())) continue;
-            var segments = List.of(first.cell(0, i), cycle.cell(i, j), last.cell(j, 0));
-            if (segments.stream().anyMatch(RouteMatrix.Cell::noRoad)) continue;
-            var failed = segments.stream().filter(RouteMatrix.Cell::failed).findFirst();
-            if (failed.isPresent()) { failures.add(failed.get().failure()); continue; }
+            var walkIn = first.cell(0, i);
+            var walkOut = last.cell(j, 0);
+            if (walkIn.noRoad() || walkOut.noRoad()) continue;
+            if (walkIn.failed()) { failures.add(walkIn.failure()); continue; }
+            if (walkOut.failed()) { failures.add(walkOut.failure()); continue; }
+            var bike = cycle.cell(rideRow[i], rideColumn[j]);
+            if (bike.noRoad()) continue;
+            if (bike.failed()) { failures.add(bike.failure()); continue; }
+            var segments = List.of(walkIn, bike, walkOut);
             long walkingMeters = round(segments.get(0).distanceMeters()) + round(segments.get(2).distanceMeters());
             if (options.maxWalkingDistanceMeters() != null && walkingMeters > options.maxWalkingDistanceMeters()) {
                 overWalkingLimit++;
@@ -172,7 +199,9 @@ public class PlanBikeRoute {
         ranked.sort(ORDER);
         boolean partial = !failures.isEmpty();
 
-        // Legs of the best maxCandidates pairs only (Kakao: all cached, 0 extra calls; ORS: up to 3 + 3 + 5 calls).
+        // Legs of the best maxCandidates pairs only. Kakao: every leg is in the per-request cache, 0 extra calls.
+        // ORS has no per-request cache (forRequest() is the engine itself), so each returned route costs its own
+        // 3 directions calls: at most maxCandidates (5) × 3 = 15 calls after the matrices (review L4).
         var routes = new ArrayList<RouteSearchResult.Route>();
         var legFailures = new ArrayList<RouteException>();
         for (var pair : ranked.subList(0, Math.min(options.maxCandidates(), ranked.size()))) {
