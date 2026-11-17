@@ -6,28 +6,41 @@ import com.ddareungi.global.resilience.Deadline;
 import com.ddareungi.realtime.domain.RealtimeFreshness;
 import com.ddareungi.realtime.domain.RealtimeFreshnessPolicy;
 import com.ddareungi.station.domain.Location;
-import org.springframework.beans.factory.annotation.Autowired;
-import java.time.Duration;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import com.ddareungi.station.domain.Station;
 import com.ddareungi.station.domain.StationSearchPort;
+import org.jspecify.annotations.Nullable;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
+/**
+ * Bike route search (spec 13.1, A6). Up to {@code routing.search.max-station-candidates} departures × arrivals are
+ * compared with real walking/cycling routes (Kakao: 6 + 9 = 15 directions calls, every later leg comes from the
+ * per-request cache), ranked by total duration → walking distance → total distance → departure id → arrival id, and the
+ * best {@code maxCandidates} are returned. {@link #execute} is the legacy {@code /routes/plan} entry point: the same
+ * search with {@link RouteSearchOptions#legacyPlan()}, answering the recommended route in the former shape.
+ */
 @Service
 public class PlanBikeRoute {
+    private static final double WITHIN_PREFERRED_METERS = 500;
     private final StationSearchPort stations;
     private final WalkingRouteProvider walking;
     private final BicycleRouteProvider bicycle;
     private final boolean enabled;
     private final Duration deadline;
     private final RealtimeFreshnessPolicy freshness;
+    private final int maxStationCandidates;
     /** Test/compat constructor: D8 deadline and the default 120/600 s freshness policy. */
     public PlanBikeRoute(StationSearchPort stations, WalkingRouteProvider walking, BicycleRouteProvider bicycle,
                          boolean enabled) {
@@ -45,15 +58,20 @@ public class PlanBikeRoute {
      */
     public PlanBikeRoute(StationSearchPort stations, WalkingRouteProvider walking, BicycleRouteProvider bicycle,
                          boolean enabled, Duration deadline, RealtimeFreshnessPolicy freshness) {
+        this(stations, walking, bicycle, enabled, deadline, freshness, RouteSearchProperties.defaults());
+    }
+    public PlanBikeRoute(StationSearchPort stations, WalkingRouteProvider walking, BicycleRouteProvider bicycle,
+                         boolean enabled, Duration deadline, RealtimeFreshnessPolicy freshness,
+                         RouteSearchProperties search) {
         if (freshness == null) throw new IllegalArgumentException("freshness policy is required");
         this.stations = stations; this.walking = walking; this.bicycle = bicycle; this.enabled = enabled;
-        this.deadline = deadline; this.freshness = freshness;
+        this.deadline = deadline; this.freshness = freshness; this.maxStationCandidates = search.maxStationCandidates();
     }
     @Autowired
     public PlanBikeRoute(StationSearchPort stations, WalkingRouteProvider walking, BicycleRouteProvider bicycle,
                          @Value("${routing.enabled:true}") boolean enabled, ProviderHttpProperties http,
-                         RealtimeFreshnessPolicy freshness) {
-        this(stations, walking, bicycle, enabled, http.route().totalTimeout(), freshness);
+                         RealtimeFreshnessPolicy freshness, RouteSearchProperties search) {
+        this(stations, walking, bicycle, enabled, http.route().totalTimeout(), freshness, search);
     }
     public boolean configured() { return enabled && walking.configured() && bicycle.configured(); }
 
@@ -61,14 +79,27 @@ public class PlanBikeRoute {
         return execute(origin, destination, departureStationId, null);
     }
 
+    /** Legacy {@code /routes/plan}: the recommended route of a {@link RouteSearchOptions#legacyPlan()} search. */
     public Plan execute(Location origin, Location destination, String departureStationId, String arrivalStationId) {
-        if (origin == null || destination == null) throw new IllegalArgumentException("출발지와 목적지를 선택해 주세요.");
+        var result = search(new RouteSearchCriteria(origin, destination, RouteSearchOptions.legacyPlan(),
+                departureStationId, arrivalStationId));
+        var route = result.recommended();
+        return new Plan(origin, destination, route.departure(), route.arrival(), route.legs(),
+                route.legs().stream().mapToDouble(RouteProvider.Leg::distanceMeters).sum(),
+                route.legs().stream().mapToDouble(RouteProvider.Leg::durationSeconds).sum(), result.generatedAt(),
+                result.attribution());
+    }
+
+    public RouteSearchResult search(RouteSearchCriteria criteria) {
+        if (criteria.origin() == null || criteria.destination() == null) throw new IllegalArgumentException("출발지와 목적지를 선택해 주세요.");
         if (!configured()) throw new RouteException(HttpStatus.SERVICE_UNAVAILABLE, "ROUTING_NOT_CONFIGURED", "길찾기 연결을 준비하고 있어요. 장소와 대여소 조회는 계속 이용할 수 있어요.");
-        // The whole plan runs on a virtual thread under one deadline; past it, the work is cancelled (interrupted)
+        // Spec 13.1: an unsupported preferBikeRoad=true is refused, never silently ignored. Checked before any call.
+        if (Boolean.TRUE.equals(criteria.options().preferBikeRoad()) && !bicycle.supportsBikeRoadPreference())
+            throw new RouteException(HttpStatus.UNPROCESSABLE_ENTITY, "UNSUPPORTED_ROUTE_OPTION", "현재 경로 제공자는 자전거도로 우선(preferBikeRoad=true)을 지원하지 않아요. preferBikeRoad를 false로 지정해 주세요.");
+        // The whole search runs on a virtual thread under one deadline; past it, the work is cancelled (interrupted)
         // and the client gets 504 EXTERNAL_API_TIMEOUT. Provider retries inside see the same deadline.
         var budget = Deadline.after(deadline);
-        var plan = ContextPropagation.start("route-plan",
-                () -> budget.supply(() -> plan(origin, destination, departureStationId, arrivalStationId)));
+        var plan = ContextPropagation.start("route-plan", () -> budget.supply(() -> run(criteria)));
         try {
             return plan.get(budget.remaining().toNanos(), TimeUnit.NANOSECONDS);
         } catch (TimeoutException error) {
@@ -83,58 +114,132 @@ public class PlanBikeRoute {
         }
     }
 
-    private Plan plan(Location origin, Location destination, String departureStationId, String arrivalStationId) {
+    /** A routable candidate pair with its matrix values, rounded per segment (phase 3 decision 8). */
+    private record Ranked(int start, int end, long durationSeconds, long walkingMeters, long totalMeters,
+                          String departureId, String arrivalId) {}
+    private static final Comparator<Ranked> ORDER = Comparator.comparingLong(Ranked::durationSeconds)
+            .thenComparingLong(Ranked::walkingMeters).thenComparingLong(Ranked::totalMeters)
+            .thenComparing(Ranked::departureId).thenComparing(Ranked::arrivalId);
+
+    private RouteSearchResult run(RouteSearchCriteria criteria) {
+        var options = criteria.options();
+        var origin = criteria.origin(); var destination = criteria.destination();
         // One evaluation instant per request: every candidate (and the post-routing recheck) is judged against it.
         var now = freshness.now();
-        var departures = candidates(origin, true, departureStationId, now);
-        var arrivals = candidates(destination, false, arrivalStationId, now);
-        if (departures.isEmpty()) throw new RouteException(HttpStatus.NOT_FOUND, "NO_RENTAL_STATION", "출발지 1km 안에 대여 가능한 자전거가 확인된 대여소가 없어요. 출발지나 지정 대여소를 변경해 주세요.");
-        if (arrivals.isEmpty()) throw new RouteException(HttpStatus.NOT_FOUND, "NO_RETURN_STATION", "목적지 1km 안에 최근 정보가 확인된 대여소가 없어요. 목적지를 변경해 주세요.");
+        var departures = candidates(origin, true, criteria.pinnedDeparture(), now, options);
+        var arrivals = candidates(destination, false, criteria.pinnedArrival(), now, options);
+        String radius = distanceLabel(options.stationSearchRadiusMeters());
+        if (departures.isEmpty()) throw new RouteException(HttpStatus.NOT_FOUND, "NO_RENTAL_STATION", "출발지 " + radius + " 안에 대여 가능한 자전거가 확인된 대여소가 없어요. 출발지나 지정 대여소를 변경해 주세요.");
+        if (arrivals.isEmpty()) throw new RouteException(HttpStatus.NOT_FOUND, "NO_RETURN_STATION", "목적지 " + radius + " 안에 최근 정보가 확인된 대여소가 없어요. 목적지를 변경해 주세요.");
         var starts = departures.stream().map(Station::location).toList();
         var ends = arrivals.stream().map(Station::location).toList();
         var walk = walking.forRequest();
-        var ride = bicycle.forRequest();
-        var first = walk.durations(List.of(origin), starts);
-        var last = walk.durations(ends, List.of(destination));
-        var cycle = ride.durations(starts, ends);
-        int startIndex = -1, endIndex = -1; double best = Double.POSITIVE_INFINITY;
+        // null keeps the engine default (legacy adapter) and uses the same request-scoped entry point as before.
+        var ride = options.preferBikeRoad() == null ? bicycle.forRequest() : bicycle.forRequest(options.preferBikeRoad());
+        boolean bikeRoadPreferred = !Boolean.FALSE.equals(options.preferBikeRoad()) && bicycle.supportsBikeRoadPreference();
+        var first = walk.matrix(List.of(origin), starts);
+        var last = walk.matrix(ends, List.of(destination));
+        var cycle = ride.matrix(starts, ends);
+
+        // Evaluate every pair (same station excluded). A pair with a "no road" segment is unreachable; one with a
+        // failed segment is unknown and makes the answer partial, never "no route" (spec 13.1).
+        var ranked = new ArrayList<Ranked>();
+        var failures = new ArrayList<RouteException>();
+        int overWalkingLimit = 0;
         for (int i = 0; i < starts.size(); i++) for (int j = 0; j < ends.size(); j++) {
             if (departures.get(i).stationId().equals(arrivals.get(j).stationId())) continue;
-            if (first[0][i] == null || last[j][0] == null || cycle[i][j] == null) continue;
-            double seconds = first[0][i] + cycle[i][j] + last[j][0];
-            if (seconds < best) { best = seconds; startIndex = i; endIndex = j; }
+            var segments = List.of(first.cell(0, i), cycle.cell(i, j), last.cell(j, 0));
+            if (segments.stream().anyMatch(RouteMatrix.Cell::noRoad)) continue;
+            var failed = segments.stream().filter(RouteMatrix.Cell::failed).findFirst();
+            if (failed.isPresent()) { failures.add(failed.get().failure()); continue; }
+            long walkingMeters = round(segments.get(0).distanceMeters()) + round(segments.get(2).distanceMeters());
+            if (options.maxWalkingDistanceMeters() != null && walkingMeters > options.maxWalkingDistanceMeters()) {
+                overWalkingLimit++;
+                continue;
+            }
+            ranked.add(new Ranked(i, j,
+                    segments.stream().mapToLong(cell -> round(cell.durationSeconds())).sum(), walkingMeters,
+                    segments.stream().mapToLong(cell -> round(cell.distanceMeters())).sum(),
+                    departures.get(i).stationId(), arrivals.get(j).stationId()));
         }
-        if (startIndex < 0) throw new RouteException(HttpStatus.UNPROCESSABLE_ENTITY, "NO_CONNECTED_ROUTE", "주변 대여소를 연결하는 도보·자전거 경로를 찾지 못했어요. 출발지나 목적지를 변경해 주세요.");
-        var departure = departures.get(startIndex); var arrival = arrivals.get(endIndex);
-        var legs = List.of(walk.route(origin, departure.location()),
-                ride.route(departure.location(), arrival.location()),
-                walk.route(arrival.location(), destination));
-        // Check again after external routing calls, when stock may have changed.
-        departure = stations.findByIds(List.of(departure.stationId()), origin).stream()
-                .filter(s -> fresh(s, now) && s.availableBikeCount() > 0).findFirst()
-                .orElseThrow(() -> new RouteException(HttpStatus.CONFLICT, "RENTAL_STOCK_CHANGED", "대여소 수량이 바뀌었어요. 경로를 다시 검색해 주세요."));
-        return new Plan(origin, destination, departure, arrival, legs,
-                legs.stream().mapToDouble(RouteProvider.Leg::distanceMeters).sum(),
-                legs.stream().mapToDouble(RouteProvider.Leg::durationSeconds).sum(), Instant.now(),
+        if (ranked.isEmpty()) {
+            // Spec 13.1 / phase 3 decision 7: no complete route -> the first provider error (pair order, then
+            // segment order walk → bike → walk); decision 4: everything over the walking limit -> 404.
+            if (!failures.isEmpty()) throw failures.getFirst();
+            if (overWalkingLimit > 0) throw new RouteException(HttpStatus.NOT_FOUND, "NO_CONNECTED_ROUTE", "도보 거리 " + distanceLabel(options.maxWalkingDistanceMeters()) + " 안에서 연결되는 경로를 찾지 못했어요. 도보 거리 상한을 늘리거나 출발지·목적지를 변경해 주세요.");
+            throw new RouteException(HttpStatus.UNPROCESSABLE_ENTITY, "NO_CONNECTED_ROUTE", "주변 대여소를 연결하는 도보·자전거 경로를 찾지 못했어요. 출발지나 목적지를 변경해 주세요.");
+        }
+        ranked.sort(ORDER);
+        boolean partial = !failures.isEmpty();
+
+        // Legs of the best maxCandidates pairs only (Kakao: all cached, 0 extra calls; ORS: up to 3 + 3 + 5 calls).
+        var routes = new ArrayList<RouteSearchResult.Route>();
+        var legFailures = new ArrayList<RouteException>();
+        for (var pair : ranked.subList(0, Math.min(options.maxCandidates(), ranked.size()))) {
+            var departure = departures.get(pair.start()); var arrival = arrivals.get(pair.end());
+            try {
+                routes.add(new RouteSearchResult.Route(departure, arrival, List.of(walk.route(origin, departure.location()),
+                        ride.route(departure.location(), arrival.location()),
+                        walk.route(arrival.location(), destination))));
+            } catch (RouteException error) {
+                if (error.code.equals("NO_ROAD_ROUTE")) continue;
+                legFailures.add(error);
+            }
+        }
+        partial |= !legFailures.isEmpty();
+
+        // Check again after the external routing calls, when stock may have changed (one lookup for all departures).
+        // A route whose departure lost its bikes is dropped and the next one moves up (phase 3 decision 6, no extra
+        // provider call); 409 only when none is left. With excludeStationsWithoutBikes=false nothing is dropped.
+        var ids = new ArrayList<>(new LinkedHashSet<>(routes.stream().map(route -> route.departure().stationId()).toList()));
+        var latest = new HashMap<String, Station>();
+        if (!ids.isEmpty()) for (var station : stations.findByIds(ids, origin)) latest.putIfAbsent(station.stationId(), station);
+        var confirmed = new ArrayList<RouteSearchResult.Route>();
+        boolean stockChanged = false;
+        for (var route : routes) {
+            var current = latest.get(route.departure().stationId());
+            if (options.excludeStationsWithoutBikes()) {
+                if (current == null || !fresh(current, now) || current.availableBikeCount() <= 0) { stockChanged = true; continue; }
+            } else if (current == null) {
+                current = route.departure();
+            }
+            confirmed.add(new RouteSearchResult.Route(current, route.arrival(), route.legs()));
+        }
+        if (confirmed.isEmpty()) {
+            if (stockChanged) throw new RouteException(HttpStatus.CONFLICT, "RENTAL_STOCK_CHANGED", "대여소 수량이 바뀌었어요. 경로를 다시 검색해 주세요.");
+            if (!legFailures.isEmpty()) throw legFailures.getFirst();
+            throw new RouteException(HttpStatus.UNPROCESSABLE_ENTITY, "NO_CONNECTED_ROUTE", "주변 대여소를 연결하는 도보·자전거 경로를 찾지 못했어요. 출발지나 목적지를 변경해 주세요.");
+        }
+        return new RouteSearchResult(origin, destination, confirmed, partial, bikeRoadPreferred, Instant.now(),
                 attribution(walk.attribution(), ride.attribution()));
     }
     // Same engine for both segments yields one credit; different providers are both credited.
     private static String attribution(String walking, String cycling) {
         return walking.equals(cycling) ? walking : walking + " / " + cycling;
     }
-    private List<Station> candidates(Location location, boolean rental, String pinnedId, Instant now) {
+    private static long round(@Nullable Double value) { return value == null ? 0 : Math.round(value); }
+    private static String distanceLabel(int meters) {
+        return meters >= 1000 && meters % 1000 == 0 ? (meters / 1000) + "km" : meters + "m";
+    }
+    private List<Station> candidates(Location location, boolean rental, @Nullable String pinnedId, Instant now,
+                                     RouteSearchOptions options) {
+        boolean requireBikes = options.excludeStationsWithoutBikes();
         if (pinnedId != null && !pinnedId.isBlank()) {
             var pinned = stations.findByIds(List.of(pinnedId), location).stream()
                     .filter(s -> s.stationId().equals(pinnedId)).findFirst()
                     .orElseThrow(() -> new RouteException(HttpStatus.NOT_FOUND, "PINNED_STATION_NOT_FOUND", "지정한 대여소를 찾지 못했어요. 자동 선택하거나 다른 대여소를 지정해 주세요."));
             // Review M3(a): a pinned departure needs a FRESH count; a pinned arrival only has to be servable
             // (FRESH or STALE), since return availability is UNKNOWN in v1 either way (spec 11.0 / route contract).
-            if (!(rental ? fresh(pinned, now) : returnable(pinned, now))) throw new RouteException(HttpStatus.SERVICE_UNAVAILABLE, "STATION_STATUS_UNAVAILABLE", "지정한 대여소의 최신 수량을 확인하지 못했어요. 잠시 후 다시 검색하거나 다른 대여소를 선택해 주세요.");
-            if (rental && pinned.availableBikeCount() == 0) throw new RouteException(HttpStatus.CONFLICT, "PINNED_STATION_EMPTY", "지정한 대여소에 대여 가능한 자전거가 없어요. 자동 선택하거나 다른 대여소를 지정해 주세요.");
+            // With excludeStationsWithoutBikes=false a pinned departure is servable like an arrival (spec 13.1).
+            boolean usable = rental && requireBikes ? fresh(pinned, now) : returnable(pinned, now);
+            if (!usable) throw new RouteException(HttpStatus.SERVICE_UNAVAILABLE, "STATION_STATUS_UNAVAILABLE", "지정한 대여소의 최신 수량을 확인하지 못했어요. 잠시 후 다시 검색하거나 다른 대여소를 선택해 주세요.");
+            if (rental && requireBikes && pinned.availableBikeCount() == 0) throw new RouteException(HttpStatus.CONFLICT, "PINNED_STATION_EMPTY", "지정한 대여소에 대여 가능한 자전거가 없어요. 자동 선택하거나 다른 대여소를 지정해 주세요.");
             return List.of(pinned);
         }
-        var nearby = stations.findNearby(location, 1000);
-        if (rental) {
+        int radius = options.stationSearchRadiusMeters();
+        String label = distanceLabel(radius);
+        var nearby = stations.findNearby(location, radius);
+        if (rental && requireBikes) {
             var usable = nearby.stream().filter(s -> fresh(s, now) && s.availableBikeCount() > 0)
                     .sorted(Comparator.comparingDouble(s -> location.distanceTo(s.location()))).toList();
             if (usable.isEmpty() && !nearby.isEmpty()) {
@@ -142,21 +247,29 @@ public class PlanBikeRoute {
                 // candidate is FRESH with 0 bikes. If any candidate is STALE/UNAVAILABLE its stock is unknown, so
                 // the answer is 503 (STATION_STATUS_UNAVAILABLE -> public REALTIME_DATA_UNAVAILABLE), not "no bikes".
                 if (nearby.stream().allMatch(s -> fresh(s, now)))
-                    throw new RouteException(HttpStatus.NOT_FOUND, "NO_RENTAL_BIKES", "출발지 1km 안에 대여소는 있지만 대여 가능한 자전거가 확인되지 않았어요. 출발 장소를 변경하거나 다른 대여소를 지정해 주세요.");
+                    throw new RouteException(HttpStatus.NOT_FOUND, "NO_RENTAL_BIKES", "출발지 " + label + " 안에 대여소는 있지만 대여 가능한 자전거가 확인되지 않았어요. 출발 장소를 변경하거나 다른 대여소를 지정해 주세요.");
                 throw new RouteException(HttpStatus.SERVICE_UNAVAILABLE, "STATION_STATUS_UNAVAILABLE", "출발지 주변 대여소는 있지만 최신 수량을 확인하지 못했어요. 잠시 후 다시 검색해 주세요.");
             }
-            return nearest(location, usable);
+            return nearest(location, usable, radius);
         }
-        // Review M3(a): return candidates exclude only UNAVAILABLE stations; STALE ones stay (spec 11.0).
+        // Review M3(a): return candidates exclude only UNAVAILABLE stations; STALE ones stay (spec 11.0). The same
+        // rule applies to departures with excludeStationsWithoutBikes=false (public STALE and 0-bike stations).
         var usable = nearby.stream().filter(s -> returnable(s, now))
                 .sorted(Comparator.comparingDouble(s -> location.distanceTo(s.location()))).toList();
         if (usable.isEmpty() && !nearby.isEmpty())
-            throw new RouteException(HttpStatus.SERVICE_UNAVAILABLE, "STATION_STATUS_UNAVAILABLE", "목적지 주변 대여소는 있지만 최신 수량을 확인하지 못했어요. 잠시 후 다시 검색해 주세요.");
-        return nearest(location, usable);
+            throw new RouteException(HttpStatus.SERVICE_UNAVAILABLE, "STATION_STATUS_UNAVAILABLE", (rental ? "출발지" : "목적지") + " 주변 대여소는 있지만 최신 수량을 확인하지 못했어요. 잠시 후 다시 검색해 주세요.");
+        return nearest(location, usable, radius);
     }
-    private static List<Station> nearest(Location location, List<Station> usable) {
-        var within500 = usable.stream().filter(s -> location.distanceTo(s.location()) <= 500).toList();
-        return (within500.isEmpty() ? usable : within500).stream().limit(3).toList();
+    /** Phase 3 decision 3: stations within min(500 m, radius) first; otherwise the whole radius; at most n. */
+    private List<Station> nearest(Location location, List<Station> usable, int radius) {
+        double preferred = Math.min(WITHIN_PREFERRED_METERS, radius);
+        var distinct = usable.stream().filter(distinctIds()).toList();
+        var within = distinct.stream().filter(s -> location.distanceTo(s.location()) <= preferred).toList();
+        return (within.isEmpty() ? distinct : within).stream().limit(maxStationCandidates).toList();
+    }
+    private static java.util.function.Predicate<Station> distinctIds() {
+        var seen = new java.util.HashSet<String>();
+        return station -> seen.add(station.stationId());
     }
     // D2: a departure candidate needs a known stock and a FRESH value under the shared policy (age <= fresh-seconds,
     // at most 30 s in the future). STALE and UNAVAILABLE values are never departure candidates.

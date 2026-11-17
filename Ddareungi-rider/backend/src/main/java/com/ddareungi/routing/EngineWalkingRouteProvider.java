@@ -23,6 +23,9 @@ public class EngineWalkingRouteProvider implements WalkingRouteProvider {
     @Override public Double[][] durations(List<Location> sources, List<Location> destinations) {
         return translate(() -> engine.durations(PROFILE, sources, destinations));
     }
+    @Override public RouteMatrix matrix(List<Location> sources, List<Location> destinations) {
+        return translate(() -> engine.matrix(PROFILE, sources, destinations)).mapFailures(EngineWalkingRouteProvider::translated);
+    }
     @Override public RouteProvider.Leg route(Location from, Location to) {
         return translate(() -> engine.directions(PROFILE, from, to));
     }
@@ -32,11 +35,15 @@ public class EngineWalkingRouteProvider implements WalkingRouteProvider {
             return call.get();
         } catch (RouteException error) {
             // NO_ROAD_ROUTE, ROUTING_NOT_CONFIGURED and other codes keep their meaning.
-            if (!RouteProvider.PROVIDER_FAILURE_CODES.contains(error.code)) throw error;
-            // Engine messages are already user-safe (never provider bodies or keys); keep the engine error as cause for logs.
-            var translated = new RouteException(HttpStatus.BAD_GATEWAY, PROVIDER_ERROR, error.getMessage());
-            translated.initCause(error);
-            throw translated;
+            throw translated(error);
         }
+    }
+
+    private static RouteException translated(RouteException error) {
+        if (!RouteProvider.PROVIDER_FAILURE_CODES.contains(error.code)) return error;
+        // Engine messages are already user-safe (never provider bodies or keys); keep the engine error as cause for logs.
+        var translated = new RouteException(HttpStatus.BAD_GATEWAY, PROVIDER_ERROR, error.getMessage());
+        translated.initCause(error);
+        return translated;
     }
 }

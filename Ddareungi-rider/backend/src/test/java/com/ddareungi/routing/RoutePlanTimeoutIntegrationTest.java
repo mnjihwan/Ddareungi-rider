@@ -54,17 +54,30 @@ class RoutePlanTimeoutIntegrationTest {
     }
 
     @Test void providerTimeoutIsGatewayTimeout() throws Exception {
-        when(engine.durations(any(), anyList(), anyList()))
+        // A6 contract change: the planner reads matrix(..) (durations + distances + per-pair failures), not durations(..).
+        when(engine.matrix(any(), anyList(), anyList()))
                 .thenThrow(new RouteException(HttpStatus.GATEWAY_TIMEOUT, "EXTERNAL_API_TIMEOUT", "경로 응답 지연"));
         timeout(plan());
     }
 
     @Test void planDeadlineIsGatewayTimeout() throws Exception {
-        when(engine.durations(any(), anyList(), anyList())).thenAnswer(invocation -> {
+        // A6 contract change: the planner reads matrix(..) (durations + distances + per-pair failures), not durations(..).
+        when(engine.matrix(any(), anyList(), anyList())).thenAnswer(invocation -> {
             Thread.sleep(5_000);
-            return new Double[][]{{60.0}};
+            return RouteMatrix.of(new Double[][]{{60.0}}, new Double[][]{{60.0}});
         });
         timeout(plan());
+    }
+
+    // A6: the same deadline applies to POST /routes/search (preferBikeRoad=false: the mocked engine has no preference).
+    @Test void searchDeadlineIsGatewayTimeout() throws Exception {
+        when(engine.matrix(any(), anyList(), anyList())).thenAnswer(invocation -> {
+            Thread.sleep(5_000);
+            return RouteMatrix.of(new Double[][]{{60.0}}, new Double[][]{{60.0}});
+        });
+        timeout(mvc.perform(post("/api/v1/routes/search").contentType(MediaType.APPLICATION_JSON)
+                .content(BODY.substring(0, BODY.length() - 1) + ",\"options\":{\"preferBikeRoad\":false}}")
+                .header(RequestIdFilter.HEADER, "route-timeout")));
     }
 
     private ResultActions plan() throws Exception {

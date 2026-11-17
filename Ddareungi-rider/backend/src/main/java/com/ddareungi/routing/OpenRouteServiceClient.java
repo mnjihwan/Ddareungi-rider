@@ -45,24 +45,32 @@ public class OpenRouteServiceClient implements RouteProvider {
     }
     @Override public boolean configured() { return !key.isBlank(); }
 
-    @Override public Double[][] durations(String profile, List<Location> sources, List<Location> destinations) {
+    /**
+     * One matrix call for the whole comparison, so a provider failure fails every pair and is thrown. A6: the call
+     * also asks for distances (spec 13.1 {@code maxWalkingDistanceMeters} and the tie-break by distance).
+     */
+    @Override public RouteMatrix matrix(String profile, List<Location> sources, List<Location> destinations) {
         validateProfile(profile);
         var locations = new ArrayList<Location>(sources); locations.addAll(destinations);
-        var json = request(profile, "/matrix/" + profile, Map.of("locations", coordinates(locations),
+        var root = request(profile, "/matrix/" + profile, Map.of("locations", coordinates(locations),
                 "sources", IntStream.range(0, sources.size()).mapToObj(Integer::toString).toList(),
                 "destinations", IntStream.range(sources.size(), locations.size()).mapToObj(Integer::toString).toList(),
-                "metrics", List.of("duration"))).path("durations");
+                "metrics", List.of("duration", "distance")));
         try {
+            var json = root.path("durations");
+            var lengths = root.path("distances");
             if (!json.isArray() || json.size() != sources.size()) throw new IllegalStateException();
-            var result = new Double[sources.size()][destinations.size()];
+            var cells = new RouteMatrix.Cell[sources.size()][destinations.size()];
             for (int i = 0; i < sources.size(); i++) {
                 if (!json.get(i).isArray() || json.get(i).size() != destinations.size()) throw new IllegalStateException();
                 for (int j = 0; j < destinations.size(); j++) {
                     var entry = json.get(i).get(j);
-                    result[i][j] = entry.isNull() ? null : number(entry);
+                    // A routed pair must come with its distance; a missing one is an invalid response.
+                    cells[i][j] = entry.isNull() ? RouteMatrix.Cell.noRoute()
+                            : RouteMatrix.Cell.route(number(entry), number(lengths.path(i).path(j)));
                 }
             }
-            return result;
+            return new RouteMatrix(cells);
         } catch (RuntimeException error) { throw invalidResponse(); }
     }
 
@@ -140,7 +148,7 @@ public class OpenRouteServiceClient implements RouteProvider {
         double result = finite(value); if (result < 0) throw new IllegalStateException(); return result;
     }
     private static void validateProfile(String profile) {
-        if (!List.of("foot-walking", "cycling-regular").contains(profile)) throw new IllegalArgumentException("지원하지 않는 이동 방식입니다.");
+        if (!List.of(WALKING, CYCLING).contains(profile)) throw new IllegalArgumentException("지원하지 않는 이동 방식입니다.");
     }
     private static RouteException invalidResponse() {
         return new RouteException(HttpStatus.BAD_GATEWAY, "ROUTING_UNAVAILABLE", "경로를 가져오지 못했어요. 잠시 후 다시 시도해 주세요.");

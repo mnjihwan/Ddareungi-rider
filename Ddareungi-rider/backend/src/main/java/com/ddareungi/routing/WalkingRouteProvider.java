@@ -14,5 +14,7 @@ public interface WalkingRouteProvider {
     WalkingRouteProvider forRequest();
     /** Null entries represent unreachable pairs, never zero-minute routes. */
     Double[][] durations(List<Location> sources, List<Location> destinations);
+    /** Durations, distances and per-pair provider failures (A6); failures carry {@code WALK_ROUTE_PROVIDER_ERROR}. */
+    RouteMatrix matrix(List<Location> sources, List<Location> destinations);
     RouteProvider.Leg route(Location from, Location to);
 }
