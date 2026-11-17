@@ -1,5 +1,6 @@
 package com.ddareungi.global.ratelimit;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -31,7 +32,8 @@ public class RateLimitWebConfig implements WebMvcConfigurer {
 
     @Bean
     RateLimitInterceptor rateLimitInterceptor(RateLimitProperties properties, ObjectProvider<Clock> clockProvider,
-                                              ObjectProvider<StringRedisTemplate> redis, Environment environment) {
+                                              ObjectProvider<StringRedisTemplate> redis, Environment environment,
+                                              ObjectProvider<MeterRegistry> meterRegistry) {
         Clock clock = clockProvider.getIfUnique(Clock::systemUTC);
         var local = new LocalTokenBucketRateLimiter(clock, properties.localMaxEntries(),
                 properties.localCleanupInterval());
@@ -42,7 +44,7 @@ public class RateLimitWebConfig implements WebMvcConfigurer {
                 properties.enabled() ? "enabled" : "disabled",
                 properties.policy(RateLimitGroup.STATIONS), properties.policy(RateLimitGroup.PLACES),
                 properties.policy(RateLimitGroup.ROUTES), template == null ? "memory" : "redis");
-        return new RateLimitInterceptor(properties, local, shared);
+        return new RateLimitInterceptor(properties, local, shared, meterRegistry.getIfUnique());
     }
 
     @Override

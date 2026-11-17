@@ -39,3 +39,9 @@ seoul-bike:
     max-pages: 5
     realtime-service: bikeList
     refresh-cron: ${REALTIME_REFRESH_CRON:0 * * * * *}
+
+logging:
+  structured:
+    # One ECS JSON object per line on the console (phase 3 decision 13); the local profile keeps the text format.
+    format:
+      console: ecs
