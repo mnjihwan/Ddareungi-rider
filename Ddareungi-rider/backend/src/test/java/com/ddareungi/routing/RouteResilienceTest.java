@@ -112,7 +112,8 @@ class RouteResilienceTest {
         when(stations.findNearby(origin, 1000)).thenReturn(List.of(station("d", new Location(37.5001, 127.02))));
         when(stations.findNearby(destination, 1000)).thenReturn(List.of(station("a", new Location(37.5201, 127.04))));
         var interrupted = new CountDownLatch(1);
-        when(walking.durations(anyList(), anyList())).thenAnswer(invocation -> {
+        // A6 contract change: the planner reads matrix(..) (durations + distances + per-pair failures), not durations(..).
+        when(walking.matrix(anyList(), anyList())).thenAnswer(invocation -> {
             try { Thread.sleep(10_000); } catch (InterruptedException cancelled) { interrupted.countDown(); throw cancelled; }
             return null;
         });

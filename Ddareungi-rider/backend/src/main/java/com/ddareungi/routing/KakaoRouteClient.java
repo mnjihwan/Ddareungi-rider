@@ -30,6 +30,7 @@ public class KakaoRouteClient implements RouteProvider {
     // Kakao has no matrix endpoint, so each candidate pair is one directions call.
     // Run them concurrently but cap in-flight requests to stay within provider quotas.
     private static final int MAX_PARALLEL_CALLS = 6;
+    public static final String DEFAULT_BASE_URL = "https://dapi.kakao.com";
 
     private final RestClient client;
     private final JsonMapper mapper;
@@ -42,20 +43,35 @@ public class KakaoRouteClient implements RouteProvider {
     }
 
     public KakaoRouteClient(RestClient.Builder builder, JsonMapper mapper, String key, ProviderResilience resilience) {
-        this.client = builder.baseUrl("https://dapi.kakao.com").build();
+        this(builder, mapper, key, resilience, DEFAULT_BASE_URL);
+    }
+
+    /** @param baseUrl {@code kakao.maps.base-url} (A6: externalised so a local stub can stand in for end-to-end runs) */
+    public KakaoRouteClient(RestClient.Builder builder, JsonMapper mapper, String key, ProviderResilience resilience,
+                            String baseUrl) {
+        this.client = builder.baseUrl(baseUrl == null || baseUrl.isBlank() ? DEFAULT_BASE_URL : baseUrl.trim()).build();
         this.mapper = mapper;
         this.key = key.trim();
         this.resilience = resilience;
     }
 
+    /** Production wiring with the default base URL. */
+    public KakaoRouteClient(RestClient.Builder builder, JsonMapper mapper, String key, ProviderHttpProperties http,
+                            ProviderResilience resilience) {
+        this(builder, mapper, key, http, resilience, DEFAULT_BASE_URL);
+    }
+
     // Production wiring: route-specific connect/read timeouts (D8) and the shared walking/bicycle breakers.
     @Autowired
     public KakaoRouteClient(RestClient.Builder builder, JsonMapper mapper,
-            @Value("${kakao.maps.rest-api-key:}") String key, ProviderHttpProperties http, ProviderResilience resilience) {
-        this(builder.requestFactory(http.route().requestFactory()), mapper, key, resilience);
+            @Value("${kakao.maps.rest-api-key:}") String key, ProviderHttpProperties http, ProviderResilience resilience,
+            @Value("${kakao.maps.base-url:" + DEFAULT_BASE_URL + "}") String baseUrl) {
+        this(builder.requestFactory(http.route().requestFactory()), mapper, key, resilience, baseUrl);
     }
     @Override public boolean configured() { return !key.isBlank(); }
     @Override public String attribution() { return "경로 제공 · Kakao Maps"; }
+    /** {@code route_mode=BIKE_ONLY} (bike roads preferred) or {@code SHORTEST}: see {@link #directions}. */
+    @Override public boolean supportsBikeRoadPreference() { return true; }
 
     // This object exists only for one planning request. No cross-request cache or storage.
     @Override public RouteProvider forRequest() {
@@ -65,6 +81,7 @@ public class KakaoRouteClient implements RouteProvider {
             private final ConcurrentHashMap<Pair, CompletableFuture<Leg>> legs = new ConcurrentHashMap<>();
             @Override public boolean configured() { return KakaoRouteClient.this.configured(); }
             @Override public String attribution() { return KakaoRouteClient.this.attribution(); }
+            @Override public boolean supportsBikeRoadPreference() { return KakaoRouteClient.this.supportsBikeRoadPreference(); }
             @Override public Leg directions(String profile, Location from, Location to) {
                 var pair = new Pair(profile, from, to);
                 var created = new CompletableFuture<Leg>();
@@ -97,59 +114,70 @@ public class KakaoRouteClient implements RouteProvider {
                 if (leg == null) throw noRoad();
                 return leg;
             }
-            @Override public Double[][] durations(String profile, List<Location> sources, List<Location> destinations) {
-                return matrix(this, profile, sources, destinations);
+            @Override public RouteMatrix matrix(String profile, List<Location> sources, List<Location> destinations) {
+                return KakaoRouteClient.matrix(this, profile, sources, destinations);
             }
         };
     }
+    // The profile carries the route mode (walk, BIKE_ONLY, SHORTEST), so the per-request cache never mixes modes.
     private record Pair(String profile, Location from, Location to) {}
-    private record Cell(int row, int column, Future<Double> duration) {}
+    private record Pending(int row, int column, Future<RouteMatrix.Cell> cell) {}
 
-    @Override public Double[][] durations(String profile, List<Location> sources, List<Location> destinations) {
+    @Override public RouteMatrix matrix(String profile, List<Location> sources, List<Location> destinations) {
         return matrix(this, profile, sources, destinations);
     }
 
-    private static Double[][] matrix(RouteProvider provider, String profile, List<Location> sources, List<Location> destinations) {
-        var result = new Double[sources.size()][destinations.size()];
+    /**
+     * One directions call per pair. A6: a provider failure of one pair is recorded in its cell instead of cancelling
+     * the comparison, so the search can still answer with the other pairs (spec 13.1 partial results). The number of
+     * calls is unchanged (one per pair; the caller keeps the 6 + 9 = 15 budget).
+     */
+    private static RouteMatrix matrix(RouteProvider provider, String profile, List<Location> sources, List<Location> destinations) {
+        var result = new RouteMatrix.Cell[sources.size()][destinations.size()];
         int total = sources.size() * destinations.size();
-        if (total == 0) return result;
+        if (total == 0) return new RouteMatrix(result);
         if (total == 1) {
-            result[0][0] = duration(provider, profile, sources.getFirst(), destinations.getFirst());
-            return result;
+            result[0][0] = cell(provider, profile, sources.getFirst(), destinations.getFirst());
+            return new RouteMatrix(result);
         }
         var permits = new Semaphore(MAX_PARALLEL_CALLS);
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            var cells = new ArrayList<Cell>(total);
+            var cells = new ArrayList<Pending>(total);
             for (int i = 0; i < sources.size(); i++) for (int j = 0; j < destinations.size(); j++) {
                 var from = sources.get(i);
                 var to = destinations.get(j);
                 // Carry the request id (MDC) and plan deadline into each virtual thread.
-                cells.add(new Cell(i, j, executor.submit(ContextPropagation.wrap(() -> {
+                cells.add(new Pending(i, j, executor.submit(ContextPropagation.wrap(() -> {
                     permits.acquire();
-                    try { return duration(provider, profile, from, to); }
+                    try { return cell(provider, profile, from, to); }
                     finally { permits.release(); }
                 }))));
             }
             try {
-                for (var cell : cells) result[cell.row()][cell.column()] = await(cell.duration());
+                for (var cell : cells) result[cell.row()][cell.column()] = await(cell.cell());
             } catch (RuntimeException error) {
-                // Quota/auth/upstream failures abort the whole comparison, as in the sequential version.
-                cells.forEach(cell -> cell.duration().cancel(true));
+                // Only programming errors and interruption (the plan deadline) end the comparison early now.
+                cells.forEach(cell -> cell.cell().cancel(true));
                 throw error;
             }
         }
-        return result;
+        return new RouteMatrix(result);
     }
 
-    private static Double duration(RouteProvider provider, String profile, Location from, Location to) {
-        try { return provider.directions(profile, from, to).durationSeconds(); }
-        catch (RouteException error) {
-            if (!error.code.equals("NO_ROAD_ROUTE")) throw error;
-            return null;
+    private static RouteMatrix.Cell cell(RouteProvider provider, String profile, Location from, Location to) {
+        try {
+            var leg = provider.directions(profile, from, to);
+            return RouteMatrix.Cell.route(leg.durationSeconds(), leg.distanceMeters());
+        } catch (RouteException error) {
+            return error.code.equals("NO_ROAD_ROUTE") ? RouteMatrix.Cell.noRoute() : RouteMatrix.Cell.failed(error);
+        } catch (IllegalArgumentException error) {
+            throw error;
+        } catch (RuntimeException error) {
+            return RouteMatrix.Cell.failed(unavailable());
         }
     }
 
-    private static Double await(Future<Double> future) {
+    private static RouteMatrix.Cell await(Future<RouteMatrix.Cell> future) {
         try { return future.get(); }
         catch (InterruptedException error) {
             Thread.currentThread().interrupt();
@@ -172,10 +200,13 @@ public class KakaoRouteClient implements RouteProvider {
 
     @Override public Leg directions(String profile, Location from, Location to) {
         boolean walk = switch (profile) {
-            case "foot-walking" -> true;
-            case "cycling-regular" -> false;
+            case WALKING -> true;
+            case CYCLING, CYCLING_SHORTEST -> false;
             default -> throw new IllegalArgumentException("지원하지 않는 이동 방식입니다.");
         };
+        // Kakao bicycle route_mode: BIKE_ONLY prefers bike roads (default, preferBikeRoad=true), SHORTEST does not.
+        // [unverified against the live API] SHORTEST is taken from the phase 3 plan decision 5.
+        String mode = walk ? "BROAD_FIRST" : profile.equals(CYCLING_SHORTEST) ? "SHORTEST" : "BIKE_ONLY";
         if (!configured()) throw new RouteException(HttpStatus.SERVICE_UNAVAILABLE, "ROUTING_NOT_CONFIGURED", "길찾기 연결을 준비하고 있어요.");
         if (from.distanceTo(to) < 0.5) return new Leg(walk ? "walk" : "bicycle", 0, 0, List.of(from, to), List.of());
         JsonNode body;
@@ -186,7 +217,7 @@ public class KakaoRouteClient implements RouteProvider {
                     .queryParam("start_x", from.longitude()).queryParam("start_y", from.latitude())
                     .queryParam("end_x", to.longitude()).queryParam("end_y", to.latitude())
                     .queryParam("input_coord", "WGS84").queryParam("output_coord", "WGS84")
-                    .queryParam("route_mode", walk ? "BROAD_FIRST" : "BIKE_ONLY").build())
+                    .queryParam("route_mode", mode).build())
                     .header("Authorization", "KakaoAK " + key).retrieve().body(String.class), true);
             if (response == null || response.isBlank()) throw new IllegalStateException();
             body = mapper.readTree(response);

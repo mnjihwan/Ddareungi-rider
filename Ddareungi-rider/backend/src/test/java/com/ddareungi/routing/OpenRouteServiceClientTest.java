@@ -33,10 +33,11 @@ class OpenRouteServiceClientTest {
         assertThat(leg.path().getFirst()).isEqualTo(from);assertThat(leg.steps().getFirst().instruction()).isEqualTo("강남대로 · 직진하세요");
         assertThat(leg.distanceMeters()).isEqualTo(200); server.verify();
     }
+    // A6 contract change: the matrix also asks for distances (maxWalkingDistanceMeters, distance tie-break).
     @Test void matrixNullMeansUnreachableAndIndicesAreCorrect() {
         server.expect(requestTo("https://api.heigit.org/openrouteservice/v2/matrix/cycling-regular"))
             .andExpect(content().json("""
-                {"locations":[[127.02,37.5],[127.021,37.501]],"sources":["0"],"destinations":["1"],"metrics":["duration"]}
+                {"locations":[[127.02,37.5],[127.021,37.501]],"sources":["0"],"destinations":["1"],"metrics":["duration","distance"]}
                 """))
             .andRespond(withSuccess("{\"durations\":[[null]]}",MediaType.APPLICATION_JSON));
         assertThat(client.durations("cycling-regular",List.of(from),List.of(to))[0][0]).isNull();server.verify();

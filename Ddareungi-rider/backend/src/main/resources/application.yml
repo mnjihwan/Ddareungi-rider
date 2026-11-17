@@ -49,10 +49,15 @@ routing:
   enabled: true
   ors:
     api-key: ${ORS_API_KEY:}
+  # A6 route search: automatic station candidates per side (1..3; 3 keeps Kakao at 6 + 9 = 15 calls per search).
+  search:
+    max-station-candidates: ${ROUTING_SEARCH_MAX_STATION_CANDIDATES:3}
 
 kakao:
   maps:
     rest-api-key: ${KAKAO_MAPS_REST_API_KEY:}
+    # Routing API base URL; overridable so a local stub can stand in for end-to-end runs.
+    base-url: ${KAKAO_MAPS_BASE_URL:https://dapi.kakao.com}
 
 realtime:
   # FRESH/STALE/UNAVAILABLE boundaries (API spec v5 11.0, X3). Validated at startup: 0 < fresh < max-stale.

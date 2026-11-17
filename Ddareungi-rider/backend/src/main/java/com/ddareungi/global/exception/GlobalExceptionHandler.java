@@ -4,6 +4,7 @@ import com.ddareungi.global.response.ApiErrorResponse;
 import com.ddareungi.global.response.ApiErrorResponse.Detail;
 import com.ddareungi.global.web.RequestIdFilter;
 import com.ddareungi.routing.RouteException;
+import com.ddareungi.routing.web.RequestBodyLimit;
 import com.ddareungi.station.domain.Location.InvalidCoordinateException;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
@@ -168,8 +169,14 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                 code = ErrorCode.INVALID_PARAMETER;
             }
             case HttpMessageNotReadableException unreadable -> {
-                code = causedByInvalidCoordinate(unreadable) ? ErrorCode.INVALID_COORDINATE : ErrorCode.INVALID_PARAMETER;
-                if (code == ErrorCode.INVALID_PARAMETER) message = "요청 본문을 읽을 수 없습니다.";
+                // A6: a body without Content-Length that runs past the 16 KiB limit (RequestBodyLimit) is 413.
+                if (causedBy(unreadable, RequestBodyLimit.PayloadTooLargeException.class)) {
+                    code = ErrorCode.PAYLOAD_TOO_LARGE;
+                    statusCode = code.status();
+                } else {
+                    code = causedByInvalidCoordinate(unreadable) ? ErrorCode.INVALID_COORDINATE : ErrorCode.INVALID_PARAMETER;
+                    if (code == ErrorCode.INVALID_PARAMETER) message = "요청 본문을 읽을 수 없습니다.";
+                }
             }
             default -> code = codeForStatus(statusCode);
         }
@@ -237,6 +244,14 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                     details.add(new Detail(name == null ? "" : name, reason(error.getDefaultMessage()))));
         });
         return details;
+    }
+
+    private static boolean causedBy(Throwable exception, Class<? extends Throwable> type) {
+        for (Throwable cause = exception; cause != null; cause = cause.getCause()) {
+            if (type.isInstance(cause)) return true;
+            if (cause.getCause() == cause) break;
+        }
+        return false;
     }
 
     private static boolean causedByInvalidCoordinate(Throwable exception) {

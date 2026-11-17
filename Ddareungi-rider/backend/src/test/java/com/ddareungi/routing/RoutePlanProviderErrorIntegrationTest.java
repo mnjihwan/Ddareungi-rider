@@ -68,7 +68,8 @@ class RoutePlanProviderErrorIntegrationTest {
     @ParameterizedTest
     @ValueSource(strings = {"ROUTING_UNAVAILABLE", "ROUTING_LIMIT", "ROUTING_AUTH"})
     void walkingLegProviderFailureIsWalkRouteProviderError(String engineCode) throws Exception {
-        when(engine.durations(eq(EngineWalkingRouteProvider.PROFILE), anyList(), anyList()))
+        // A6 contract change: the planner reads matrix(..) (durations + distances + per-pair failures), not durations(..).
+        when(engine.matrix(eq(EngineWalkingRouteProvider.PROFILE), anyList(), anyList()))
                 .thenThrow(new RouteException(HttpStatus.BAD_GATEWAY, engineCode, "도보 경로 공급자 오류"));
 
         failure(plan(), "WALK_ROUTE_PROVIDER_ERROR");
@@ -77,9 +78,11 @@ class RoutePlanProviderErrorIntegrationTest {
     @ParameterizedTest
     @ValueSource(strings = {"ROUTING_UNAVAILABLE", "ROUTING_LIMIT", "ROUTING_AUTH"})
     void cyclingLegProviderFailureIsBikeRouteProviderError(String engineCode) throws Exception {
-        when(engine.durations(eq(EngineWalkingRouteProvider.PROFILE), anyList(), anyList()))
-                .thenReturn(new Double[][]{{60.0}});
-        when(engine.durations(eq(EngineBicycleRouteProvider.PROFILE), anyList(), anyList()))
+        // A6 contract change: the planner reads matrix(..) (durations + distances + per-pair failures), not durations(..).
+        when(engine.matrix(eq(EngineWalkingRouteProvider.PROFILE), anyList(), anyList()))
+                .thenReturn(RouteMatrix.of(new Double[][]{{60.0}}, new Double[][]{{60.0}}));
+        // A6 contract change: the planner reads matrix(..) (durations + distances + per-pair failures), not durations(..).
+        when(engine.matrix(eq(EngineBicycleRouteProvider.PROFILE), anyList(), anyList()))
                 .thenThrow(new RouteException(HttpStatus.BAD_GATEWAY, engineCode, "자전거 경로 공급자 오류"));
 
         failure(plan(), "BIKE_ROUTE_PROVIDER_ERROR");
@@ -87,7 +90,8 @@ class RoutePlanProviderErrorIntegrationTest {
 
     @Test
     void walkingDirectionsFailureAfterMatrixIsWalkRouteProviderError() throws Exception {
-        when(engine.durations(any(), anyList(), anyList())).thenReturn(new Double[][]{{60.0}});
+        // A6 contract change: the planner reads matrix(..) (durations + distances + per-pair failures), not durations(..).
+        when(engine.matrix(any(), anyList(), anyList())).thenReturn(RouteMatrix.of(new Double[][]{{60.0}}, new Double[][]{{60.0}}));
         when(engine.directions(eq(EngineWalkingRouteProvider.PROFILE), any(), any()))
                 .thenThrow(new RouteException(HttpStatus.TOO_MANY_REQUESTS, "ROUTING_LIMIT", "도보 경로 공급자 오류"));
 

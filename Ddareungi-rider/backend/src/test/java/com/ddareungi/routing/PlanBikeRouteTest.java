@@ -15,6 +15,11 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
+/**
+ * A6 contract change: the planner now reads {@code matrix(..)} (durations + distances + per-pair failures) instead of
+ * {@code durations(..)}, so the stubs and verifications below moved from {@code durations} to {@code matrix} with
+ * the same values ({@link #m} gives every routed pair a distance equal to its duration). The expectations are unchanged.
+ */
 class PlanBikeRouteTest {
     StationSearchPort stations = mock(StationSearchPort.class);
     WalkingRouteProvider walking = mock(WalkingRouteProvider.class);
@@ -37,9 +42,9 @@ class PlanBikeRouteTest {
         when(stations.findByIds(anyList(),eq(origin))).thenAnswer(invocation -> {
             List<String> ids=invocation.getArgument(0); return List.of(ids.contains("d1")?d1:d2);
         });
-        when(walking.durations(eq(List.of(origin)),anyList())).thenReturn(new Double[][]{{50.0,100.0}});
-        when(walking.durations(anyList(),eq(List.of(destination)))).thenReturn(new Double[][]{{200.0},{20.0}});
-        when(bicycle.durations(anyList(),anyList())).thenReturn(new Double[][]{{600.0,800.0},{500.0,400.0}});
+        when(walking.matrix(eq(List.of(origin)),anyList())).thenReturn(m(new Double[][]{{50.0,100.0}}));
+        when(walking.matrix(anyList(),eq(List.of(destination)))).thenReturn(m(new Double[][]{{200.0},{20.0}}));
+        when(bicycle.matrix(anyList(),anyList())).thenReturn(m(new Double[][]{{600.0,800.0},{500.0,400.0}}));
         when(walking.route(any(),any())).thenAnswer(invocation->new RouteProvider.Leg("walk",150,60,
                 List.of(invocation.getArgument(0),invocation.getArgument(1)),List.of()));
         when(bicycle.route(any(),any())).thenAnswer(invocation->new RouteProvider.Leg("bicycle",150,60,
@@ -53,8 +58,8 @@ class PlanBikeRouteTest {
         assertThat(plan.distanceMeters()).isEqualTo(450); assertThat(plan.durationSeconds()).isEqualTo(180);
         assertThat(plan.attribution()).isEqualTo("경로 제공 · Kakao Maps");
         // Three matrices in total: two walking (first/last mile) and one cycling.
-        verify(walking,times(2)).durations(anyList(),anyList());
-        verify(bicycle,times(1)).durations(anyList(),anyList());
+        verify(walking,times(2)).matrix(anyList(),anyList());
+        verify(bicycle,times(1)).matrix(anyList(),anyList());
         // Three legs in total: walk, ride, walk — each on its own provider.
         verify(walking).route(origin,d2.location());
         verify(bicycle).route(d2.location(),a2.location());
@@ -72,20 +77,20 @@ class PlanBikeRouteTest {
             station("empty",d1.location(),0,Instant.now()),station("unknown",d1.location(),null,Instant.now()),
             station("stale",d1.location(),10,Instant.now().minusSeconds(301)),d1));
         when(stations.findNearby(destination,1000)).thenReturn(List.of(a1));
-        when(walking.durations(eq(List.of(origin)),anyList())).thenReturn(new Double[][]{{50.0}});
-        when(walking.durations(anyList(),eq(List.of(destination)))).thenReturn(new Double[][]{{20.0}});
-        when(bicycle.durations(anyList(),anyList())).thenReturn(new Double[][]{{400.0}});
+        when(walking.matrix(eq(List.of(origin)),anyList())).thenReturn(m(new Double[][]{{50.0}}));
+        when(walking.matrix(anyList(),eq(List.of(destination)))).thenReturn(m(new Double[][]{{20.0}}));
+        when(bicycle.matrix(anyList(),anyList())).thenReturn(m(new Double[][]{{400.0}}));
         assertThat(planner.execute(origin,destination,null).arrivalStation().availableBikeCount()).isZero();
-        verify(bicycle).durations(List.of(d1.location()),List.of(a1.location()));
+        verify(bicycle).matrix(List.of(d1.location()),List.of(a1.location()));
     }
     @Test void stopsBeforeRoutingWhenNoRentableStation() {
         when(stations.findNearby(origin,1000)).thenReturn(List.of(station("empty",d1.location(),0,Instant.now())));
         assertCode("NO_RENTAL_BIKES");
-        verify(walking,never()).durations(anyList(),anyList());
-        verify(bicycle,never()).durations(anyList(),anyList());
+        verify(walking,never()).matrix(anyList(),anyList());
+        verify(bicycle,never()).matrix(anyList(),anyList());
     }
     @Test void rejectsUnreachablePairsInsteadOfInventingStraightLineRoutes() {
-        when(bicycle.durations(anyList(),anyList())).thenReturn(new Double[][]{{null,null},{null,null}});
+        when(bicycle.matrix(anyList(),anyList())).thenReturn(m(new Double[][]{{null,null},{null,null}}));
         assertCode("NO_CONNECTED_ROUTE");
         verify(walking,never()).route(any(),any());
         verify(bicycle,never()).route(any(),any());
@@ -106,10 +111,10 @@ class PlanBikeRouteTest {
         verifyNoInteractions(stations);
     }
     @Test void segmentProviderErrorsPropagateWithTheirOwnCode() {
-        when(bicycle.durations(anyList(),anyList())).thenThrow(
+        when(bicycle.matrix(anyList(),anyList())).thenThrow(
                 new RouteException(HttpStatus.BAD_GATEWAY,"BIKE_ROUTE_PROVIDER_ERROR","경로를 가져오지 못했어요."));
         assertCode("BIKE_ROUTE_PROVIDER_ERROR");
-        when(walking.durations(eq(List.of(origin)),anyList())).thenThrow(
+        when(walking.matrix(eq(List.of(origin)),anyList())).thenThrow(
                 new RouteException(HttpStatus.BAD_GATEWAY,"WALK_ROUTE_PROVIDER_ERROR","경로를 가져오지 못했어요."));
         assertCode("WALK_ROUTE_PROVIDER_ERROR");
     }
@@ -153,7 +158,7 @@ class PlanBikeRouteTest {
         var remote = new Location(38.1,127.04);
         assertThat(origin.distanceTo(remote)).isGreaterThan(50_000);
         when(stations.findNearby(remote,1000)).thenReturn(List.of(station("remote1",remote,0,Instant.now()),station("remote2",remote,0,Instant.now())));
-        when(walking.durations(anyList(),eq(List.of(remote)))).thenReturn(new Double[][]{{200.0},{20.0}});
+        when(walking.matrix(anyList(),eq(List.of(remote)))).thenReturn(m(new Double[][]{{200.0},{20.0}}));
         assertThat(planner.execute(origin,remote,null).destination()).isEqualTo(remote);
         verify(walking).route(remote,remote);
     }
@@ -195,12 +200,12 @@ class PlanBikeRouteTest {
         when(stations.findByIds(anyList(),eq(origin))).thenAnswer(invocation -> {
             List<String> ids=invocation.getArgument(0); return ids.contains(candidate.stationId())?List.of(candidate):List.of(reference);
         });
-        when(walking.durations(eq(List.of(origin)),anyList())).thenAnswer(invocation -> {
-            List<?> to=invocation.getArgument(1); return to.size()==2?new Double[][]{{10.0,500.0}}:new Double[][]{{500.0}};
+        when(walking.matrix(eq(List.of(origin)),anyList())).thenAnswer(invocation -> {
+            List<?> to=invocation.getArgument(1); return to.size()==2?m(new Double[][]{{10.0,500.0}}):m(new Double[][]{{500.0}});
         });
-        when(walking.durations(anyList(),eq(List.of(destination)))).thenReturn(new Double[][]{{20.0}});
-        when(bicycle.durations(anyList(),anyList())).thenAnswer(invocation -> {
-            List<?> from=invocation.getArgument(0); return from.size()==2?new Double[][]{{100.0},{100.0}}:new Double[][]{{100.0}};
+        when(walking.matrix(anyList(),eq(List.of(destination)))).thenReturn(m(new Double[][]{{20.0}}));
+        when(bicycle.matrix(anyList(),anyList())).thenAnswer(invocation -> {
+            List<?> from=invocation.getArgument(0); return from.size()==2?m(new Double[][]{{100.0},{100.0}}):m(new Double[][]{{100.0}});
         });
     }
     private String departureFor(int ageSeconds) {
@@ -212,7 +217,7 @@ class PlanBikeRouteTest {
     @Test void departureAgedExactly120sIsStillFresh() { assertThat(departureFor(120)).isEqualTo("cand"); }
     @Test void departureAged121sIsStaleAndExcluded() {
         assertThat(departureFor(121)).isEqualTo("d1");
-        verify(bicycle).durations(List.of(d1.location()),List.of(a1.location()));
+        verify(bicycle).matrix(List.of(d1.location()),List.of(a1.location()));
     }
     @Test void fractionalAgeIsFlooredSo120point9sIsFresh() {
         var candidate = station("cand",new Location(37.50005,127.02),4,NOW.minusMillis(120_900));
@@ -246,18 +251,18 @@ class PlanBikeRouteTest {
         var pinned = station("p",d1.location(),5,NOW.minusSeconds(120));
         when(stations.findByIds(List.of("p"),origin)).thenReturn(List.of(pinned));
         when(stations.findNearby(destination,1000)).thenReturn(List.of(station("a2",a2.location(),20,NOW)));
-        when(walking.durations(eq(List.of(origin)),anyList())).thenReturn(new Double[][]{{50.0}});
-        when(walking.durations(anyList(),eq(List.of(destination)))).thenReturn(new Double[][]{{20.0}});
-        when(bicycle.durations(anyList(),anyList())).thenReturn(new Double[][]{{400.0}});
+        when(walking.matrix(eq(List.of(origin)),anyList())).thenReturn(m(new Double[][]{{50.0}}));
+        when(walking.matrix(anyList(),eq(List.of(destination)))).thenReturn(m(new Double[][]{{20.0}}));
+        when(bicycle.matrix(anyList(),anyList())).thenReturn(m(new Double[][]{{400.0}}));
         assertThat(fixedPlanner().execute(origin,destination,"p").departureStation().stationId()).isEqualTo("p");
     }
     /** One FRESH departure d1 and the matrices for one departure × one arrival. */
     private void singleFreshDeparture() {
         when(stations.findNearby(origin,1000)).thenReturn(List.of(station("d1",d1.location(),3,NOW)));
         when(stations.findByIds(anyList(),eq(origin))).thenReturn(List.of(station("d1",d1.location(),3,NOW)));
-        when(walking.durations(eq(List.of(origin)),anyList())).thenReturn(new Double[][]{{50.0}});
-        when(walking.durations(anyList(),eq(List.of(destination)))).thenReturn(new Double[][]{{20.0}});
-        when(bicycle.durations(anyList(),anyList())).thenReturn(new Double[][]{{400.0}});
+        when(walking.matrix(eq(List.of(origin)),anyList())).thenReturn(m(new Double[][]{{50.0}}));
+        when(walking.matrix(anyList(),eq(List.of(destination)))).thenReturn(m(new Double[][]{{20.0}}));
+        when(bicycle.matrix(anyList(),anyList())).thenReturn(m(new Double[][]{{400.0}}));
     }
     // Review M3(a): this case used to expect 503 (FRESH required for a pinned return). Spec 11.0 only excludes
     // UNAVAILABLE return stations, so a STALE pinned return (121 s and 600 s) is accepted; 601 s is rejected.
@@ -283,10 +288,10 @@ class PlanBikeRouteTest {
                 station("staleReturn",a2.location(),20,NOW.minusSeconds(121)),
                 station("a1",a1.location(),0,NOW.minusSeconds(120))));
         // Ends are sorted by distance to the destination: a1 (about 11 m) before staleReturn (about 111 m).
-        when(walking.durations(anyList(),eq(List.of(destination)))).thenReturn(new Double[][]{{5.0},{20.0}});
-        when(bicycle.durations(anyList(),anyList())).thenReturn(new Double[][]{{400.0,400.0}});
+        when(walking.matrix(anyList(),eq(List.of(destination)))).thenReturn(m(new Double[][]{{5.0},{20.0}}));
+        when(bicycle.matrix(anyList(),anyList())).thenReturn(m(new Double[][]{{400.0,400.0}}));
         assertThat(fixedPlanner().execute(origin,destination,null).arrivalStation().stationId()).isEqualTo("a1");
-        verify(bicycle).durations(List.of(d1.location()),List.of(a1.location(),a2.location()));
+        verify(bicycle).matrix(List.of(d1.location()),List.of(a1.location(),a2.location()));
     }
     @Test void staleReturnCandidateCanBeTheChosenArrival() {
         singleFreshDeparture();
@@ -361,6 +366,8 @@ class PlanBikeRouteTest {
                 new RealtimeFreshnessPolicy(Clock.fixed(NOW,ZoneOffset.UTC),300,600));
         assertThat(lenient.execute(origin,destination,null).departureStation().stationId()).isEqualTo("cand");
     }
+    /** Matrix with the given durations; routed pairs get a distance in metres equal to their duration. */
+    static RouteMatrix m(Double[][] durations) { return RouteMatrix.of(durations, durations); }
     private void assertCode(String code) { assertThatThrownBy(()->planner.execute(origin,destination,null))
             .isInstanceOfSatisfying(RouteException.class,e->assertThat(e.code).isEqualTo(code)); }
     private static Station station(String id,Location location,Integer stock,Instant time) {
