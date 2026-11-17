@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Fake docker for the deploy.sh harness. State lives in $FAKE_STATE/containers/<name>/.
+# Knobs: FAKE_READY_FAIL_COLOR=blue|green  -> readiness probe (docker exec ... curl) fails for that color
+#        FAKE_EXIT_ON_START_COLOR=...      -> container of that color is "exited" right after start
+#        FAKE_PULL_FAIL=1                  -> docker pull fails
+set -euo pipefail
+S=${FAKE_STATE:?}
+mkdir -p "$S/containers" "$S/networks"
+echo "docker $*" >>"$S/calls.log"
+cmd=$1; shift
+C="$S/containers"
+case $cmd in
+  login) cat >/dev/null; echo "Login Succeeded" ;;
+  pull)
+    [[ ${FAKE_PULL_FAIL:-0} == 1 ]] && { echo "pull failed" >&2; exit 1; }
+    ref=${*: -1}; touch "$S/pulled"; echo "$ref" >>"$S/pulled"; echo "$ref" ;;
+  inspect)
+    fmt=""; if [[ ${1:-} == -f ]]; then fmt=$2; shift 2; fi
+    name=$1; d="$C/$name"
+    [[ -d $d ]] || { echo "Error: No such object: $name" >&2; exit 1; }
+    case $fmt in
+      *State.Running*) cat "$d/running" ;;
+      *Config.Image*) cat "$d/image" ;;
+      *) echo "[{\"Name\":\"/$name\"}]" ;;
+    esac ;;
+  network)
+    sub=$1; name=$2
+    case $sub in
+      inspect) [[ -f $S/networks/$name ]] || exit 1 ;;
+      create) touch "$S/networks/$name"; echo "net-$name" ;;
+    esac ;;
+  run)
+    name=""; color=""; port=""; args=("$@")
+    while [[ $# -gt 0 ]]; do
+      case $1 in
+        --name) name=$2; shift 2 ;;
+        -p) port=${2#127.0.0.1:}; port=${port%%:*}; shift 2 ;;
+        --label) [[ $2 == ddareungi.color=* ]] && color=${2#ddareungi.color=}; shift 2 ;;
+        --env-file)
+          [[ -f $2 ]] || { echo "env file not found: $2" >&2; exit 125; }
+          mkdir -p "$S/envfiles"; cp "$2" "$S/envfiles/$(basename "$2")"; shift 2 ;;
+        -d) shift ;;
+        --network|--restart|-e) shift 2 ;;
+        *) image=$1; shift ;;
+      esac
+    done
+    [[ -n $name ]] || { echo "no --name" >&2; exit 1; }
+    [[ -d $C/$name ]] && { echo "Conflict. The container name \"/$name\" is already in use" >&2; exit 125; }
+    mkdir -p "$C/$name"
+    echo "$image" >"$C/$name/image"; echo "$port" >"$C/$name/port"; echo "$color" >"$C/$name/color"
+    printf '%s\n' "${args[@]}" >"$C/$name/args"
+    if [[ ${FAKE_EXIT_ON_START_COLOR:-} == "$color" ]]; then echo false >"$C/$name/running"; else echo true >"$C/$name/running"; fi
+    echo "cid-$name" ;;
+  exec)
+    name=$1; d="$C/$name"
+    [[ -d $d && $(cat "$d/running") == true ]] || { echo "container not running" >&2; exit 1; }
+    if [[ ${FAKE_READY_FAIL_COLOR:-} == "$(cat "$d/color")" ]]; then exit 22; fi
+    exit 0 ;;
+  logs) echo "(fake logs of ${*: -1})" ;;
+  rm)
+    [[ ${1:-} == -f ]] && shift
+    for n in "$@"; do rm -rf "${C:?}/$n"; done ;;
+  stop)
+    [[ ${1:-} == -t ]] && shift 2
+    name=$1; [[ -d $C/$name ]] || exit 1; echo false >"$C/$name/running"; echo "$name" ;;
+  create)
+    name=""; while [[ $# -gt 0 ]]; do case $1 in --name) name=$2; shift 2 ;; *) img=${img:-$1}; shift ;; esac; done
+    mkdir -p "$C/$name"; echo "$img" >"$C/$name/image"; echo false >"$C/$name/running"; echo "" >"$C/$name/color"
+    echo "cid-$name" ;;
+  cp)
+    src=$1; dest=$2; name=${src%%:*}
+    [[ -d $C/$name ]] || exit 1
+    mkdir -p "$dest/assets"
+    echo "<html>$(cat "$C/$name/image")</html>" >"$dest/index.html"
+    echo "console.log(1)" >"$dest/assets/app-abc123.js" ;;
+  image) exit 0 ;;
+  *) echo "fake docker: unsupported $cmd" >&2; exit 1 ;;
+esac

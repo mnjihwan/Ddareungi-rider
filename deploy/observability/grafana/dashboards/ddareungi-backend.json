@@ -1,0 +1,413 @@
+{
+  "uid": "ddareungi-backend",
+  "title": "ddareungrider backend (draft)",
+  "description": "Draft: meter names follow docs/phase3-2026-11-17.md O8 (ddareungi.provider.calls, ddareungi.realtime.*); verify against /actuator/prometheus after O8 is merged.",
+  "tags": [
+    "ddareungi",
+    "draft"
+  ],
+  "timezone": "Asia/Seoul",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Backend up (by color)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "ddareungi-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "ddareungi-prometheus"
+          },
+          "expr": "up{job=\"ddareungi-backend\"}",
+          "legendFormat": "{{color}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "API requests/s by status",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "ddareungi-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "ddareungi-prometheus"
+          },
+          "expr": "sum by (status) (rate(http_server_requests_seconds_count{job=\"ddareungi-backend\",uri=~\"/api/.*\"}[5m]))",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "API p95 latency by uri",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "ddareungi-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "ddareungi-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, uri) (rate(http_server_requests_seconds_bucket{job=\"ddareungi-backend\",uri=~\"/api/.*\"}[5m])))",
+          "legendFormat": "{{uri}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "HTTP 429 and rate-limit rejections",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "ddareungi-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "ddareungi-prometheus"
+          },
+          "expr": "sum(rate(http_server_requests_seconds_count{job=\"ddareungi-backend\",status=\"429\"}[5m]))",
+          "legendFormat": "http 429"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "ddareungi-prometheus"
+          },
+          "expr": "sum by (group) (rate(ddareungi_ratelimit_rejected_total{job=\"ddareungi-backend\"}[5m]))",
+          "legendFormat": "rejected {{group}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Provider calls/s by outcome",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "ddareungi-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "ddareungi-prometheus"
+          },
+          "expr": "sum by (provider, outcome) (rate(ddareungi_provider_calls_seconds_count{job=\"ddareungi-backend\"}[5m]))",
+          "legendFormat": "{{provider}} {{outcome}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Provider p95 latency (needs histogram buckets)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "ddareungi-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "ddareungi-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, provider) (rate(ddareungi_provider_calls_seconds_bucket{job=\"ddareungi-backend\"}[5m])))",
+          "legendFormat": "{{provider}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Provider circuit state",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "ddareungi-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "ddareungi-prometheus"
+          },
+          "expr": "ddareungi_provider_circuit_state{job=\"ddareungi-backend\"}",
+          "legendFormat": "{{provider}} {{state}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Realtime snapshot age",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "ddareungi-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 120
+              },
+              {
+                "color": "red",
+                "value": 600
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "ddareungi-prometheus"
+          },
+          "expr": "max(ddareungi_realtime_snapshot_age_seconds{job=\"ddareungi-backend\"})",
+          "legendFormat": "age"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Realtime stations by status",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "ddareungi-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "ddareungi-prometheus"
+          },
+          "expr": "sum by (status) (ddareungi_realtime_stations{job=\"ddareungi-backend\"})",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Station catalog size / age",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "ddareungi-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 24
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "ddareungi-prometheus"
+          },
+          "expr": "max(ddareungi_station_catalog_size{job=\"ddareungi-backend\"})",
+          "legendFormat": "size"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "ddareungi-prometheus"
+          },
+          "expr": "max({__name__=~\"ddareungi_station_catalog_age.*\",job=\"ddareungi-backend\"})",
+          "legendFormat": "age"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "JVM heap used",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "ddareungi-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 24
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "ddareungi-prometheus"
+          },
+          "expr": "sum by (instance) (jvm_memory_used_bytes{job=\"ddareungi-backend\",area=\"heap\"})",
+          "legendFormat": "{{instance}}"
+        }
+      ]
+    }
+  ]
+}

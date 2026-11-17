@@ -1,0 +1,33 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "EcrAuthToken",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"
+    },
+    {
+      "Sid": "EcrPullOnly",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer"
+      ],
+      "Resource": [
+        "arn:aws:ecr:<REGION>:<ACCOUNT_ID>:repository/<ECR_BACKEND_REPOSITORY>",
+        "arn:aws:ecr:<REGION>:<ACCOUNT_ID>:repository/<ECR_WEB_REPOSITORY>"
+      ]
+    },
+    {
+      "Sid": "ReadBackendSecrets",
+      "Effect": "Allow",
+      "Action": "ssm:GetParametersByPath",
+      "Resource": [
+        "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/ddareungi/production/backend",
+        "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/ddareungi/production/backend/*"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+# Prometheus + Grafana on the EC2 host (phase 3 default #12). Both bind to 127.0.0.1 only; view them through
+# an SSM port-forwarding session (docs/deploy-ec2.md). Run from this directory:
+#   docker compose --env-file /etc/ddareungi/observability.env up -d
+# Prometheus scrapes the backend containers over the shared docker network (actuator port 8090 is never
+# published to the host). Requires the backend to expose `prometheus` on the management port (O8).
+# Image tags are an assumption - confirm they exist before the first run.
+name: ddareungi-observability
+services:
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=4GB
+      - --web.listen-address=:9090
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports: ["127.0.0.1:9090:9090"]
+    networks: [ddareungi]
+    restart: unless-stopped
+  grafana:
+    image: grafana/grafana:12.1.1
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in the env file}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_SERVER_HTTP_PORT: "3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports: ["127.0.0.1:3000:3000"]
+    networks: [ddareungi]
+    depends_on: [prometheus]
+    restart: unless-stopped
+networks:
+  ddareungi:
+    # Created by deploy.sh (DOCKER_NETWORK, default "ddareungi") on the first deploy.
+    external: true
+volumes:
+  prometheus_data:
+  grafana_data:
