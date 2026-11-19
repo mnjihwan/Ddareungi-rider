@@ -1,0 +1,176 @@
+package com.ddareungi.global.ratelimit;
+
+import com.ddareungi.global.exception.ApiException;
+import com.ddareungi.global.exception.ErrorCode;
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.boot.context.properties.source.MapConfigurationPropertySource;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.web.method.HandlerMethod;
+import org.springframework.web.servlet.HandlerMapping;
+
+import java.time.Duration;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.startsWith;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+
+class RateLimitInterceptorTest {
+    final RateLimiter local = mock(RateLimiter.class);
+    final RateLimiter shared = mock(RateLimiter.class);
+
+    private RateLimitInterceptor interceptor(boolean enabled) {
+        var defaults = RateLimitProperties.defaults();
+        var properties = new RateLimitProperties(enabled, null, null, null, defaults.redisFailureCooldown(),
+                defaults.localMaxEntries(), defaults.localCleanupInterval());
+        return new RateLimitInterceptor(properties, local, shared);
+    }
+
+    private static MockHttpServletRequest request(String method, String uri) {
+        var request = new MockHttpServletRequest(method, uri);
+        request.setRemoteAddr("203.0.113.9");
+        return request;
+    }
+
+    @Test void routesGroupsToTheirLimiterWithHashedClientKey() {
+        when(local.tryAcquire(anyString(), any())).thenReturn(RateLimitDecision.ALLOW);
+        when(shared.tryAcquire(anyString(), any())).thenReturn(RateLimitDecision.ALLOW);
+        var interceptor = interceptor(true);
+        String hash = RateLimitInterceptor.clientHash("203.0.113.9");
+
+        assertThat(interceptor.preHandle(request("GET", "/api/v1/stations/nearby"), new MockHttpServletResponse(), new Object())).isTrue();
+        // Review H1: defaults relaxed to stations 100/300 and places 30/90 (were 30/120 and 30/30).
+        verify(local).tryAcquire("stations:" + hash, new RateLimitPolicy(100, 300));
+        interceptor.preHandle(request("GET", "/api/v1/places/search"), new MockHttpServletResponse(), new Object());
+        verify(shared).tryAcquire("places:" + hash, new RateLimitPolicy(30, 90));
+        interceptor.preHandle(request("POST", "/api/v1/routes/plan"), new MockHttpServletResponse(), new Object());
+        verify(shared).tryAcquire("routes:" + hash, new RateLimitPolicy(10, 10));
+    }
+
+    @Test void clientKeyIsAHashNotTheRawAddress() {
+        String hash = RateLimitInterceptor.clientHash("203.0.113.9");
+        assertThat(hash).matches("[0-9a-f]{32}").doesNotContain("203");
+        assertThat(RateLimitInterceptor.clientHash("203.0.113.10")).isNotEqualTo(hash);
+        assertThat(RateLimitInterceptor.clientHash(null)).hasSize(32);
+    }
+
+    @Test void ipv6ClientsShareOneKeyPerSlash64AndMappedIpv4IsTheIpv4Key() {
+        // Review M6: an IPv6 host can rotate freely inside its /64, so the bucket is per /64 prefix.
+        String a = RateLimitInterceptor.clientHash("2001:db8:1:2:aaaa:bbbb:cccc:dddd");
+        assertThat(RateLimitInterceptor.clientHash("2001:db8:1:2::1")).isEqualTo(a);
+        assertThat(RateLimitInterceptor.clientHash("2001:0db8:0001:0002:ffff:0:0:9")).isEqualTo(a);
+        assertThat(RateLimitInterceptor.clientHash("[2001:db8:1:2::5]")).isEqualTo(a);
+        assertThat(RateLimitInterceptor.clientHash("fe80::1%eth0"))
+                .isEqualTo(RateLimitInterceptor.clientHash("fe80::2"));
+        // A different /64 is a different client.
+        assertThat(RateLimitInterceptor.clientHash("2001:db8:1:3::1")).isNotEqualTo(a);
+        // IPv4-mapped IPv6 counts as the IPv4 client, not as the ::ffff:0:0/64 prefix shared by all of them.
+        assertThat(RateLimitInterceptor.clientHash("::ffff:203.0.113.9"))
+                .isEqualTo(RateLimitInterceptor.clientHash("203.0.113.9"));
+        assertThat(RateLimitInterceptor.clientHash("::ffff:203.0.113.10"))
+                .isNotEqualTo(RateLimitInterceptor.clientHash("::ffff:203.0.113.9"));
+        // IPv4 and non-literals stay as they are (no DNS lookup).
+        assertThat(RateLimitInterceptor.normalizeClientAddress("203.0.113.9")).isEqualTo("203.0.113.9");
+        assertThat(RateLimitInterceptor.normalizeClientAddress("example.invalid")).isEqualTo("example.invalid");
+        assertThat(RateLimitInterceptor.normalizeClientAddress(null)).isEmpty();
+        assertThat(RateLimitInterceptor.normalizeClientAddress("2001:db8:1:2::1")).doesNotContain("::1");
+    }
+
+    @Test void ipv6ClientIsLimitedPerSlash64ThroughTheInterceptor() {
+        when(shared.tryAcquire(anyString(), any())).thenReturn(RateLimitDecision.ALLOW);
+        var interceptor = interceptor(true);
+        var first = request("GET", "/api/v1/places/search");
+        first.setRemoteAddr("2001:db8:1:2::1");
+        var second = request("GET", "/api/v1/places/search");
+        second.setRemoteAddr("2001:db8:1:2::abcd");
+        interceptor.preHandle(first, new MockHttpServletResponse(), new Object());
+        interceptor.preHandle(second, new MockHttpServletResponse(), new Object());
+        verify(shared, org.mockito.Mockito.times(2))
+                .tryAcquire(eq("places:" + RateLimitInterceptor.clientHash("2001:db8:1:2::")), any());
+    }
+
+    @Test void rejectionThrowsTheApiExceptionWithRetryAfter() {
+        when(shared.tryAcquire(anyString(), any())).thenReturn(new RateLimitDecision(false, 7));
+        assertThatThrownBy(() -> interceptor(true).preHandle(request("GET", "/api/v1/places/search"),
+                new MockHttpServletResponse(), new Object()))
+                .isInstanceOfSatisfying(RateLimitExceededException.class, exception -> {
+                    assertThat(exception).isInstanceOf(ApiException.class);
+                    assertThat(exception.errorCode()).isEqualTo(ErrorCode.RATE_LIMIT_EXCEEDED);
+                    assertThat(exception.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+                    assertThat(exception.getHeaders().getFirst(HttpHeaders.RETRY_AFTER)).isEqualTo("7");
+                });
+        assertThatThrownBy(() -> new RateLimitExceededException(0)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test void optionsDisabledActuatorAndUnknownPathsAreNotCounted() {
+        var interceptor = interceptor(true);
+        interceptor.preHandle(request("OPTIONS", "/api/v1/places/search"), new MockHttpServletResponse(), new Object());
+        interceptor.preHandle(request("GET", "/actuator/health"), new MockHttpServletResponse(), new Object());
+        interceptor.preHandle(request("GET", "/api/v1/other"), new MockHttpServletResponse(), new Object());
+        interceptor.preHandle(request("GET", "/api/v1/placesX"), new MockHttpServletResponse(), new Object());
+        interceptor(false).preHandle(request("GET", "/api/v1/places/search"), new MockHttpServletResponse(), new Object());
+        verifyNoInteractions(local, shared);
+    }
+
+    @Test void matchedControllerPatternWinsOverTheRawPath() throws Exception {
+        when(shared.tryAcquire(anyString(), any())).thenReturn(RateLimitDecision.ALLOW);
+        var request = request("GET", "/api/v1/places/search/");
+        request.setAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE, "/api/v1/places/search");
+        var handler = new HandlerMethod(new Object(), Object.class.getMethod("toString"));
+        interceptor(true).preHandle(request, new MockHttpServletResponse(), handler);
+        // Review H1: places default per-minute is now 90 (was 30).
+        verify(shared).tryAcquire(startsWith("places:"), eq(new RateLimitPolicy(30, 90)));
+        assertThat(RateLimitInterceptor.path(request("GET", "/x/y"), new Object())).isEqualTo("/x/y");
+    }
+
+    @Test void classification() {
+        assertThat(RateLimitGroup.classify("/api/v1/stations")).isEqualTo(RateLimitGroup.STATIONS);
+        assertThat(RateLimitGroup.classify("/api/v1/stations/{stationId}")).isEqualTo(RateLimitGroup.STATIONS);
+        assertThat(RateLimitGroup.classify("/api/v1/status/realtime")).isEqualTo(RateLimitGroup.STATIONS);
+        assertThat(RateLimitGroup.classify("/api/v1/routes/status")).isEqualTo(RateLimitGroup.STATIONS);
+        assertThat(RateLimitGroup.classify("/api/v1/places/nearby-subways")).isEqualTo(RateLimitGroup.PLACES);
+        assertThat(RateLimitGroup.classify("/api/v1/routes/plan")).isEqualTo(RateLimitGroup.ROUTES);
+        assertThat(RateLimitGroup.classify("/api/v1/routes/search")).isEqualTo(RateLimitGroup.ROUTES);
+        assertThat(RateLimitGroup.classify("/actuator/health")).isNull();
+        assertThat(RateLimitGroup.classify("/")).isNull();
+        assertThat(RateLimitGroup.classify(null)).isNull();
+    }
+
+    @Test void propertiesBindWithDefaultsAndOverrides() {
+        var bound = new Binder(new MapConfigurationPropertySource(Map.of(
+                "ratelimit.places.per-minute", "12",
+                "ratelimit.routes.burst", "3")))
+                .bindOrCreate("ratelimit", RateLimitProperties.class);
+        assertThat(bound.enabled()).isTrue();
+        // Review H1: stations default is now burst 100 / 300 per minute (was 30 / 120); overrides still win.
+        assertThat(bound.policy(RateLimitGroup.STATIONS)).isEqualTo(new RateLimitPolicy(100, 300));
+        assertThat(bound.policy(RateLimitGroup.PLACES)).isEqualTo(new RateLimitPolicy(30, 12));
+        assertThat(bound.policy(RateLimitGroup.ROUTES)).isEqualTo(new RateLimitPolicy(3, 10));
+        assertThat(bound.redisFailureCooldown()).isEqualTo(Duration.ofSeconds(10));
+        assertThat(bound.localMaxEntries()).isEqualTo(100_000);
+        assertThat(bound.localCleanupInterval()).isEqualTo(Duration.ofSeconds(60));
+
+        var empty = new Binder(new MapConfigurationPropertySource(Map.of()))
+                .bindOrCreate("ratelimit", RateLimitProperties.class);
+        assertThat(empty).isEqualTo(RateLimitProperties.defaults());
+
+        var disabled = new Binder(new MapConfigurationPropertySource(Map.of("ratelimit.enabled", "false")))
+                .bindOrCreate("ratelimit", RateLimitProperties.class);
+        assertThat(disabled.enabled()).isFalse();
+
+        assertThatThrownBy(() -> new Binder(new MapConfigurationPropertySource(Map.of("ratelimit.places.burst", "0")))
+                .bindOrCreate("ratelimit", RateLimitProperties.class))
+                .hasRootCauseInstanceOf(IllegalArgumentException.class);
+    }
+}

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Fake aws CLI: ECR login token and SSM Parameter Store (text output, Name<TAB>Value lines).
+# Knobs: FAKE_SSM_FAIL=1  -> get-parameters-by-path fails like AccessDenied (exit 254)
+#        FAKE_SSM_EMPTY=1 -> get-parameters-by-path returns no parameters
+set -euo pipefail
+S=${FAKE_STATE:?}
+echo "aws $*" >>"$S/calls.log"
+case "$1 $2" in
+  "ecr get-login-password") echo "fake-ecr-token" ;;
+  "ssm get-parameters-by-path")
+    if [[ ${FAKE_SSM_FAIL:-0} == 1 ]]; then
+      echo "An error occurred (AccessDeniedException) when calling the GetParametersByPath operation: fake" >&2
+      exit 254
+    fi
+    [[ ${FAKE_SSM_EMPTY:-0} == 1 ]] && exit 0
+    printf '%s\t%s\n' "/ddareungi/production/backend/MYSQL_PASSWORD" "fake-db-pass" \
+      "/ddareungi/production/backend/KAKAO_MAPS_REST_API_KEY" "fake-kakao-key"
+    if [[ -n ${FAKE_SSM_EXTRA:-} ]]; then printf '%s\n' "$FAKE_SSM_EXTRA"; fi ;;
+  *) echo "fake aws: unsupported $*" >&2; exit 1 ;;
+esac

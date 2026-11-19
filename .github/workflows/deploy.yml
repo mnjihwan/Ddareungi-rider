@@ -1,0 +1,300 @@
+name: Deploy
+
+# CD to a single EC2 host (phase 3 O7). See docs/deploy-ec2.md.
+# - workflow_run: after CI succeeds for a push to main, build and push images tagged with the commit SHA
+#   (ECR tags are immutable), then deploy the image digests with blue/green on EC2 via SSM Run Command.
+# - workflow_dispatch(action, image_tag): no build.
+#     deploy          redeploy/rollback an image that already exists in ECR (image_tag required)
+#     force-restart   recreate the backend from an existing image even when its digest is active (picks up a
+#                     changed /etc/ddareungi/backend.env or SSM secret; image_tag required)
+#     maintenance-on / maintenance-off  set CLIENT_WEB_MAINTENANCE on the host and restart the active image
+#                     (image_tag must be empty)
+# The EC2 side runs only through the dedicated SSM Command document (vars.SSM_DEPLOY_DOCUMENT, default
+# ddareungi-deploy, template deploy/aws/ssm-document-deploy.json), which executes the host-installed deploy.sh
+# after checking its sha256 against this commit's deploy/ec2/deploy.sh. Inputs reach shell code only through env
+# variables and are validated before use (no ${{ }} inside run: scripts).
+# All AWS values come from the `production` environment's variables; nothing account-specific is committed.
+# Actions are pinned to commit SHAs (tag noted in the comment, resolved with `git ls-remote --tags` on 2026-11-17).
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "deploy = rollback/redeploy image_tag; force-restart = recreate image_tag with the current env; maintenance-on/off"
+        required: true
+        type: choice
+        default: deploy
+        options: [deploy, force-restart, maintenance-on, maintenance-off]
+      image_tag:
+        description: "Full 40-char commit SHA whose image is already in ECR (deploy, force-restart). Empty for maintenance-on/off"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build, push and deploy
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: production
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_BACKEND_REPOSITORY: ${{ vars.ECR_BACKEND_REPOSITORY }}
+      ECR_WEB_REPOSITORY: ${{ vars.ECR_WEB_REPOSITORY }}
+      EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+      IMAGE_PLATFORM: ${{ vars.IMAGE_PLATFORM || 'linux/amd64' }}
+      SSM_EXECUTION_TIMEOUT: "1200"
+    steps:
+      - name: Resolve target
+        id: target
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          INPUT_IMAGE_TAG: ${{ inputs.image_tag }}
+          INPUT_ACTION: ${{ inputs.action }}
+          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          for v in AWS_REGION ECR_BACKEND_REPOSITORY EC2_INSTANCE_ID AWS_DEPLOY_ROLE_ARN; do
+            if [ -z "${!v}" ]; then echo "::error::environment variable vars.$v is not set"; exit 1; fi
+          done
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            action=${INPUT_ACTION:-deploy}
+            case "$action" in
+              deploy) mode=rollback ;;
+              force-restart) mode=restart ;;
+              maintenance-on|maintenance-off) mode=maintenance ;;
+              *) echo "::error::unknown action (expected deploy, force-restart, maintenance-on, maintenance-off)"; exit 1 ;;
+            esac
+            tag=$INPUT_IMAGE_TAG
+          else
+            action=deploy; mode=build; tag=$RUN_HEAD_SHA
+          fi
+          if [ "$mode" = maintenance ]; then
+            if [ -n "$tag" ]; then echo "::error::image_tag must be empty for $action (the active image is restarted)"; exit 1; fi
+          elif ! [[ $tag =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::image tag must be a full 40-char lowercase commit SHA"; exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "action=$action" >> "$GITHUB_OUTPUT"
+          echo "Deploy mode=$mode action=$action tag=${tag:-none}"
+
+      # Build mode checks out the commit CI tested; other modes only need deploy/ec2/deploy.sh (its sha256) from main.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.target.outputs.mode == 'build' && steps.target.outputs.tag || github.sha }}
+          persist-credentials: false
+          submodules: false
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-deploy-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Log in to ECR
+        id: ecr
+        if: steps.target.outputs.mode != 'maintenance'
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+
+      - name: Look up existing images
+        id: existing
+        if: steps.target.outputs.mode != 'maintenance'
+        env:
+          TAG: ${{ steps.target.outputs.tag }}
+          MODE: ${{ steps.target.outputs.mode }}
+        run: |
+          set -euo pipefail
+          digest_of() {
+            local d
+            d=$(aws ecr describe-images --repository-name "$1" --image-ids "imageTag=$2" \
+                  --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)
+            [ "$d" = None ] && d=""
+            echo "$d"
+          }
+          backend=$(digest_of "$ECR_BACKEND_REPOSITORY" "$TAG")
+          web=""
+          if [ -n "$ECR_WEB_REPOSITORY" ]; then web=$(digest_of "$ECR_WEB_REPOSITORY" "$TAG"); fi
+          if [ "$MODE" != build ] && [ -z "$backend" ]; then
+            echo "::error::backend image tag $TAG not found in ECR; $MODE only uses existing images"; exit 1
+          fi
+          echo "backend=$backend" >> "$GITHUB_OUTPUT"
+          echo "web=$web" >> "$GITHUB_OUTPUT"
+          echo "existing backend digest: ${backend:-none}, web digest: ${web:-none}"
+
+      - name: Set up Docker Buildx
+        if: steps.target.outputs.mode == 'build' && (steps.existing.outputs.backend == '' || (env.ECR_WEB_REPOSITORY != '' && steps.existing.outputs.web == ''))
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build and push backend image
+        if: steps.target.outputs.mode == 'build' && steps.existing.outputs.backend == ''
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: Ddareungi-rider
+          file: Ddareungi-rider/Dockerfile
+          platforms: ${{ env.IMAGE_PLATFORM }}
+          push: true
+          # Single image manifest per tag so the digest deployed is the image itself (no attestation index).
+          provenance: false
+          sbom: false
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ steps.target.outputs.tag }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.target.outputs.tag }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Set up Node
+        if: steps.target.outputs.mode == 'build' && env.ECR_WEB_REPOSITORY != '' && steps.existing.outputs.web == ''
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: Ddareungi-rider/web/package-lock.json
+
+      - name: Build web bundle
+        if: steps.target.outputs.mode == 'build' && env.ECR_WEB_REPOSITORY != '' && steps.existing.outputs.web == ''
+        working-directory: Ddareungi-rider/web
+        env:
+          # Kakao Maps JavaScript key is public by design (shipped in the bundle, restricted by registered domain).
+          KAKAO_MAPS_JAVASCRIPT_KEY: ${{ vars.KAKAO_MAPS_JAVASCRIPT_KEY }}
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          test -f dist/index.html
+
+      - name: Push web bundle image
+        if: steps.target.outputs.mode == 'build' && env.ECR_WEB_REPOSITORY != '' && steps.existing.outputs.web == ''
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: Ddareungi-rider/web/dist
+          file: deploy/web/Dockerfile
+          platforms: ${{ env.IMAGE_PLATFORM }}
+          push: true
+          provenance: false
+          sbom: false
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_WEB_REPOSITORY }}:${{ steps.target.outputs.tag }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.target.outputs.tag }}
+
+      - name: Resolve image digests
+        id: digests
+        if: steps.target.outputs.mode != 'maintenance'
+        env:
+          TAG: ${{ steps.target.outputs.tag }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          digest_of() {
+            aws ecr describe-images --repository-name "$1" --image-ids "imageTag=$2" \
+              --query 'imageDetails[0].imageDigest' --output text
+          }
+          backend=$(digest_of "$ECR_BACKEND_REPOSITORY" "$TAG")
+          [[ $backend =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no backend digest for $TAG"; exit 1; }
+          web_ref=""
+          if [ -n "$ECR_WEB_REPOSITORY" ]; then
+            web=$(digest_of "$ECR_WEB_REPOSITORY" "$TAG" 2>/dev/null || true)
+            if [[ $web =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              web_ref="$REGISTRY/$ECR_WEB_REPOSITORY@$web"
+            else
+              echo "::warning::web bundle for $TAG not found; deploying the backend only"
+            fi
+          fi
+          echo "backend_ref=$REGISTRY/$ECR_BACKEND_REPOSITORY@$backend" >> "$GITHUB_OUTPUT"
+          echo "web_ref=$web_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy on EC2 via SSM Run Command
+        id: ssm
+        env:
+          BACKEND_REF: ${{ steps.digests.outputs.backend_ref }}
+          WEB_REF: ${{ steps.digests.outputs.web_ref }}
+          TAG: ${{ steps.target.outputs.tag }}
+          ACTION: ${{ steps.target.outputs.action }}
+          SSM_DOCUMENT: ${{ vars.SSM_DEPLOY_DOCUMENT || 'ddareungi-deploy' }}
+        run: |
+          set -euo pipefail
+          script=deploy/ec2/deploy.sh
+          bash -n "$script"
+          # The host runs its installed copy; the document refuses to run it unless it is this exact version.
+          sum=$(sha256sum "$script" | cut -d' ' -f1)
+          ref_re='^[a-z0-9.-]+(:[0-9]+)?/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$'
+          case "$ACTION" in
+            deploy|force-restart)
+              [[ $BACKEND_REF =~ $ref_re ]] || { echo "::error::backend ref is not a digest reference"; exit 1; }
+              [ -z "$WEB_REF" ] || [[ $WEB_REF =~ $ref_re ]] || { echo "::error::web ref is not a digest reference"; exit 1; } ;;
+            maintenance-on|maintenance-off) BACKEND_REF=""; WEB_REF="" ;;
+            *) echo "::error::unknown action"; exit 1 ;;
+          esac
+          if ! [[ $SSM_DOCUMENT =~ ^[A-Za-z0-9_.-]{3,128}$ ]] || [[ $SSM_DOCUMENT == AWS-* ]]; then
+            echo "::error::vars.SSM_DEPLOY_DOCUMENT must name the dedicated deploy document (deploy/aws/ssm-document-deploy.json), not an AWS-* document"
+            exit 1
+          fi
+          jq -n --arg action "$ACTION" --arg backend "${BACKEND_REF:-none}" --arg web "${WEB_REF:-none}" \
+                --arg sum "$sum" --arg timeout "$SSM_EXECUTION_TIMEOUT" '{
+            action: [$action], backendRef: [$backend], webRef: [$web],
+            scriptSha256: [$sum], executionTimeout: [$timeout]
+          }' > ssm-params.json
+          command_id=$(aws ssm send-command \
+            --document-name "$SSM_DOCUMENT" \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --comment "ddareungi $ACTION ${TAG:0:12}" \
+            --parameters file://ssm-params.json \
+            --timeout-seconds 600 \
+            --query Command.CommandId --output text)
+          echo "command_id=$command_id" >> "$GITHUB_OUTPUT"
+          echo "SSM command $command_id sent ($SSM_DOCUMENT, action=$ACTION)"
+
+          deadline=$((SECONDS + SSM_EXECUTION_TIMEOUT + 120))
+          status=Pending
+          while :; do
+            sleep 10
+            status=$(aws ssm get-command-invocation --command-id "$command_id" --instance-id "$EC2_INSTANCE_ID" \
+                       --query Status --output text 2>/dev/null || echo Pending)
+            case "$status" in
+              Pending|InProgress|Delayed) ;;
+              *) break ;;
+            esac
+            if (( SECONDS >= deadline )); then
+              echo "::error::SSM command did not finish in time; cancelling (the document's own timeout also stops it)"
+              aws ssm cancel-command --command-id "$command_id" --instance-ids "$EC2_INSTANCE_ID" || true
+              exit 1
+            fi
+          done
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$EC2_INSTANCE_ID" > invocation.json
+          code=$(jq -r '.ResponseCode' invocation.json)
+          echo "::group::deploy.sh stdout"; jq -r '.StandardOutputContent' invocation.json; echo "::endgroup::"
+          echo "::group::deploy.sh stderr"; jq -r '.StandardErrorContent' invocation.json; echo "::endgroup::"
+          {
+            echo "### Deploy ${TAG:0:12} ($ACTION)"
+            echo "- status: \`$status\`, exit code: \`$code\` (3 = host deploy.sh differs from this commit)"
+            echo "- backend: \`${BACKEND_REF##*@}\`"
+            echo "- web: \`${WEB_REF:+${WEB_REF##*@}}\`"
+            echo "- rollback: run this workflow with action=deploy, image_tag = a previous successful SHA"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" != Success ] || [ "$code" != 0 ]; then
+            echo "::error::deploy.sh failed on EC2 (status=$status, exit=$code); the previous version keeps serving"
+            exit 1
+          fi

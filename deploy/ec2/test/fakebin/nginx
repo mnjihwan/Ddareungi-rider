@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Fake nginx: `-t` validates the upstream file shape, `-s reload` makes it "live" (copied to $FAKE_STATE/live-upstream).
+# Knobs: FAKE_NGINX_T_FAIL=1 -> `nginx -t` fails.
+#        FAKE_TERM_AFTER_RELOAD=1 -> after the first reload, send SIGTERM to the caller (deploy.sh), once per run
+#                                    (simulates an SSM cancel in the middle of the switch).
+set -euo pipefail
+S=${FAKE_STATE:?}
+echo "nginx $*" >>"$S/calls.log"
+f=${NGINX_UPSTREAM_FILE:?}
+case "$*" in
+  -t)
+    [[ ${FAKE_NGINX_T_FAIL:-0} == 1 ]] && { echo "nginx: [emerg] fake failure" >&2; exit 1; }
+    grep -Eq '^upstream ddareungi_backend \{' "$f" && grep -Eq 'server 127\.0\.0\.1:[0-9]+' "$f" \
+      || { echo "nginx: [emerg] bad upstream" >&2; exit 1; }
+    echo "nginx: configuration file test is successful" >&2 ;;
+  "-s reload")
+    cp "$f" "$S/live-upstream"; echo reload >>"$S/reloads"
+    if [[ ${FAKE_TERM_AFTER_RELOAD:-0} == 1 && ! -f $S/term-sent ]]; then
+      touch "$S/term-sent"; kill -TERM "$PPID"
+    fi ;;
+  *) echo "fake nginx: unsupported $*" >&2; exit 1 ;;
+esac

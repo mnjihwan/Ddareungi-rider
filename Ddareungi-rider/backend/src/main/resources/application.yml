@@ -1,6 +1,10 @@
 spring:
   application:
     name: ddareungrider
+  # Request threads mostly block on Redis/MySQL/Kakao I/O; virtual threads avoid pool exhaustion.
+  threads:
+    virtual:
+      enabled: true
   profiles:
     default: local
   http:
@@ -14,20 +18,109 @@ spring:
         enabled: false
 
 management:
+  # Actuator runs on a separate internal port; only the API port (8080) is published.
+  server:
+    port: ${MANAGEMENT_SERVER_PORT:8090}
   endpoints:
     web:
       exposure:
-        include: health,info
+        # prometheus: scraped by deploy/observability over the internal network (phase 3 O8); never on 8080.
+        include: health,info,prometheus
+  endpoint:
+    health:
+      # /actuator/health/liveness and /actuator/health/readiness
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        # Buckets for the dashboard's p95/p99 panels (histogram_quantile over http_server_requests_seconds_bucket).
+        http.server.requests: true
 
 server:
   port: ${SERVER_PORT:8080}
+  # Viewport/nearby responses can contain thousands of stations; gzip cuts payload size several-fold.
+  compression:
+    enabled: true
+    mime-types: application/json
+    min-response-size: 2KB
+
+logging:
+  pattern:
+    # Inserted into Boot's default console/file patterns; the request id comes from RequestIdFilter (MDC).
+    correlation: "[%X{requestId:-}] "
 
 routing:
   provider: kakao
   enabled: true
   ors:
     api-key: ${ORS_API_KEY:}
+  # A6 route search: automatic station candidates per side (1..3; 3 keeps Kakao at 6 + 9 = 15 calls per search).
+  search:
+    max-station-candidates: ${ROUTING_SEARCH_MAX_STATION_CANDIDATES:3}
 
 kakao:
   maps:
     rest-api-key: ${KAKAO_MAPS_REST_API_KEY:}
+    # Routing API base URL; overridable so a local stub can stand in for end-to-end runs.
+    base-url: ${KAKAO_MAPS_BASE_URL:https://dapi.kakao.com}
+
+realtime:
+  # FRESH/STALE/UNAVAILABLE boundaries (API spec v5 11.0, X3). Validated at startup: 0 < fresh < max-stale.
+  # Keep max-stale-seconds equal to the collector's value (its version TTL/carry-over limits must exceed it).
+  freshness:
+    fresh-seconds: ${REALTIME_FRESH_SECONDS:120}
+    max-stale-seconds: ${REALTIME_MAX_STALE_SECONDS:600}
+
+# Per-client (remoteAddr hash; IPv6 grouped per /64) token buckets, phase 2 D6 draft numbers until traffic is measured.
+# stations/status: instance memory; places/routes: Redis Lua shared by instances on the infra profile
+# (local fail-open on Redis errors), memory on the local profile. Defaults also live in RateLimitProperties.
+# Review H1: relaxed for web usage - one map drag issues up to 4 station requests, place autocomplete
+# fires per 350 ms debounce. Tune after production measurement; the web 429 backoff and the shared-IP
+# policy (Vite dev proxy, CGNAT) are follow-up decisions.
+ratelimit:
+  enabled: ${RATE_LIMIT_ENABLED:true}
+  stations:
+    burst: ${RATE_LIMIT_STATIONS_BURST:100}
+    per-minute: ${RATE_LIMIT_STATIONS_PER_MINUTE:300}
+  places:
+    burst: ${RATE_LIMIT_PLACES_BURST:30}
+    per-minute: ${RATE_LIMIT_PLACES_PER_MINUTE:90}
+  routes:
+    burst: ${RATE_LIMIT_ROUTES_BURST:10}
+    per-minute: ${RATE_LIMIT_ROUTES_PER_MINUTE:10}
+
+# External provider limits (D8). Defaults live in ProviderHttpProperties/ResilienceProperties (@DefaultValue);
+# only the request budgets are listed here. Durations: 500ms, 3s, ...
+provider:
+  http:
+    place:
+      total-timeout: ${PLACE_TOTAL_TIMEOUT:3s}
+    route:
+      total-timeout: ${ROUTE_TOTAL_TIMEOUT:10s}
+
+place:
+  cache:
+    # Redis cache of Kakao Local answers (infra profile only; local never caches). Fails open on Redis errors.
+    enabled: ${PLACE_CACHE_ENABLED:true}
+    ttl: 5m
+
+# Client version/maintenance policy (spec 6, phase 3 A7). Defaults live in ClientConfigProperties (@DefaultValue):
+# platforms.android|ios.minimum-version/latest-version 0.1.0, store-url none, supported-api-versions [v1].
+# Maintenance (decision 21) is server-wide: every platform sees it and /api/v1/** answers 503 MAINTENANCE_MODE
+# (/api/client-config and actuator stay available).
+client:
+  web:
+    maintenance: ${CLIENT_WEB_MAINTENANCE:false}
+    maintenance-message: ${CLIENT_WEB_MAINTENANCE_MESSAGE:}
+
+# Deprecated API paths (spec 32): entries of pattern, deprecation, sunset (RFC 3339) and optional link.
+# /api/v1/routes/plan is superseded by POST /api/v1/routes/search (phase 3 decisions 1 and 23); it keeps working
+# until the sunset date. See DeprecationProperties.
+api:
+  deprecations:
+    - pattern: /api/v1/routes/plan
+      deprecation: 2026-11-17T00:00:00Z
+      sunset: 2027-06-30T23:59:59Z

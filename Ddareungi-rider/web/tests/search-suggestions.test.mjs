@@ -4,7 +4,7 @@ import {buildSearchSuggestions, matchingParts} from '../src/lib/searchSuggestion
 
 const place = (name, categoryGroupCode = '', id = name) => ({name, categoryGroupCode, address: '서울',
   sourceUrl: `https://place.map.kakao.com/${id}`, location: {latitude: 37.5, longitude: 127}});
-const station = (id) => ({stationId: String(id), stationName: `대여소 ${id}`, address: '서울', location: {latitude: 37.5, longitude: 127}});
+const station = (id) => ({stationId: String(id), stationName: `대여소 ${id}`, address: '서울', stationLatitude: 37.5, stationLongitude: 127});
 
 test('subway priority uses provider categories, deduplicates places, and reserves rental station suggestions', () => {
   const subway = place('서울대입구역 2호선', 'SW8', '1');

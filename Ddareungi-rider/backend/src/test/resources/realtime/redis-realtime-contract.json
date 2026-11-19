@@ -1,0 +1,35 @@
+{
+  "_comment": "Redis realtime key/value contract. versioned = API spec v5 21.2 example (DESIGN PROPOSAL, finalised with the collector in R2). legacy = per-station hash written by RedisRealtimeStationStore.saveAll today.",
+  "versioned": {
+    "pointerKey": "station:realtime:current",
+    "pointerValue": "184211",
+    "hashKey": "station:realtime:v184211",
+    "fields": {
+      "ST-123": {
+        "rackTotCnt": 20,
+        "stationName": "강남역 2번 출구",
+        "parkingBikeTotCnt": 7,
+        "shared": 35.0,
+        "stationLatitude": 37.4981,
+        "stationLongitude": 127.0282,
+        "stationId": "ST-123",
+        "realtimeUpdatedAt": "2026-09-16T20:59:00+09:00",
+        "snapshotVersion": 184211,
+        "operationStatus": "ACTIVE",
+        "publicationEligible": true
+      }
+    }
+  },
+  "legacy": {
+    "hashKey": "station:realtime:ST-123",
+    "fields": {
+      "stationName": "강남역 2번 출구",
+      "rackTotalCount": "20",
+      "availableBikeCount": "7",
+      "sharedRate": "35.0",
+      "latitude": "37.4981",
+      "longitude": "127.0282",
+      "updatedAt": "2026-09-16T11:59:00Z"
+    }
+  }
+}

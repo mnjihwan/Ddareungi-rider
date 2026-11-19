@@ -8,3 +8,6 @@
 **/.env
 mobile
 web
+docs
+**/.env*
+README.md

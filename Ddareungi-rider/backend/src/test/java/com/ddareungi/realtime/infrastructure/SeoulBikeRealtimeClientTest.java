@@ -23,6 +23,26 @@ class SeoulBikeRealtimeClientTest {
         org.assertj.core.api.Assertions.assertThat(readCounts("\"parkingBikeTotCnt\":9," )).isEqualTo(9);
     }
 
+    /** P2-1 (spec 11.0): rackTotCnt/shared are nullable, never invented as 0; shared above 100 is kept. */
+    @org.junit.jupiter.api.Test void missingRackAndSharedStayNull() {
+        String row = "{\"rentBikeStatus\":{\"RESULT\":{\"CODE\":\"INFO-000\"},\"row\":["
+                + "{\"stationId\":\"ST-1\",\"stationName\":\"a\",\"parkingBikeTotCnt\":\"3\",\"stationLatitude\":\"37.5\",\"stationLongitude\":\"127\"},"
+                + "{\"stationId\":\"ST-2\",\"stationName\":\"b\",\"parkingBikeTotCnt\":\"3\",\"rackTotCnt\":\"\",\"shared\":\"x\",\"stationLatitude\":\"37.5\",\"stationLongitude\":\"127\"},"
+                + "{\"stationId\":\"ST-3\",\"stationName\":\"c\",\"parkingBikeTotCnt\":\"3\",\"rackTotCnt\":\"10\",\"shared\":\"130\",\"stationLatitude\":\"37.5\",\"stationLongitude\":\"127\"}]}}";
+        var builder = RestClient.builder();
+        var server = MockRestServiceServer.bindTo(builder).build();
+        var client = new SeoulBikeRealtimeClient(new SeoulBikeApiProperties("http://localhost", "test", 1000, 1, "bikeList", ""),
+                builder, JsonMapper.builder().build());
+        server.expect(anything()).andRespond(withSuccess(row, MediaType.APPLICATION_JSON));
+        var statuses = client.fetchAll();
+        org.assertj.core.api.Assertions.assertThat(statuses.get(0).rackTotalCount()).isNull();
+        org.assertj.core.api.Assertions.assertThat(statuses.get(0).sharedRate()).isNull();
+        org.assertj.core.api.Assertions.assertThat(statuses.get(1).rackTotalCount()).isNull();
+        org.assertj.core.api.Assertions.assertThat(statuses.get(1).sharedRate()).isNull();
+        org.assertj.core.api.Assertions.assertThat(statuses.get(2).rackTotalCount()).isEqualTo(10);
+        org.assertj.core.api.Assertions.assertThat(statuses.get(2).sharedRate()).isEqualTo(130.0);
+    }
+
     private String body(String field) {
         return "{\"rentBikeStatus\":{\"RESULT\":{\"CODE\":\"INFO-000\"},\"row\":[{" + field +
                 "\"stationId\":\"ST-1\",\"stationName\":\"강남역\",\"rackTotCnt\":\"20\",\"shared\":\"0\",\"stationLatitude\":\"37.5\",\"stationLongitude\":\"127\"}]}}";

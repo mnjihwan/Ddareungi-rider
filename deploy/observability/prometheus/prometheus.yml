@@ -1,0 +1,18 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Both colors are listed; only the active one (and a new one during a deploy) is up at a time.
+  # `up == 0` for the stopped color is expected and must not alert on its own.
+  - job_name: ddareungi-backend
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["ddareungi-backend-blue:8090"]
+        labels: { color: blue }
+      - targets: ["ddareungi-backend-green:8090"]
+        labels: { color: green }
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

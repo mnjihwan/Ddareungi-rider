@@ -58,7 +58,8 @@ try{
     $env:FLOW_CSV_INPUT_DIR=$odDirectory;$env:USAGE_CSV_INPUT_DIR=$usageDirectory
     $localDbPort=if($values['MYSQL_PORT']){$values['MYSQL_PORT']}else{'3307'}
     $localDbName=if($values['MYSQL_DATABASE']){$values['MYSQL_DATABASE']}else{'ddareungi'}
-    $jar=Get-ChildItem -LiteralPath (Join-Path $collector 'build\libs') -Filter '*-SNAPSHOT.jar' | Where-Object {$_.Name -notmatch '-plain\.jar$'} | Select-Object -First 1
+    $jar=Get-ChildItem -LiteralPath (Join-Path $collector 'build\libs') -Filter '*.jar' | Where-Object {$_.Name -notmatch '-plain\.jar$'} | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if(-not $jar){throw 'Collector jar not found.'}
     $localJavaArguments=@('-jar',$jar.FullName,'--spring.main.web-application-type=none',
         "--spring.datasource.url=jdbc:mysql://127.0.0.1:$localDbPort/${localDbName}?serverTimezone=Asia/Seoul&characterEncoding=UTF-8&rewriteBatchedStatements=true",
         '--collector.collect-on-startup=false','--collector.schedule.cron=-','--collector.master.cron=-','--collector.extended.cron=-',

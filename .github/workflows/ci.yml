@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Actions are pinned to commit SHAs (same policy as deploy.yml); the trailing comment is the resolved tag.
+jobs:
+  backend:
+    name: Backend test and bootJar
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: Ddareungi-rider
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: false
+
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+          cache-dependency-path: |
+            Ddareungi-rider/**/*.gradle*
+            Ddareungi-rider/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Test and build jar
+        run: ./gradlew :backend:test :backend:bootJar --no-daemon
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: backend-test-reports
+          path: |
+            Ddareungi-rider/backend/build/reports/tests/
+            Ddareungi-rider/backend/build/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  web:
+    name: Web typecheck, test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: Ddareungi-rider/web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: Ddareungi-rider/web/package-lock.json
+
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  docker:
+    name: Docker image build (no push)
+    needs: backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: false
+
+      - name: Build backend image
+        env:
+          DOCKER_BUILDKIT: "1"
+        run: docker build --tag ddareungi-rider-backend:ci-${{ github.sha }} Ddareungi-rider
+
+  deploy-scripts:
+    name: Deploy script harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: false
+
+      # Runs the real deploy/ec2/deploy.sh against fake docker/nginx/curl/aws (no AWS access, no secrets).
+      # Needs only bash, flock, python3 and sha256sum, which ubuntu-latest provides.
+      - name: Syntax check
+        # bash -n reads only its first file argument, so check each script on its own.
+        run: |
+          for f in deploy/ec2/deploy.sh deploy/ec2/test/run-harness.sh deploy/ec2/test/fakebin/*; do
+            bash -n "$f"
+          done
+
+      - name: Run harness
+        run: bash deploy/ec2/test/run-harness.sh "$RUNNER_TEMP/deploy-harness"

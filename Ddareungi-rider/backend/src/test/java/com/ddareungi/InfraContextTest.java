@@ -5,16 +5,34 @@ import com.ddareungi.station.infrastructure.JdbcStationSearchAdapter;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.core.env.Environment;
 import org.springframework.test.context.ActiveProfiles;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @ActiveProfiles("infra")
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE, properties = {
-        "seoul-bike.api.key=local-context-test", "seoul-bike.api.collection-enabled=false"
+        "seoul-bike.api.key=local-context-test", "seoul-bike.api.collection-enabled=false",
+        // MYSQL_PASSWORD has no default in application-infra.yml; the test supplies its own (no database is used).
+        "spring.datasource.password=local-context-test"
 })
 class InfraContextTest {
     @Autowired StationSearchPort search;
     @Test void infraProfileHasAnActualSearchAdapter() {
         assertThat(search).isInstanceOf(JdbcStationSearchAdapter.class);
+    }
+
+    @Autowired Environment environment;
+    // Readiness depends on MySQL only; Redis outages degrade the API but must not drop the instance from rotation.
+    // R3 (D4) adds stationCatalog: an instance whose in-memory station catalog never loaded is not ready.
+    // Redis is still excluded (expected value changed from "readinessState,db" by R3).
+    @Test void readinessGroupIncludesDatabaseButNotRedis() {
+        assertThat(environment.getProperty("management.endpoint.health.probes.enabled", Boolean.class)).isTrue();
+        assertThat(environment.getProperty("management.endpoint.health.group.readiness.include"))
+                .isEqualTo("readinessState,db,stationCatalog");
+    }
+
+    @Autowired org.springframework.context.ApplicationContext context;
+    @Test void stationCatalogHealthIndicatorBacksTheReadinessEntry() {
+        assertThat(context.containsBean("stationCatalogHealthIndicator")).isTrue();
     }
 }

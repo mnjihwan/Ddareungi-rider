@@ -11,13 +11,22 @@
 
 ---
 
-> **문서 개정일**: 2026-09-16. 이 문서는 구현이 따라야 할 설계 기준이며, 현재 코드의 구현 현황을 설명하지 않는다. v4의 아키텍처·엔드포인트·원천 필드명 유지 원칙을 보존했다.
+> **문서 개정일**: 2026-09-16(2026-11-13 결정 X1~X4 반영 개정, 아래 변경 이력). 이 문서는 구현이 따라야 할 설계 기준이며, 현재 코드의 구현 현황을 설명하지 않는다. v4의 아키텍처·엔드포인트·원천 필드명 유지 원칙을 보존했다.
 >
 > **검토 표기**: 명백한 오류 수정과 누락된 계약 보완을 구분한다. `제안 기본값`은 원문에 없던 설계 제안이며, 서비스 정책이나 검증된 모델 성능으로 확정된 값이 아니다. 41장의 미확정 항목은 운영 공개 전에 결정해야 한다.
 >
 > 모든 예시의 대여소 ID·이름·수량·경로는 설명용 데이터이며 실제 대여소와 경로의 일치를 보장하지 않는다.
 
-> **사용자 결정 반영**: 폐쇄·불완전 대여소 조회 제외, 유효한 FRESH·0대는 정상 수량, Redis 우선/MySQL fallback, 출처 메타데이터 필수 보존, 검증 완료 매핑만 채택. 아래 상세 규칙은 같은 날짜의 초기 v5 검토안을 대체한다. 최신성 시간 임계값 자체는 여전히 제안값이다.
+> **사용자 결정 반영**: 폐쇄·불완전 대여소 조회 제외, 유효한 FRESH·0대는 정상 수량, Redis 우선/MySQL fallback, 출처 메타데이터 필수 보존, 검증 완료 매핑만 채택. 아래 상세 규칙은 같은 날짜의 초기 v5 검토안을 대체한다. 최신성 시간 임계값은 2026-11-13 X3 결정으로 초기값이 확정되었다(아래 변경 이력).
+
+> **변경 이력 — 2026-11-13 결정 반영(X1~X4, 사용자 승인)**
+>
+> - **X1 응답 필드명**: 원천 필드명(`parkingBikeTotCnt`, `rackTotCnt`, `shared`, `stationLatitude`, `stationLongitude` 등) 유지를 확정한다. 현재 구현의 변환 필드명은 v1 안에서 공통 응답 envelope 도입(A1)과 같은 시점에 웹과 동시 전환한다(5.1).
+> - **X2 Elasticsearch**: 도입을 보류한다. 대여소 Geo Search는 백엔드 인스턴스 내 메모리 카탈로그 + 격자 인덱스(로드맵 R3)로 대체한다. 근거·유지 규칙·재검토 트리거는 2.1. 이 문서에 남은 Elasticsearch 서술은 향후 옵션이다.
+> - **X3 최신성 임계값**: FRESH ≤120초, STALE ≤600초, 그 이상 UNAVAILABLE, Redis TTL 900초를 확정 초기값으로 하고 설정값으로 외부화한다. 원천 지연 측정 후 조정할 수 있다(11.0, 41장). TTL 900초는 버전 Hash TTL에 적용하며, 이월 상한(age 컷오프)은 별도 설정이다(21.2).
+> - **X4 실시간 수집 주체**: Collector가 bikeList 수집과 Redis 갱신을 전담하고 백엔드는 Redis 읽기 전용이다. 백엔드 스케줄러를 제거하고(R1) Collector에 `spring-data-redis`를 추가한다. 백엔드 스케줄러를 남기고 ShedLock으로 단일 실행하는 대안은 기각했다. 상세는 21.2.
+>
+> **결정(확정)과 설계안(제안)의 구분**: 사용자가 확정한 사항은 위 X1 원천 필드명, X2 Elasticsearch 보류, X3 120/600/900초 임계값, X4 수집 주체(Collector 전담·백엔드 읽기 전용·백엔드 스케줄러 ShedLock 대안 기각·Collector `spring-data-redis` 추가)뿐이다. 그 밖에 이 개정에서 함께 적은 Redis 키 이름(`station:realtime:v{n}`/`current`), 단일 Hash + 포인터 교체 방식(R2), 실패·누락 ID 이월 규칙, 60초 실시간 job, TTL 적용 단위, 카탈로그 미적재 시 `503` 등은 **설계안(R2/R3 구현 시 확정)**이며 본문에 그렇게 표기한다.
 
 # 1. 문서 목적
 
@@ -53,17 +62,20 @@
 │                             │
 │ Station / Search / Route    │
 │ Prediction / ClientConfig   │
+│                             │
+│ 대여소 메모리 카탈로그      │
+│ + 격자 인덱스 (Geo Search)  │
 └──────┬────────┬─────────────┘
        │        │
-       │        ├───────────────────────────────────┐
-       │        │                                   │
-       ▼        ▼                                   ▼
-┌──────────┐ ┌───────────────┐               ┌───────────────┐
-│  MySQL   │ │ Elasticsearch │               │     Redis     │
-│          │ │               │               │               │
-│ 기준정보 │ │ Geo Search    │               │ 실시간 상태   │
-│ 이력데이터│ │ 대여소 검색   │               │ Cache         │
-└──────────┘ └───────────────┘               └───────────────┘
+       │        └───────────────────────────────────┐
+       │                                            │
+       ▼                                            ▼
+┌────────────┐                               ┌───────────────┐
+│  MySQL     │                               │     Redis     │
+│            │                               │               │
+│ 기준정보   │                               │ 실시간 상태   │
+│ 이력데이터 │                               │ Cache(읽기)   │
+└────────────┘                               └───────────────┘
        │
        ├──────────────┐
        ▼              ▼
@@ -76,17 +88,44 @@ PlaceSearchProvider   Route Providers
                 AI Prediction Service
 ```
 
+> 메모: Elasticsearch는 2026-11-13 X2 결정으로 도입을 보류했다(향후 옵션, 2.1). 위 구성에서 대여소 Geo Search는 Spring Boot 인스턴스 내 메모리 카탈로그가 담당하고, Redis는 백엔드 기준 읽기 전용이다(X4).
+
 AI 학습용 과거 데이터와 실시간 원천 데이터 수집은 사용자 API와 분리한다.
 
 ```text
 서울시 따릉이 API
        │
        ▼
-Data Collector
+Data Collector  (bikeList 수집·Redis 갱신 전담, X4)
        │
        ├── MySQL History + Latest Snapshot + Source Metadata
-       └── Redis Realtime
+       └── Redis Realtime  (백엔드는 읽기 전용)
 ```
+
+## 2.1 대여소 Geo Search 저장소 — Elasticsearch 도입 보류 (2026-11-13 확정, X2)
+
+**결정**: Elasticsearch를 도입하지 않는다(보류, 향후 옵션). 대여소 Geo Search는 각 백엔드 인스턴스가 MySQL 대여소 기준정보에서 적재한 **메모리 카탈로그 + 격자 인덱스**(로드맵 R3)로 처리한다. 실시간 수량은 카탈로그에 넣지 않고 조회 시 결합한다.
+
+**근거**
+
+- 대여소는 약 3,300개로 인스턴스 메모리에 전부 올려도 작고, 반경을 덮는 격자 셀만 확인하면 후보 탐색 비용이 대여소 수 전체에 비례하지 않는다.
+- Elasticsearch는 MySQL 기준정보의 파생 복제본일 뿐이다. 도입하면 동기화·주기적 대사·재색인 절차와 별도 장애 지점(클러스터 운영, 장애 시 검색 불가)이 추가된다.
+- 현재 코드·Compose에 Elasticsearch가 없고, 성능 이점은 측정된 적이 없다. 실측은 R3 적용 이후 수행한다.
+
+**유지되는 필수 규칙**(저장소와 무관하게 메모리 카탈로그 기준으로 그대로 적용)
+
+- 공개 gate: 카탈로그에는 검증된 `ACTIVE`이고 ID·이름·좌표가 유효한 대여소만 후보로 올린다. 카탈로그 재적재 전이라도 Redis/MySQL 스냅샷의 공개 gate(11.0)로 폐쇄 대여소를 제외하며, 기존 값으로 폐쇄 대여소를 되살리지 않는다.
+- 반경 전체 후보에 실시간 값을 결합한 뒤 필터·정렬을 적용하고 마지막에 `limit`를 적용한다(11.1). 가까운 N개만 먼저 잘라 수량 정렬하지 않는다.
+- 최종 선택 스냅샷의 좌표로 반경·거리를 다시 확인한다.
+
+**재검토 트리거**(하나라도 발생하면 Elasticsearch 또는 다른 검색 저장소 도입을 재검토)
+
+- 장소/POI를 외부 Provider가 아니라 자체 색인해야 하는 요구
+- 대여소 이름·주소 등 전문(full-text) 검색 요구
+- R3 적용 후 실측에서 대여소 조회 p95 목표 미달
+- 대여소 수의 대폭 증가(인스턴스 메모리·재적재 비용이 문제가 되는 규모)
+
+이 문서의 Elasticsearch 관련 서술(Readiness 후보, 지표, Kubernetes 구성 등)은 위 트리거로 도입할 때 적용하는 향후 옵션이다.
 
 ---
 
@@ -326,6 +365,24 @@ Breaking Change가 필요한 경우:
 
 이후 최소 지원 앱 버전을 상향하여 구버전 앱을 업데이트시킨 뒤 구 API를 폐기한다.
 
+## 5.1 응답 필드명 전환 — v1 내 동시 전환 (2026-11-13 확정, X1)
+
+**결정**: 공개 응답 필드명은 3.2·11.0의 원천 필드명(`parkingBikeTotCnt`, `rackTotCnt`, `shared`, `stationLatitude`, `stationLongitude`, `stationId`, `stationName`)을 유지·확정한다.
+
+**마이그레이션**(설계안, A1 구현 시 확정): 현재 구현의 변환 필드(`availableBikeCount`, `rackTotalCount`, 좌표 객체 `location{latitude, longitude}` 등)는 다음 방식으로 전환한다.
+
+- `/api/v1` 경로를 유지하고, 공통 응답 envelope(8장, 로드맵 A1) 도입과 **같은 시점**에 백엔드 응답과 웹 클라이언트를 함께 바꾼다.
+- `v2` 병행 운영과 구·신 필드 동시 제공(alias)은 하지 않는다. 위 5장의 v2 병행 원칙에 대한 예외이며, 근거는 운영 배포 전이고 소비자가 자체 웹뿐이라는 점이다.
+- Redis 값의 필드명도 같은 원천 필드명으로 맞춘다(21.2, R2).
+- 운영 공개 이후의 Breaking Change에는 이 예외를 적용하지 않고 5장·32장 원칙을 따른다.
+
+**후속 확인 — 2026-11-13 Phase 1(A1) 결과**
+
+- `mobile/`: 전환 범위에서 제외한다(보관용 PoC, CI 제외). 해당 코드는 옛 필드명(`availableBikeCount` 등)과 옛 `{data}` 응답을 계속 가정하므로 다시 사용하려면 전환이 필요하다.
+- `address`: nullable 확장 필드로 유지하고 11.0 표에 추가했다.
+- A1에서 대여소 응답 필드는 `stationId`, `stationName`, `stationLatitude`, `stationLongitude`, `rackTotCnt`, `parkingBikeTotCnt`, `shared`, `realtimeUpdatedAt`, `distanceMeters`, `address`로 전환했다. 장소 응답(`name`, `address`, `location{latitude, longitude}`, `sourceUrl`, `categoryGroupCode`)과 경로 응답(`origin`, `destination`, `departureStation`, `arrivalStation`, `legs`, …)은 구조를 유지하고, 경로의 대여소만 위 대여소 형식으로 바꿨다.
+- **Phase 1 한시 차이(A3에서 해소)**: `shared`는 항상 null, `realtimeStatus`·`realtimeAgeSeconds`는 아직 제공하지 않는다. `parkingBikeTotCnt`·`realtimeUpdatedAt`은 수량을 확인하지 못한 대여소에서 null일 수 있다(11.0의 nullable 불가 규칙과 다름). `rackTotCnt`는 MySQL 경로에서 원천 누락이 0으로 바뀔 수 있다. 주변 조회 응답은 아직 `data`가 대여소 배열이다(`center`/`radiusMeters`/`items` 래퍼는 A5).
+
 ---
 
 # 6. Client Version / 강제 업데이트 정책
@@ -514,6 +571,24 @@ GET /api/client-config
 | `MAINTENANCE_MODE` | 503 | 서비스 점검 중 |
 | `INTERNAL_SERVER_ERROR` | 500 | 서버 내부 오류 |
 
+### 10.1 확장 코드 (2026-11-13 Phase 1 결정)
+
+위 표에 없지만 구현이 사용하는 코드다. 응답 형식은 8.2와 같다.
+
+| Code | HTTP | 설명 |
+|---|:---:|---|
+| `RENTAL_STOCK_CHANGED` | 409 | 경로 계산 뒤 재확인에서 출발 대여소 수량이 바뀜. 경로 계약 재정의(A6)에서 다시 다룬다 |
+| `METHOD_NOT_ALLOWED` | 405 | 경로는 있으나 지원하지 않는 HTTP 메서드. `Allow` 헤더를 함께 반환 |
+| `RESOURCE_NOT_FOUND` | 404 | 존재하지 않는 API 경로 |
+
+### 10.2 코드 결정 규칙 (Phase 1 구현)
+
+- 검증 오류: 필수 값 누락(`@NotNull` 위반, 예: Body의 `origin.latitude` 생략)이 하나라도 있으면 필드와 무관하게 `INVALID_PARAMETER`(2026-11-16 리뷰 L4). 그 밖에 위반 필드가 모두 좌표(`latitude`/`longitude`)의 범위 위반이면 `INVALID_COORDINATE`, 모두 `radiusMeters`이면 `INVALID_RADIUS`, 그 밖은 `INVALID_PARAMETER`. Query·JSON Body 검증에 같은 규칙을 적용한다. `details[].field`는 경로의 마지막 이름(`origin.latitude` → `latitude`)이며 입력값은 반영하지 않는다.
+- 파라미터 누락·형식 불일치, 읽을 수 없는 JSON은 `INVALID_PARAMETER`. 단, JSON 역직렬화가 좌표 범위 오류로 실패하면 `INVALID_COORDINATE`.
+- 경로 오류의 기존 내부 코드는 위 표의 코드로 변환한다(예: 출발 후보 없음·지정 출발 대여소 0대 → `422 NO_AVAILABLE_ORIGIN_STATION`, 연결 경로 없음 → `404 ROUTE_NOT_FOUND`, 길찾기 미설정 → `503 SERVICE_UNAVAILABLE`). 경로 Provider 장애(엔진의 공급자 실패)는 구간 어댑터가 도보 구간은 `502 WALK_ROUTE_PROVIDER_ERROR`, 자전거 구간은 `502 BIKE_ROUTE_PROVIDER_ERROR`로 변환한다(E2). 어댑터를 거치지 않은 엔진 실패 코드가 예외 처리기에 직접 도달하면 안전망으로 `502 BIKE_ROUTE_PROVIDER_ERROR`로 응답한다.
+- 저장소(MySQL/Redis) 접근 장애는 `503 SERVICE_UNAVAILABLE`, 장소 Provider 키 미설정은 `503 SERVICE_UNAVAILABLE`, 장소 Provider 실패는 `502 PLACE_PROVIDER_ERROR`, 그 밖의 예외는 `500 INTERNAL_SERVER_ERROR`. 내부 정보는 requestId와 함께 로그에만 남긴다.
+- `204`, Actuator 응답, CORS 거부(`403`, Spring 기본 처리)는 envelope을 적용하지 않는다. 관리 포트에서 발생한 프레임워크 오류 전반(존재하지 않는 경로 404, 지원하지 않는 메서드 405 등)은 관리 child context가 같은 예외 처리기를 상속하므로 envelope 형식으로 응답하고 `meta.requestId`는 null이다(알려진 차이). Actuator 정상 응답 자체는 envelope을 적용하지 않는다.
+
 ---
 
 # 11. Station API
@@ -530,10 +605,24 @@ GET /api/client-config
 | `realtimeStatus` | Enum / 불가 | 공개 Station 응답은 `FRESH`, `STALE`; `UNAVAILABLE`은 내부 집계용 |
 | `realtimeUpdatedAt` | DateTime / 불가 | 공개 스냅샷을 성공 수집한 원래 시각 |
 | `realtimeAgeSeconds` | Integer / 불가 | 응답 시각에서 원래 수집 시각까지의 경과 초(내림, 최솟값 0) |
+| `address` | String / 가능 | **확장 필드**(원천 표준 필드 아님, 2026-11-13 유지 결정). 대여소 주소 |
 
 `bikeList`에 원천 관측 시각이 없으므로 `realtimeUpdatedAt`을 실제 자전거 상태가 변경된 시각으로 표현하지 않는다. 최신성은 **수집 성공 시점 기준**이며 원천 자체 지연은 보장할 수 없다.
 
-제안 기본값: Collector 주기 60초, `freshForSeconds=120`, `maxStaleSeconds=600`. age가 120 이하이면 FRESH, 120 초과 600 이하이면 STALE, 600 초과 또는 유효 수집 이력이 없으면 UNAVAILABLE이다. 기준을 설정으로 관리하고 경계값은 전체 API에서 동일하게 사용한다.
+확정 초기값(2026-11-13, X3): `freshForSeconds=120`, `maxStaleSeconds=600`, Redis TTL 900초. age가 120 이하이면 FRESH, 120 초과 600 이하이면 STALE(값을 제공하되 STALE로 표기), 600 초과 또는 유효 수집 이력이 없으면 UNAVAILABLE이다. 기준은 설정값으로 외부화하고 경계값은 전체 API에서 동일하게 사용한다. 원천 지연 측정 후 설정 변경으로 조정할 수 있다.
+
+설정별 담당 프로세스(설정 키 이름은 예시이며 설계안):
+
+| 설정 | 기본값 | 담당 프로세스 | 의미 |
+|---|---|---|---|
+| `realtime.freshness.fresh-seconds` | 120 (X3 확정 초기값) | 백엔드 | 조회 시 FRESH 판정 |
+| `realtime.freshness.max-stale-seconds` | 600 (X3 확정 초기값) | 백엔드 | 조회 시 STALE 제공 상한 |
+| `realtime.redis.version-ttl-seconds` | 900 (X3 확정 초기값) | Collector | 버전 Hash 물리 TTL(21.2) |
+| `realtime.redis.carry-over-max-age-seconds` | 900 (설계안) | Collector | 실패·누락 ID 이월 상한(원래 수집 시각 기준 age 컷오프, 21.2) |
+
+백엔드는 `fresh-seconds < max-stale-seconds`를, Collector는 `version-ttl-seconds > max-stale-seconds`와 `carry-over-max-age-seconds ≥ max-stale-seconds`를 기동 시 검증한다(STALE로 제공할 수 있는 값이 이월·만료로 먼저 사라지지 않게 함). 두 프로세스가 설정을 따로 가지므로 `max-stale-seconds`는 배포 설정에서 같은 값으로 함께 관리한다.
+
+수집 주기 정합: FRESH 120초를 정상 상태에서 유지하려면 Redis 실시간 값이 120초보다 짧은 주기로 갱신되어야 한다. Collector의 기존 5분 주기 수집만으로는 정상 상태에서도 대부분 STALE이 되므로, Collector 안에 **60초 주기의 실시간 Redis 갱신 job**을 5분 이력 수집과 분리하여 두는 것을 설계안으로 한다(21.2, R2 구현 시 확정).
 
 STALE은 마지막 수량과 수집 시각을 함께 반환한다. UNAVAILABLE은 내부 판정/상태 집계에 사용하는 상태이며 이후 공개 정책에 따라 성공 Station 목록에서 제외한다. 수량 미상을 0으로 표현하지 않는다. 실제 조회에 반환하는 수량은 검증된 0 이상의 정수다.
 
@@ -541,13 +630,13 @@ STALE은 마지막 수량과 수집 시각을 함께 반환한다. UNAVAILABLE�
 
 대여소 조회는 검증된 운영 상태가 `ACTIVE`인 대여소만 대상으로 한다. `INACTIVE`(폐쇄/운영 중단), `UNKNOWN`(운영 여부 미확인), 검증된 ID 매핑이 없는 대여소는 제외한다. 공개 필수값은 유효한 `stationId`, 공백이 아닌 `stationName`, 유효한 위도·경도다. nullable인 `rackTotCnt`, `shared`가 null인 것만으로 불완전 판정을 하지 않는다.
 
-Redis를 우선 조회하고, 연결 장애/timeout, 키 누락, 손상·필수값 불완전, 수량 제공 상한 초과이면 해당 ID에 한해 MySQL의 `station_latest_snapshot`을 Batch 조회한다. MySQL은 기준정보·이력과 마지막 유효 스냅샷을 보존하는 영구 저장소다. fallback은 검증된 하나의 스냅샷 단위로 수행하며 Redis의 이름과 MySQL의 수량처럼 서로 다른 시점의 필드를 임의로 섞지 않는다. Redis에서 사용할 수 있는 데이터가 있으면 MySQL 값으로 덮어쓰지 않는다.
+Redis를 우선 조회하고, 연결 장애/timeout, field 누락 또는 버전 키 만료(21.2), 손상·필수값 불완전, 수량 제공 상한 초과이면 해당 ID에 한해 MySQL의 `station_latest_snapshot`을 Batch 조회한다. MySQL은 기준정보·이력과 마지막 유효 스냅샷을 보존하는 영구 저장소다. fallback은 검증된 하나의 스냅샷 단위로 수행하며 Redis의 이름과 MySQL의 수량처럼 서로 다른 시점의 필드를 임의로 섞지 않는다. Redis에서 사용할 수 있는 데이터가 있으면 MySQL 값으로 덮어쓰지 않는다.
 
 최종 선택값은 공개 필수값과 유효한 수량·수집 시각을 갖고 제공 상한 이내여야 한다. 두 저장소에서 모두 사용할 수 있는 스냅샷이 없으면 목록과 경로 후보에서 제외한다. 실시간 필수값이 없거나 상한을 넘긴 UNAVAILABLE 항목은 성공 Station 객체로 노출하지 않는다. STALE은 불완전 데이터와 구별하여 일반 조회에서 경고와 함께 반환할 수 있다. `FRESH`이면서 `parkingBikeTotCnt=0`은 완전하고 정상인 데이터이며 일반 조회에서 0으로 반환한다. 미상/조회 실패를 0으로 바꾸지 않는다.
 
 fallback에도 **원래 수집 시각**을 유지하고 같은 120/600초 기준으로 최신성을 판정한다. SQL 조회 시각이나 Redis 재적재 시각을 `realtimeUpdatedAt`으로 덮어쓰지 않는다. 조회 응답에는 저장소 기술명을 추가하지 않고 `meta.warnings`에 필요한 경우 `FALLBACK_USED`를 제공한다.
 
-운영 상태·공개 가능 여부는 Redis의 공개용 스냅샷에 내부 필드 `operationStatus`, `publicationEligible`로 포함하여 gate로 사용한다. 수집 버전은 `snapshotVersion`으로 보관하며 이 내부 필드들은 사용자 DTO에 노출하지 않는다. 폐쇄/기준정보 무효화 시 MySQL 상태와 Redis 공개 gate·Elasticsearch를 동기화하고 기존 Redis 값으로 폐쇄 대여소를 되살리지 않는다. 상태 변경 반영 실패는 재시도·경보 대상으로 하며, 공개 가능 여부를 신뢰할 수 없으면 MySQL 확인 또는 제외로 처리한다. STALE/수량 0을 폐쇄로 해석하지 않는다.
+운영 상태·공개 가능 여부는 Redis의 공개용 스냅샷에 내부 필드 `operationStatus`, `publicationEligible`로 포함하여 gate로 사용한다. 수집 버전은 `snapshotVersion`으로 보관하며 이 내부 필드들은 사용자 DTO에 노출하지 않는다. 폐쇄/기준정보 무효화 시 MySQL 상태와 Redis 공개 gate를 동기화하고 백엔드 메모리 카탈로그(2.1)는 다음 재적재에서 반영한다. 재적재 전에도 공개 gate로 제외하며 기존 Redis 값이나 이전 카탈로그로 폐쇄 대여소를 되살리지 않는다. 상태 변경 반영 실패는 재시도·경보 대상으로 하며, 공개 가능 여부를 신뢰할 수 없으면 MySQL 확인 또는 제외로 처리한다. STALE/수량 0을 폐쇄로 해석하지 않는다.
 
 MySQL에서도 폐쇄/불완전 레코드는 삭제하지 않고 이력 보존용으로 유지한다. 위 제외 정책은 주변·상세·Batch·경로의 출발/도착 후보·예측 대상에 동일하게 적용한다. 장소 검색 결과 자체에는 적용하지 않는다.
 
@@ -635,7 +724,7 @@ GET /api/v1/stations/nearby?latitude=37.4979&longitude=127.0276&radius=1000&limi
 
 ### 필터·정렬·빈 결과
 
-`onlyAvailable=true`는 FRESH이고 `parkingBikeTotCnt > 0`인 대여소만 포함한다. STALE/UNAVAILABLE은 대여 가능하다고 판정하지 않는다. 먼저 반경 내 전체 후보에 실시간 값을 결합하고 필터와 정렬을 적용한 후 `limit`를 적용한다. Elasticsearch에서 가까운 30개만 잘라 자전거 수 정렬을 하면 반경 전체의 상위 결과가 아니므로 피한다.
+`onlyAvailable=true`는 FRESH이고 `parkingBikeTotCnt > 0`인 대여소만 포함한다. STALE/UNAVAILABLE은 대여 가능하다고 판정하지 않는다. 먼저 반경 내 전체 후보에 실시간 값을 결합하고 필터와 정렬을 적용한 후 `limit`를 적용한다. Geo 후보 단계(메모리 카탈로그 격자 인덱스, 2.1)에서 가까운 30개만 잘라 자전거 수 정렬을 하면 반경 전체의 상위 결과가 아니므로 피한다.
 
 `distance`는 직선거리 오름차순, `parkingBikeTotCnt`는 수량 내림차순(null 마지막) 후 거리 오름차순, `name`은 NFC 정규화 이름의 Unicode 코드 포인트 오름차순이다. 최종 동률은 `stationId` 오름차순으로 해소한다. `distanceMeters`는 도보 경로 길이가 아니다. 결과 없음은 `200`과 `items: []`다.
 
@@ -647,22 +736,23 @@ GET /api/v1/stations/nearby?latitude=37.4979&longitude=127.0276&radius=1000&limi
 latitude / longitude
         │
         ▼
-Elasticsearch geo_distance
+메모리 카탈로그 격자 인덱스 (반경을 덮는 셀 → 직선거리 필터)
         │
         ▼
-대여소 목록
+반경 내 전체 대여소 후보
         │
         ▼
-Redis MGET / Pipeline
+실시간 스냅샷 결합 (설계안: GET current + HMGET 또는 Lua 1회, 21.2;
+                   R3 인스턴스 스냅샷 캐시는 current 버전 변경 시 재적재)
         │
         ▼
 실시간 상태 Batch 조회 (실패/누락 ID는 MySQL Batch fallback)
         │
         ▼
-Application Service에서 결합
+Application Service에서 결합 → 공개 gate·필터·정렬 → limit
 ```
 
-Redis와 MySQL fallback 모두 Batch로 조회하여 N+1을 피한다. Elasticsearch 장애는 별도 의존성 오류이며 Redis fallback만으로 검색 장애까지 해결된다고 가정하지 않는다.
+Redis와 MySQL fallback 모두 Batch로 조회하여 N+1을 피한다. 메모리 카탈로그는 MySQL 기준정보에서 적재한다. 카탈로그를 한 번도 적재하지 못한 인스턴스의 대여소 조회 불가는 별도 의존성 오류이며(설계안: `503 SERVICE_UNAVAILABLE`, R3 구현 시 확정) Redis fallback만으로 해결된다고 가정하지 않는다. 적재 이후에는 MySQL 장애 중에도 마지막 적재본으로 후보를 찾을 수 있다. 카탈로그 재적재 주기·트리거와 미적재 상태의 readiness 반영은 후속 확인(41장)이다.
 
 ---
 
@@ -802,7 +892,7 @@ GET /api/v1/stations/realtime?stationIds=ST-123,ST-124,ST-125
 
 ### 장소 검색 입력·결과 계약
 
-`query`는 앞뒤 공백 제거 후 1~100 Unicode 코드 포인트(제안 제한)다. 누락/공백이면 `400 PLACE_QUERY_REQUIRED`, 길이 초과이면 `400 INVALID_PARAMETER`다. `limit`는 1~20의 정수(제안 제한)이며 기본 10이다. Provider가 지원하는 결과 수가 더 작으면 가능한 만큼만 반환한다.
+`query`는 앞뒤 공백 제거 후 1~100 Unicode 코드 포인트(제안 제한)다. 누락/공백이면 `400 PLACE_QUERY_REQUIRED`, 길이 초과이면 `400 INVALID_PARAMETER`다. **현재 구현 차이(2026-11-13 결정)**: 최소 길이는 2자를 유지하며 1자 검색어는 `400 INVALID_PARAMETER`다. 현재 구현 응답은 위 예시의 `query`/`items` 래퍼·`placeId`·`category` 대신 장소 배열(`name`, `address`, `location`, `sourceUrl`, `categoryGroupCode`)이다. `limit`는 1~20의 정수(제안 제한)이며 기본 10이다. Provider가 지원하는 결과 수가 더 작으면 가능한 만큼만 반환한다.
 
 좌표는 둘 다 생략하거나 둘 다 제공한다. 한쪽만 제공하면 `400 INVALID_PARAMETER`, 범위 오류는 `400 INVALID_COORDINATE`다. 좌표는 검색 우선순위 힌트이고, 결과의 `distanceMeters`는 그 좌표로부터의 직선거리이며 좌표가 없으면 null이다. 결과가 없으면 `200`과 `items: []`를 반환한다.
 
@@ -1126,6 +1216,8 @@ Global Model
 
 `data`에 `totalStationCount`, `freshStationCount`, `staleStationCount`, `unavailableStationCount`를 포함한다. ACTIVE이고 ID·이름·좌표가 검증된 공개 대상 대여소를 분모로 하고 뒤의 세 count 합은 total과 같아야 한다. 모두 FRESH이고 대상이 1개 이상이면 NORMAL, 제공 가능한 FRESH/STALE이 일부라도 있으면 DELAYED, 나머지는 UNAVAILABLE이다. 전체 수집 시각 하나만으로 모든 대여소를 정상 판정하지 않는다. 각 대여소는 Redis 우선/MySQL fallback을 적용한 결과로 집계한다. Redis의 전체 수집 시각을 읽을 수 없으면 MySQL ingestion_run의 마지막 전체 SUCCESS 완료 시각을 사용한다. 읽기 장애로 count를 확정하지 못하면 숫자를 추정하지 않고 503을 반환한다.
 
+`lastUpdatedAt`의 출처는 `station:realtime:last-success-at`이다. 이 키는 상태 API용이며 인스턴스 스냅샷 캐시의 재적재 트리거로 쓰지 않는다(재적재는 `station:realtime:current` 버전 변경 기준, 21.2·22장). X4 이후 기준 job은 Collector의 실시간 갱신 job(설계안: 60초 주기)이다. 이 job이 매 실행을 `ingestion_run`에 기록할지, 기록한다면 어느 범위(전체 SUCCESS/부분 성공/실패)까지인지는 후속 확인(41장)이며, 확정 전에는 위 MySQL 대체 경로가 60초 job이 아닌 5분 이력 수집의 run을 가리킬 수 있다.
+
 # 16. Health / Readiness / Liveness
 
 ## Liveness
@@ -1149,7 +1241,7 @@ Readiness에 아래 의존성을 일괄 포함하지 않는다. 공유 저장소
 ```text
 MySQL
 Redis
-Elasticsearch
+대여소 메모리 카탈로그 적재 여부 (Elasticsearch는 보류, 도입 시 후보 — 2.1)
 ```
 
 외부 지도 Provider 하나의 장애 때문에 대여소 조회까지 전체 차단되지 않도록 장애를 격리한다.
@@ -1190,7 +1282,7 @@ GET /api/v1/stations/nearby
     &longitude={현재경도}
     &radius=1000
             │
-            ├── Elasticsearch → 주변 대여소 Geo Search
+            ├── 메모리 카탈로그(격자 인덱스) → 주변 대여소 Geo Search
             └── Redis → 실시간 상태 Batch 조회 (실패/누락 ID는 MySQL Batch fallback)
             │
             ▼
@@ -1264,7 +1356,7 @@ GET /api/v1/stations/realtime
 Redis
 ```
 
-Client Polling은 제안 기본 60초이며 Collector 주기와 맞춘다. 앱이 백그라운드이거나 화면이 비활성이면 중단하고, 네트워크 오류와 429에는 Retry-After 및 지수 Backoff/jitter를 적용한다. 한 화면의 동일 대여소 요청을 합치고 지도 이동 요청은 취소하거나 최신 응답만 반영한다.
+Client Polling은 제안 기본 60초이며 Collector의 실시간 Redis 갱신 job 주기(60초, 21.2)와 맞춘다. 앱이 백그라운드이거나 화면이 비활성이면 중단하고, 네트워크 오류와 429에는 Retry-After 및 지수 Backoff/jitter를 적용한다. 한 화면의 동일 대여소 요청을 합치고 지도 이동 요청은 취소하거나 최신 응답만 반영한다.
 
 ---
 
@@ -1328,11 +1420,35 @@ Raw 적재와 정규화 학습 테이블의 중복 키는 구분한다. 위 UNIQ
 
 ## 21.2 실시간 Redis
 
+### 수집 주체 — 2026-11-13 결정(확정, X4)
+
+- **Collector가 bikeList 수집과 Redis 갱신을 전담**한다. 백엔드는 Redis를 읽기만 하며, 백엔드의 bikeList 수집 스케줄러는 제거한다(로드맵 R1). 같은 원천 API를 백엔드와 Collector가 이중 호출하지 않는다.
+- Collector에 `spring-data-redis` 의존성을 추가한다.
+- 기각한 대안: **백엔드 스케줄러**를 남기고 ShedLock 등으로 백엔드 인스턴스 중 하나만 실행. 수집 책임이 사용자 API 프로세스에 남아 2장의 수집/API 분리 원칙과 39.2의 Stateless 운영에 어긋나고, Collector와의 이중 호출이 계속되며, 락 저장소 의존이 추가되므로 채택하지 않는다. 이 기각은 백엔드 스케줄러에 대한 것이며, 아래 Collector 다중 인스턴스의 분산 락/단일 실행자 정책과는 별개다.
+
+### 수집 job·배포 — 설계안(R2 구현 시 확정)
+
+- Collector에 **60초 주기의 실시간 Redis 갱신 job**을 두고 기존 5분 주기 이력 수집과 분리한다(11.0 수집 주기 정합). 두 작업은 서로를 막지 않도록 별도 스케줄로 실행한다. 5분 이력이 60초 job의 수집 결과를 재사용할지는 후속 확인이다.
+- 서울 API 호출량: 전체 약 3,300건을 1,000건 단위로 받으면 1회 갱신에 4페이지다. 60초 job만이면 하루 약 5,760회, 5분 이력 job이 60초 결과를 재사용하지 않고 별도 호출하면 1,152회가 더해져 약 6,912회다(**5,760~6,912회/일**). 현재 백엔드 스케줄러도 매분 같은 API를 호출하고 있으므로(R1에서 제거), 60초 job 도입은 기존 백엔드 호출을 옮기는 것이며 순증이 아니다. 인증키의 일일 호출 한도 충족 여부는 **후속 확인**이다.
+- 배포 순서: **Collector를 먼저 배포**해 새 키 기록을 시작하고, 그 다음 백엔드(새 키 읽기, 스케줄러 제거)를 배포한다. 전환 중 이전 키와 새 키가 공존할 수 있으며, 백엔드 롤백 시 이전 스케줄러가 이전 키를 다시 기록한다.
+- 공용 키 겹쳐 쓰기 주의: `station:realtime:last-success-at`·`last-attempt-at`은 키 이름이 바뀌지 않는 공용 키다. 전환 기간(Collector 배포 후 백엔드 배포 전)이나 백엔드 롤백 중에는 이전 백엔드 스케줄러와 Collector가 같은 키를 번갈아 덮어쓸 수 있어, 상태 API(15장)가 어느 쪽 수집을 반영하는지 알 수 없게 된다. 전환·롤백 중에는 한쪽만 기록하도록 하고(예: 롤백한 백엔드는 스케줄러 비활성 설정으로 기동), 불가하면 해당 기간의 상태 API 값을 신뢰하지 않는다는 점을 운영 절차에 명시한다.
+
+### 키·값 계약 — 설계안(R2 구현 시 확정)
+
 ```text
-station:realtime:{stationId}
+station:realtime:v{n}         Hash, field=stationId, value=아래 JSON (버전 Hash TTL)
+station:realtime:current      현재 공개 버전 n (버전 포인터, TTL 없음)
 ```
 
-Redis Value는 원천 실시간 API의 Row 필드명을 유지한다.
+Collector는 매 실행에서 새 버전 Hash `station:realtime:v{n}`를 완전히 기록하고 TTL을 설정한 뒤 `station:realtime:current`를 n으로 교체한다. 포인터 교체는 저장된 버전보다 큰 n일 때만 원자적으로 수행한다(compare-and-set). n은 수집 버전 `snapshotVersion`(MySQL `station_latest_snapshot.snapshot_version`)과 같은 값을 쓰는 것을 권장한다. 그러면 Redis 값·포인터·MySQL 스냅샷의 늦은 쓰기 차단 기준이 하나가 된다.
+
+백엔드 조회는 `GET station:realtime:current`로 버전을 읽은 뒤 해당 Hash에 `HMGET`(전체 재적재는 `HGETALL`)을 보내는 2회 왕복이며, 왕복을 줄이려면 두 단계를 Lua 스크립트 1회로 묶을 수 있다. 키 이름과 값 직렬화(압축 여부)는 R2 구현에서 Collector·백엔드가 함께 확정하며, 변경 시 양쪽을 같은 배포 순서로 바꾼다.
+
+포인터 키에는 TTL을 두지 않는다. 따라서 Collector가 버전 Hash TTL(900초)보다 오래 중단되면 포인터는 이미 만료된 Hash를 가리키고 `HMGET` 결과가 전부 miss가 된다. 백엔드는 이를 "field 누락 또는 버전 키 만료"로 보고 전체 ID를 MySQL `station_latest_snapshot` Batch fallback으로 처리하며(11.0), 이 시점의 스냅샷은 대개 600초를 넘어 UNAVAILABLE로 판정된다.
+
+**Phase 1 구현(R2 읽기 호환, 2026-11-16 리뷰 M1 반영, 최종 동작은 Collector 구현 시 확정)**: MySQL `station_latest_snapshot` fallback이 아직 없으므로, 현재 백엔드(`realtime.redis.read-mode=auto`, 기본값)는 포인터가 있어도 그 버전 Hash가 존재하지 않으면(만료·Collector 중단·레거시 쓰기로 롤백) 경고 로그(1분에 1회로 억제)를 남기고 레거시 대여소별 키(`station:realtime:{id}`)를 읽는다. 버전 Hash가 존재하면 그 Hash에 없는 대여소는 미확인으로 두며 레거시 값으로 채우지 않는다(서로 다른 수집 경로의 값을 섞지 않음). `versioned` 모드는 fallback하지 않고 빈 결과를 반환한다. 존재 확인은 `HMGET` 결과가 요청한 ID 전부 miss일 때만 `EXISTS station:realtime:v{n}`을 보내므로, 그 경우에 한해 위 2회 왕복에 1회가 추가된다(값이 하나라도 있으면 추가 왕복 없음).
+
+Redis Value는 원천 실시간 API의 Row 필드명을 유지한다(X1). `snapshotVersion`, `operationStatus`, `publicationEligible`은 공개 gate·늦은 쓰기 차단용 **내부 필드**이며 사용자 DTO에 노출하지 않는다(11.0).
 
 ```json
 {
@@ -1343,9 +1459,25 @@ Redis Value는 원천 실시간 API의 Row 필드명을 유지한다.
   "stationLatitude": 37.4981,
   "stationLongitude": 127.0282,
   "stationId": "ST-123",
-  "realtimeUpdatedAt": "2026-09-16T20:59:00+09:00"
+  "realtimeUpdatedAt": "2026-09-16T20:59:00+09:00",
+  "snapshotVersion": 184211,
+  "operationStatus": "ACTIVE",
+  "publicationEligible": true
 }
 ```
+
+### TTL과 이월 상한 — 설계안(R2 구현 시 확정)
+
+| 설정 | 기본값 | 담당 | 적용 대상 |
+|---|---|---|---|
+| 버전 Hash TTL | 900초(X3 확정 초기값) | Collector | 각 `station:realtime:v{n}` Hash의 물리 만료. 버전 생성 시 설정 |
+| 이월 상한(age 컷오프) | 900초(설계안) | Collector | 실패·누락 ID의 직전 값을 새 버전에 이월할지 판단. 원래 `realtimeUpdatedAt` 기준 age가 상한 이하인 값만 이월 |
+| FRESH/STALE 경계 | 120/600초(X3 확정) | 백엔드 | 조회 시 판정(11.0) |
+
+- 최대 보존 시간: 한 값은 원래 수집 시각부터 이월 상한(900초)까지 새 버전에 실릴 수 있고, 마지막으로 실린 버전 Hash가 TTL(900초)만큼 더 남으므로 Redis에 물리적으로 남는 최대 시간은 약 1,800초다. 백엔드는 600초를 넘은 값을 제공하지 않으므로 이 차이는 메모리 비용일 뿐 공개 데이터에는 영향이 없다.
+- 동시 버전 수·메모리: 60초 주기·TTL 900초이면 동시에 존재하는 버전 Hash는 최대 약 15~16개다. 1개 버전은 약 3,300 field이며 값 1건을 약 300바이트로 가정하면 버전당 약 1MB, 전체 약 15MB 내외다(추정, 직렬화 확정 후 실측).
+- 검토 항목: 포인터 교체 직후 이전 버전의 TTL을 짧게 줄이는 방안(예: 진행 중 읽기 여유를 둔 120초)으로 동시 버전 수를 2~3개로 줄일 수 있다. 단, 이 경우 포인터가 가리키지 않는 이전 버전은 이월 원본으로 쓸 수 없으므로 이월은 항상 현재 포인터 버전에서 읽어야 한다. 채택 여부는 R2 구현에서 결정한다.
+- 이월 상한을 `max-stale-seconds`(600초)로 낮추는 방안도 검토 항목이다(600초 초과 값은 백엔드가 쓰지 않음).
 
 전체 수집 상태:
 
@@ -1354,15 +1486,17 @@ station:realtime:last-success-at
 station:realtime:last-attempt-at
 ```
 
-성공 시각과 마지막 시도 시각을 분리한다. `last-success-at`은 예정된 전체 페이지의 수집·검증·저장이 완료된 경우에만 갱신한다. 일부 성공 시 개별 대여소 값만 갱신할 수 있지만 전체 성공 시각은 유지하며 실패 페이지·누락 ID·수집 run ID를 기록한다. 빈/오류 행으로 마지막 유효값을 지우거나 그 시각을 새로 고치지 않는다. 늦게 완료된 이전 수집 작업이 새 값을 덮어쓰지 않도록 버전/시각 비교를 원자적으로 수행한다. Collector 다중 인스턴스에서는 분산 락 또는 단일 실행자 정책을 둔다.
+성공 시각과 마지막 시도 시각을 분리한다. `last-success-at`은 예정된 전체 페이지의 수집·검증·저장이 완료된 경우에만 갱신한다. 일부 성공 시 개별 대여소 값만 갱신할 수 있지만 전체 성공 시각은 유지하며 실패 페이지·누락 ID·수집 run ID를 기록한다. 버전 Hash 방식(설계안)에서는 이번 실행에서 검증된 행과 함께, 실패·누락 ID에 대해 직전 버전의 마지막 유효값을 원래 `realtimeUpdatedAt` 그대로 새 버전에 이월한 뒤 포인터를 교체한다. 원래 수집 시각 기준 age가 이월 상한(위 표, 기본 900초)을 넘은 값은 이월하지 않는다. 부분 성공 실행도 포인터를 교체하므로 `last-success-at`이 바뀌지 않아도 데이터는 바뀔 수 있다. 따라서 `last-success-at`은 상태 API(15장) 전용이며, 인스턴스 스냅샷 캐시의 재적재 트리거는 `station:realtime:current` 버전 변경이다(22장). 빈/오류 행으로 마지막 유효값을 지우거나 그 시각을 새로 고치지 않는다. 늦게 완료된 이전 수집 작업이 새 값을 덮어쓰지 않도록 버전/시각 비교를 원자적으로 수행한다. Collector 다중 인스턴스에서는 분산 락 또는 단일 실행자 정책을 둔다(위에서 기각한 백엔드 스케줄러 ShedLock과 별개).
 
-위 JSON을 Redis String으로 저장할 경우 MGET을 사용한다. Hash로 저장하는 구현이면 HGETALL 등의 Pipeline을 사용하며 MGET과 혼용하지 않는다. 값과 TTL은 원자적으로 갱신한다.
+실시간 값은 위 단일 Hash에 저장하고 `GET current` 후 `HMGET`(전체 재적재는 `HGETALL`, 또는 Lua 1회)으로 조회한다(설계안). 대여소별 개별 키와 MGET/키별 Pipeline 조회 방식은 사용하지 않는다. 새 버전 Hash의 값·TTL 기록을 마친 뒤에만 포인터를 교체하므로 읽는 쪽은 완성된 한 버전만 본다.
 
 ---
 
 ### 필수 영구 보존과 MySQL fallback
 
 Collector는 검증된 최신 실시간 행을 MySQL `station_latest_snapshot`에 대여소별 1건으로 보존한다. 같은 원래 수집 시각과 버전으로 Redis 공개용 스냅샷을 갱신한다. MySQL 저장 완료 후 Redis 반영을 기본 순서로 하며 Redis 반영 실패는 재시도한다. 두 저장소 간 분산 트랜잭션을 가정하지 않고 수집 버전 비교로 늦은 쓰기를 차단한다. MySQL 보존 실패는 수집 성공으로 처리하지 않으며 기존 Redis 값은 자신의 유효기간 동안 계속 제공할 수 있다.
+
+단서: 이 선기록 순서를 X4 이후의 60초 실시간 job에 그대로 적용할지(매 60초 실행마다 `station_latest_snapshot`·출처 메타데이터를 기록할지, 일부만 기록할지)는 41장의 후속 확인 항목이다. 확정 전까지는 위 기존 순서(MySQL 저장 완료 후 Redis 반영)를 기본으로 한다.
 
 시간별 `station_status_history`와 최신 `station_latest_snapshot`은 목적을 분리한다. 시간별 이력의 새 import 시각을 현재 실시간 수집 시각처럼 사용하지 않는다. MySQL fallback은 최신 스냅샷을 사용하며 분/시간별 Raw 전체 스캔을 하지 않는다.
 
@@ -1375,8 +1509,9 @@ Collector는 검증된 최신 실시간 행을 MySQL `station_latest_snapshot`�
 | 대상 | 저장소 | 정책 |
 |---|---|---|
 | 대여소 기준 데이터·최신 스냅샷 | MySQL | 영구 보존 및 Redis 미조회 시 Batch fallback |
-| 대여소 검색 Index | Elasticsearch | MySQL 기반 동기화 |
-| 실시간 자전거 상태 | Redis | 신선도와 물리 TTL 분리; 제안 TTL 900초, STALE 제공 상한 600초 |
+| 대여소 Geo 카탈로그 | 백엔드 인스턴스 메모리(격자 인덱스) | MySQL 기준정보에서 적재·재적재. Elasticsearch는 보류(2.1) |
+| 실시간 자전거 상태 | Redis | Collector가 기록, 백엔드는 읽기 전용(X4). 신선도와 물리 TTL 분리; 버전 Hash TTL 900초, STALE 제공 상한 600초(X3 확정 초기값, 설정값). 이월 상한은 별도 설정(21.2, 설계안) |
+| 실시간 스냅샷 인스턴스 캐시 | 백엔드 인스턴스 메모리 | 설계안(R3): `station:realtime:current` 버전 변경 시에만 Redis에서 재적재. `last-success-at`은 상태 API(15장) 전용이며 재적재 트리거로 쓰지 않음. 최신성은 원래 수집 시각으로 판정 |
 | 장기 시간대별 상태 | MySQL | `OA-22382` 초기 적재 + `OA-20447` 최근 데이터 보완 |
 | 대여/반납 흐름 | MySQL/분석 저장소 | `OA-21229` 원천 컬럼 보존 후 Feature 생성 |
 | 장소 검색 결과 | Redis 선택 | 짧은 TTL |
@@ -1387,7 +1522,7 @@ Collector는 검증된 최신 실시간 행을 MySQL `station_latest_snapshot`�
 
 ---
 
-TTL은 `maxStaleSeconds`보다 길게 두되 TTL 안에 남아 있어도 유효기간을 넘긴 수량은 사용하지 않고 MySQL fallback 후에도 미상이면 11.0의 제외/오류 규칙을 적용한다. Redis 자체 장애/키 누락에는 MySQL의 마지막 유효 스냅샷으로 fallback하며 동일한 데이터 제공 상한을 적용한다. 위치 Query와 경로 Body가 포함된 사용자 응답은 `Cache-Control: no-store`를 기본으로 하며, 서버 내부 캐시는 Provider 약관과 데이터 최신성 한도 내에서만 사용한다.
+TTL은 `maxStaleSeconds`보다 길게 두되 TTL 안에 남아 있어도 유효기간을 넘긴 수량은 사용하지 않고 MySQL fallback 후에도 미상이면 11.0의 제외/오류 규칙을 적용한다. Redis 자체 장애/field 누락 또는 버전 키 만료에는 MySQL의 마지막 유효 스냅샷으로 fallback하며 동일한 데이터 제공 상한을 적용한다. 위치 Query와 경로 Body가 포함된 사용자 응답은 `Cache-Control: no-store`를 기본으로 하며, 서버 내부 캐시는 Provider 약관과 데이터 최신성 한도 내에서만 사용한다.
 
 # 23. Timeout / Retry / Circuit Breaker
 
@@ -1484,7 +1619,7 @@ radius + limit
 
 # 28. DTO 정책
 
-JPA Entity, Elasticsearch Document, Redis Object를 API Response로 직접 반환하지 않는다.
+JPA Entity, Redis Object, 메모리 카탈로그 내부 객체(Elasticsearch 도입 시 Document 포함)를 API Response로 직접 반환하지 않는다.
 
 Java 21 `record`를 적극 사용한다.
 
@@ -1541,7 +1676,7 @@ presentation
     └── getClientConfig()
 ```
 
-Controller는 Redis, Elasticsearch, JPA, 외부 API를 직접 호출하지 않는다.
+Controller는 Redis, 메모리 카탈로그, JPA, 외부 API를 직접 호출하지 않는다(Elasticsearch를 도입하는 경우도 같다).
 
 ---
 
@@ -1624,7 +1759,7 @@ Sunset: Wed, 30 Jun 2027 23:59:59 GMT
 API 요청 수
 HTTP Status별 비율
 p50 / p95 / p99 Latency
-Elasticsearch Latency
+대여소 카탈로그 Geo 조회 Latency, 카탈로그 적재 시각·건수 (Elasticsearch 보류; 도입 시 Elasticsearch Latency 추가)
 Redis Latency
 외부 Provider 성공률
 외부 Provider Timeout 수
@@ -1732,7 +1867,7 @@ ECR Lifecycle Policy로 오래된 Image를 정리하되 최근 롤백용 Image�
                                                 │
                                  ┌──────────────┴──────────────┐
                                  ▼                             ▼
-                         Elasticsearch                     Redis
+                        메모리 카탈로그                    Redis
                        주변 대여소 검색                실시간 상태 조회
                                  │                             │
                                  └──────────────┬──────────────┘
@@ -1769,14 +1904,16 @@ ECR Lifecycle Policy로 오래된 Image를 정리하되 최근 롤백용 Image�
 
 | 항목 | 실제 서비스 기준 결정 |
 |---|---|
-| API 버전 | `/api/v1` 사용, Breaking Change 시 `v2` 병행 |
+| API 버전 | `/api/v1` 사용, Breaking Change 시 `v2` 병행. 예외: 운영 배포 전 X1 필드명 전환은 v1 내 웹과 동시 전환(5.1) |
 | 앱 강제 업데이트 | `/api/client-config`로 별도 관리 |
 | 메인 진입 화면 | 현재 위치 기준 주변 대여소 자동 표시 |
 | 기본 검색 반경 | 현재 명세상 1km, UX 테스트 후 조정 가능 |
 | 위치 획득 | Client가 GPS 획득, Backend는 좌표만 전달받음 |
-| 대여소 Geo Search | Elasticsearch |
+| 대여소 Geo Search | 백엔드 인스턴스 메모리 카탈로그 + 격자 인덱스. Elasticsearch는 도입 보류·향후 옵션(X2, 2.1) |
 | 실시간 자전거 수 | Redis 우선, MySQL 최신 스냅샷 fallback |
-| 공공데이터 필드명 | `rackTotCnt`, `parkingBikeTotCnt`, `shared`, `stationLatitude`, `stationLongitude`, `stationId`, `stationName` 우선 유지 |
+| 실시간 최신성 | FRESH ≤120초, STALE ≤600초, 초과 UNAVAILABLE, Redis TTL 900초. 설정값, 측정 후 조정 가능(X3) |
+| 실시간 수집 주체 | Collector가 bikeList 수집·Redis 갱신 전담, 백엔드는 Redis 읽기 전용, 백엔드 스케줄러 제거(X4, 21.2). 60초 job·키 계약은 설계안(R2 구현 시 확정) |
+| 공공데이터 필드명 | `rackTotCnt`, `parkingBikeTotCnt`, `shared`, `stationLatitude`, `stationLongitude`, `stationId`, `stationName` 유지 확정(X1) |
 | 영구 데이터 | MySQL: 기준정보·최신 스냅샷·시간별 이력·필수 출처 메타데이터 |
 | 대여소 이력 | 하나의 History Table + `station_id` |
 | AI | 전체 대여소 통합 Global Model |
@@ -1869,7 +2006,7 @@ Spring Boot Main Service
 AI Prediction Service
 Data Collector
 Redis
-Elasticsearch
+Elasticsearch (보류, 도입 시 — 2.1)
 MySQL
 외부 Route / Place Provider
 ```
@@ -1920,13 +2057,13 @@ Request
 Spring Boot
    ├── MySQL 조회
    ├── Redis 조회
-   ├── Elasticsearch 조회
+   ├── 메모리 카탈로그 조회 (Elasticsearch 도입 시 Elasticsearch 조회)
    └── 외부 Service 호출
    ↓
 Response
 ```
 
-어느 Spring Boot Pod가 요청을 받아도 동일한 결과를 제공할 수 있어야 한다.
+어느 Spring Boot Pod가 요청을 받아도 동일한 결과를 제공할 수 있어야 한다. 대여소 메모리 카탈로그와 실시간 스냅샷 인스턴스 캐시(2.1, 22장)는 MySQL·Redis에서 언제든 재구성할 수 있는 파생 캐시이므로 Stateless 원칙에 어긋나지 않는다. Spring Boot는 실시간 데이터를 수집하지 않는다(X4).
 
 ### Stateful
 
@@ -1935,7 +2072,7 @@ Response
 ```text
 MySQL
 Redis
-Elasticsearch
+Elasticsearch (보류, 도입 시)
 ```
 
 이들은 단순히 Pod Replica를 여러 개 만드는 것만으로 안정성이 해결되지 않는다.
@@ -1962,7 +2099,7 @@ Kubernetes
 외부 상태 저장 시스템
 ├── RDS MySQL
 ├── Redis
-└── Elasticsearch
+└── Elasticsearch (보류, 도입 시)
 ```
 
 Stateless Application을 우선 Kubernetes에서 운영하고 Stateful System은 별도의 데이터 지속성 및 복구 정책에 따라 관리한다.
@@ -2036,7 +2173,7 @@ Kubernetes는 Application Workload의 자동 복구와 Replica 운영을 통해 
 
 RDS MySQL
 Redis
-Elasticsearch
+Elasticsearch (보류, 도입 시)
 ```
 
 여기서 각 Application은 독립적으로 Replica 수를 조절할 수 있다.
@@ -2175,7 +2312,12 @@ Kubernetes는 서비스의 가용성·확장성·배포 안정성 요구에 따�
 
 | 항목 | 현재 문서의 상태 | 확정/검증 기준 |
 |---|---|---|
-| 최신성 및 TTL | 120/600/900초 제안 | 원천 지연 측정과 장애 UX 검증 |
+| 최신성 및 TTL | 결정(확정, X3): 120/600/900초 초기값, 설정값으로 외부화. 설계안: 900초는 버전 Hash TTL에 적용, 이월 상한(age 컷오프)은 별도 설정(기본 900초), 이전 버전 TTL 단축은 검토 항목(21.2) | 원천 지연 측정 후 설정으로 조정 가능; 장애 UX 검증; 이월 상한·이전 버전 TTL 단축은 R2 구현 시 확정 |
+| 실시간 수집 주체 | 결정(확정, X4): Collector가 bikeList 수집·Redis 갱신 전담, 백엔드 읽기 전용, 백엔드 스케줄러 제거(ShedLock 대안 기각), Collector `spring-data-redis` 추가 | 로드맵 R1 구현 |
+| 실시간 수집 주기·호출량 | 설계안(R2 구현 시 확정): Collector 60초 실시간 job, 5분 이력 수집과 분리 | 후속 확인: 서울 API 인증키 일일 호출 한도(5,760~6,912회/일, 5분 이력 job이 60초 결과를 재사용하지 않을 경우 포함; 현재 백엔드 스케줄러도 매분 호출 중이므로 순증 아님), 5분 이력의 60초 결과 재사용 여부, 60초 job의 `station_latest_snapshot`·출처 메타데이터 기록 범위(Collector 스키마 확정과 함께, 21.2 단서), 60초 job의 `ingestion_run` 기록 범위와 상태 API 기준(15장) |
+| Redis 키·값 계약 | 설계안(R2 구현 시 확정): `station:realtime:v{n}` 단일 Hash(field=stationId) + `station:realtime:current` 포인터 교체, `GET current` + `HMGET`(또는 Lua), n = `snapshotVersion` 권장, 실패·누락 ID 이월 규칙 | 후속 확인: 최종 키 이름·값 직렬화(압축 여부)를 R2 구현에서 Collector·백엔드가 함께 확정 |
+| 응답 필드명 전환 | 결정(확정, X1): 원천 필드명. 설계안: A1과 같은 시점 v1 내 웹 동시 전환 | 후속 확인: `mobile/` 영향, `address` 등 확장 필드 유지 여부(5.1) |
+| 대여소 Geo Search | 결정(확정, X2): Elasticsearch 보류. 설계안(R3): 메모리 카탈로그 + 격자 인덱스, 미적재 시 `503`, 스냅샷 캐시는 `current` 버전 변경 시 재적재 | 후속 확인: 카탈로그 재적재 주기·트리거, 미적재 상태의 readiness 반영, R3 이후 p95 실측. 재검토 트리거는 2.1 |
 | Route/Place Provider | 업체 미정 | 도보·자전거·자전거도로 옵션, WGS84 변환, 비용, 이용약관 |
 | 서비스 영역 | 경계 미정 | 지원 지역과 Provider 범위 설정 및 사용자 안내 |
 | 모델 예측 범위 | 최대 horizon 미정 | 시간대별 오차 평가; 확정 전 API 운영 공개 불가 |
@@ -2186,3 +2328,64 @@ Kubernetes는 서비스의 가용성·확장성·배포 안정성 요구에 따�
 | 데이터 출처 충돌 | 선택 규칙 미정 | Raw 보존과 Canonical 우선순위/정정 정책 |
 
 문서의 JSON 예시는 구조 설명이며 표/본문의 필드 계약이 우선한다. 실제 구현 전 OpenAPI 3.1 문서에 required, nullable, enum, HTTP 응답과 예시를 옮겨 기계 검증해야 한다. 이 검토본은 운영 배포 완료나 외부 Provider 연결 검증을 의미하지 않는다.
+
+---
+
+# 42. Phase 3 구현 확장·차이 (2026-11-17 기록)
+
+이 장은 Phase 3([phase3-2026-11-17.md](phase3-2026-11-17.md)) 구현이 위 본문과 **다르거나 본문에 없는** 계약을 모은 것이다. 본문을 고쳐 쓰지 않고 차이로 남긴다. 구현 근거는 백엔드 코드이며, "작업 트리"로 표시한 항목은 기록 시점 독립 리뷰 반영 중(미커밋)이다.
+
+## 42.1 경로 검색(13.1) 확장 필드
+
+| 항목 | 위치 | 계약 |
+|---|---|---|
+| `departureStationId`, `arrivalStationId` | 요청 최상위 | 선택, 최대 30자. 지정하면 그 대여소를 대여/반납 지점으로 고정(ID로 조회, 자동 반경과 무관). 없거나 공개 대상이 아니면 `404 STATION_NOT_FOUND`, 지정 출발지의 수량이 없으면 `422 NO_AVAILABLE_ORIGIN_STATION`. 확장 필드(결정 2) |
+| `data.attribution` | 응답 | 경로 출처 문자열(예: 카카오). 확장 필드 |
+| `segments[].steps` | 응답 각 구간 | `[{instruction, distanceMeters, durationSeconds}]`, Provider의 한국어 안내. 없으면 빈 배열. 확장 필드 |
+| `segments[].bikeRoadPreferred` | 응답 | BIKE 구간에만 포함(WALK에는 필드 없음) |
+| 옵션 이름 | 요청 `options` | `preferBikeRoad`(본문과 같음). 명시적 `null`은 400 `INVALID_PARAMETER`, 생략은 기본값 |
+| `origin`·`destination` 에코 | 응답 | 포함하지 않음(옛 `/routes/plan`에는 있음) |
+
+동작 차이·구체화:
+- `maxWalkingDistanceMeters` 때문에 모든 후보가 제외되면 `404 ROUTE_NOT_FOUND`(결정 4).
+- Kakao: `preferBikeRoad=true` → 자전거 `BIKE_ONLY`, `false` → `SHORTEST`. ORS 엔진에서 `true`는 `422 UNSUPPORTED_ROUTE_OPTION`(조용히 무시하지 않음). `GET /api/v1/routes/status`의 `data.bikeRoadPreferenceSupported`가 지원 여부를 알린다(작업 트리, 리뷰 L3).
+- 후보는 한쪽 최대 3개(`routing.search.max-station-candidates`), Kakao 호출은 검색 1건당 최대 15회(도보 6 + 자전거 9). 대안 경로는 같은 요청에서 계산한 값으로 만들어 추가 호출이 없다.
+- 부분 실패: 완성 경로가 1개 이상이면 `200`, `meta.partial=true`, `meta.warnings=[{code: PROVIDER_PARTIAL_FAILURE}]`. 0개면 가장 앞선 오류 코드.
+- 재조회: 추천 경로 출발지의 수량이 사라지면 다음 유효 대안을 추천으로 올리고(추가 호출 없음), 남은 대안이 없을 때만 `409 RENTAL_STOCK_CHANGED`. `excludeStationsWithoutBikes=false`면 409 없음.
+- 숫자: 구간 거리·시간은 정수로 반올림하고 합계는 반올림한 구간의 합(결정 8).
+- `routeId`: `route-` + 12 hex, 저장하지 않는다.
+
+## 42.2 본문 크기 상한 413
+
+`/api/v1` 아래 JSON `POST`는 16 KiB(16,384 bytes)가 상한이다. `Content-Length`가 넘으면 본문을 읽기 전에, 길이 없는(chunked) 본문은 읽는 도중 넘는 순간 `413 PAYLOAD_TOO_LARGE`. 경로 변형(`;param`)도 같은 규칙(작업 트리, 리뷰 L1).
+
+## 42.3 `/routes/plan` 병행과 Deprecation 설정(32장 구체화)
+
+`POST /api/v1/routes/plan`은 `/routes/search`의 추천 경로를 옛 응답 형식(`legs`, `departureStation`/`arrivalStation`, `path` 좌표 배열)으로 돌려주는 어댑터로 한 릴리스 유지한다(결정 1·23). 응답에 `Deprecation: @<unix초>`, `Sunset: <HTTP-date>` 헤더를 붙이며 오류 응답에도 붙는다. 설정은 `application.yml`의 `api.deprecations[]`(`pattern`, `deprecation`, `sunset`(RFC 3339), 선택 `link` → `Link: <...>; rel="deprecation"`), 기동 시 `sunset >= deprecation`을 검증한다. 현재 값: deprecation `2026-11-17T00:00:00Z`, sunset `2027-06-30T23:59:59Z`. 웹은 `/routes/search`를 사용한다.
+
+## 42.4 지도 영역 API (R4, 확장)
+
+- `GET /api/v1/stations/clusters?south&north&west&east&level` (확장 API): `level` 5~8(정수, 그 밖·누락은 `400 INVALID_PARAMETER`), 영역 규칙은 viewport와 같다(좌표 범위 `INVALID_COORDINATE`, 뒤집힘·1° 초과 `INVALID_PARAMETER`). `data = {level, cellDegrees, items[{latitude, longitude, stationCount, parkingBikeTotCnt, freshCount}]}`. 셀 크기 기본 5→0.003°, 6→0.005°, 7→0.01°, 8→0.02°(`station.map.cluster-cell-degrees`), 좌표는 셀 안 FRESH/STALE 대여소의 평균. `parkingBikeTotCnt`는 FRESH+STALE 합(UNAVAILABLE 제외). STALE 포함·UNAVAILABLE 제외 시 `meta.partial=true`와 `STALE_DATA`/`REALTIME_DATA_UNAVAILABLE` 경고. Rate Limit `stations` 그룹.
+- `GET /api/v1/stations/viewport` 상한: FRESH/STALE 결과가 500개(`station.map.viewport-max-items`)를 넘으면 영역 중심에서 가까운 500개와 `meta.partial=true`, `meta.warnings=[{code: RESULT_TRUNCATED}]`.
+
+## 42.5 client-config·점검(6장 구체화)
+
+- `GET /api/client-config`는 `/api/v1` 밖이며 점검 중에도 200, Rate Limit 대상 아님, `Cache-Control: no-store`. `platform`은 소문자 `android|ios|web`만(그 밖 400 `INVALID_PARAMETER`), 모바일은 `appVersion` 필수(누락·형식 오류 400), `buildNumber`는 받기만 한다. `web`은 본문 6장과 같이 버전 null·업데이트 false.
+- 설정(환경 변수): `CLIENT_WEB_MAINTENANCE`(기본 false) — 이름과 달리 **서버 전체** 점검 스위치이며 모든 플랫폼 응답의 `maintenance`에 반영되고 `/api/v1/**`를 `503 MAINTENANCE_MODE`로 막는다(`/api/client-config`·actuator 제외, CORS preflight 제외). `CLIENT_WEB_MAINTENANCE_MESSAGE`(비우면 `MAINTENANCE_MODE` 기본 문구). 모바일 정책은 `client.platforms.android|ios.{minimum-version, latest-version, store-url}`(기본 0.1.0, 없음), `client.supported-api-versions`(기본 `[v1]`).
+- 비ASCII 문구는 컨테이너 `LANG=C.UTF-8`이 필요하다(이미지에 설정, 작업 트리·리뷰 L2).
+- 운영 전환: 점검 값은 런타임에 바뀌지 않으므로 컨테이너를 다시 만든다. EC2에서는 Deploy 워크플로 `action=maintenance-on|off`(→ `deploy.sh maintenance on|off`, blue/green 재생성) — [deploy-ec2.md](deploy-ec2.md) 8장.
+- 인터셉터 순서: Deprecation → 점검 → 본문 상한 → Rate Limit. 점검으로 막힌 요청도 Deprecation 헤더를 받고 Rate Limit 토큰을 쓰지 않는다.
+
+## 42.6 Observability(33장 구체화)
+
+- Prometheus: 관리 포트 **8090**의 `/actuator/prometheus`(노출 `health,info,prometheus`). API 포트 8080에서는 404. 공통 태그 `application`, `http.server.requests` 히스토그램 버킷 켬. EC2에서는 같은 Docker 네트워크의 Prometheus(`127.0.0.1:9090`)·Grafana(`127.0.0.1:3000`)가 수집·표시하고 SSM 포트 포워딩으로 본다.
+- 앱 meter: `ddareungi.provider.calls`(Timer, `provider`·`outcome`), `ddareungi.provider.circuit.state`, `ddareungi.realtime.snapshot.age.seconds`, `ddareungi.realtime.stations{status}`, `ddareungi.station.catalog.size`, `ddareungi.station.catalog.age.seconds`, `ddareungi.ratelimit.rejected{group}`. 태그에 좌표·대여소 ID 없음.
+- 구조화 로그: `infra` 프로필에서 Spring Boot 내장 ECS JSON 한 줄(`logging.structured.format.console=ecs`), `local`은 텍스트. 접근 로그는 key-value `method`, `path`(쿼리 제외, 길이 제한), `status`, `elapsedMs`와 MDC `requestId`; actuator 제외. 33장 예시의 필드 구성과 같지만 ECS 필드명 아래에 담긴다.
+
+## 42.7 CI/CD·이미지(34·35장과 차이)
+
+- `latest` 태그를 쓰지 않는다. 태그는 40자 커밋 SHA만, ECR immutable, 배포는 digest, lifecycle 최근 20개.
+- 배포: `workflow_run`(CI 성공·main push) → OIDC → ECR → SSM 전용 Command 문서(`ddareungi-deploy`) → EC2 `deploy.sh` blue/green(127.0.0.1:18081/18082, readiness 후 nginx upstream 원자 교체, 새 색 직접 스모크 + nginx 경유 스모크, 실패 시 복원). 스모크는 `client-config`의 `maintenance` 일치와 `/routes/status`의 `"configured":true`를 본다.
+- 수동 실행(`workflow_dispatch`): `action = deploy(롤백) | force-restart | maintenance-on | maintenance-off`. 상세는 [deploy-ec2.md](deploy-ec2.md).
+- 실제 AWS·Actions 실행은 기록 시점 미검증이다.
+

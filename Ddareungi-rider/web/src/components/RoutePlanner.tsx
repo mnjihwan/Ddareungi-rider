@@ -2,15 +2,17 @@ import {requestLocation, MAX_LOCATION_ACCURACY} from "../lib/location";
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import axios from 'axios';
 import { useQuery } from '@tanstack/react-query';
-import { api, nearby, planBikeRoute, reversePlace } from '../lib/api';
-import type { BikeRoute, Coordinates, Place, Station, RouteEndpointRole } from '../lib/types';
+import { nearby, searchBikeRoutes, reversePlace, routingStatus } from '../lib/api';
+import { hasChosenStation, routeErrorMessage } from '../lib/routeSearch';
+import { reportApiError } from '../lib/clientConfig';
+import { stationLocation, type BikeRoute, type Coordinates, type Place, type RoutePlan, type Station, type RouteEndpointRole } from '../lib/types';
 import { availability, AVAILABILITY_LABEL, compareStations, distanceLabel, observationLabel } from '../lib/status';
 import { Icon } from './Icon';
 import { LocationSearchBox } from './LocationSearchBox';
 import { SwipeRow } from './SwipeRow';
 
 const minutes = (seconds: number) => `${Math.max(0, Math.ceil(seconds / 60))}분`;
-export function RoutePlanner({onStationSelectionChange, onPlanningChange, active, favoriteStations, favoritesLoading, favoritesError, userLocation, userLocationAccuracy, endpointSelection, pickedEndpoint, plan, onPlan, onLocation, onSelectStation, onPickEndpoint, onPlaceSelected, searchCenter, onSearchStart}: {
+export function RoutePlanner({onStationSelectionChange, onPlanningChange, active, favoriteStations, favoritesLoading, favoritesError, userLocation, userLocationAccuracy, endpointSelection, pickedEndpoint, plan: routePlan, selectedRouteIndex, onSelectRoute, onPlan, onLocation, onSelectStation, onPickEndpoint, onPlaceSelected, searchCenter, onSearchStart}: {
   onPlanningChange: (pending: boolean) => void;
   onStationSelectionChange: (stations: Station[]) => void;
   active: boolean;
@@ -23,8 +25,12 @@ export function RoutePlanner({onStationSelectionChange, onPlanningChange, active
   userLocationAccuracy: number | null;
   pickedEndpoint: {role:RouteEndpointRole;location:Coordinates;revision:number} | null;
   endpointSelection: {role:"origin"|"destination";place:Place;station?:Station;revision:number} | null;
-  plan: BikeRoute | null;
-  onPlan: (plan: BikeRoute | null) => void;
+  /** Search result: `routes[0]` recommended, the rest alternatives. */
+  plan: RoutePlan | null;
+  /** Index into `plan.routes` of the route shown on the map and in the detail below. */
+  selectedRouteIndex: number;
+  onSelectRoute: (index: number) => void;
+  onPlan: (plan: RoutePlan | null) => void;
   onLocation: (location: Coordinates, accuracy:number) => void;
   onSelectStation: (station: Station) => void;
   onPickEndpoint: (role:RouteEndpointRole) => void;
@@ -42,15 +48,14 @@ export function RoutePlanner({onStationSelectionChange, onPlanningChange, active
   const previousLocation = useRef(userLocation);
   const request = useRef<AbortController | null>(null);
   const resultElement = useRef<HTMLDivElement>(null);
-  const status = useQuery({queryKey:['routing-status'], queryFn: async ({signal}) =>
-    (await api.get<{data:{configured:boolean}}>('/routes/status',{signal})).data.data,
-    staleTime:30_000, retry:1});
+  const plan: BikeRoute | null = routePlan ? routePlan.routes[selectedRouteIndex] ?? routePlan.routes[0] ?? null : null;
+  const status = useQuery({queryKey:['routing-status'], queryFn: ({signal}) => routingStatus(signal), staleTime:30_000});
   const nearbyCenter = (activeEndpoint === 'origin' ? origin : destination)?.location ?? searchCenter;
   const nearbyStations = useQuery({
     queryKey: ['route-nearby', nearbyCenter],
     queryFn: ({signal}) => nearby(nearbyCenter, 1000, signal),
     enabled: active && !plan,
-    staleTime: 30_000, refetchInterval: active && !plan ? 60_000 : false, retry: 1,
+    staleTime: 30_000, refetchInterval: active && !plan ? 60_000 : false,
   });
   const suggestions = [...(nearbyStations.data ?? [])].sort(compareStations).slice(0, 3);
   function assignEndpoint(role: RouteEndpointRole, place: Place | null, station: Station | null = null, accuracy: number | null = null) {
@@ -60,7 +65,7 @@ export function RoutePlanner({onStationSelectionChange, onPlanningChange, active
     else {setDestination(place);setArrival(station);}
   }
   function chooseStation(station: Station) {
-    const place = {name:station.stationName,address:station.address,location:station.location};
+    const place = {name:station.stationName,address:station.address ?? '',location:stationLocation(station)};
     assignEndpoint(activeEndpoint,place,station);onPlaceSelected(place);
   }
   useEffect(() => { onPlanningChange(pending); }, [pending, onPlanningChange]);
@@ -68,7 +73,8 @@ export function RoutePlanner({onStationSelectionChange, onPlanningChange, active
     onStationSelectionChange([pinned,arrival].filter((station): station is Station=>station!==null));
   }, [pinned,arrival,onStationSelectionChange]);
   useEffect(() => () => request.current?.abort(), []);
-  useEffect(() => { if(plan)resultElement.current?.scrollIntoView({block:'start'}); }, [plan]);
+  // Scroll to a new result only; choosing an alternative keeps the list where the user tapped.
+  useEffect(() => { if(routePlan)resultElement.current?.scrollIntoView({block:'start'}); }, [routePlan]);
   useEffect(() => {
     if (!endpointSelection) return;
     setActiveEndpoint(endpointSelection.role);
@@ -119,12 +125,17 @@ export function RoutePlanner({onStationSelectionChange, onPlanningChange, active
     if (!origin || !destination || pending) return;
     const controller = new AbortController(); request.current?.abort(); request.current = controller;
     setPending(true); setError(''); onPlan(null);
+    const stations = {departureStationId: pinned?.stationId, arrivalStationId: arrival?.stationId};
     try {
-      const result = await planBikeRoute(origin.location, destination.location, pinned?.stationId, controller.signal, arrival?.stationId);
+      // Chosen stations lift the walking limit; an unloaded/failed status keeps preferBikeRoad omitted (as before).
+      const result = await searchBikeRoutes(origin.location, destination.location, stations, controller.signal,
+        undefined, status.data);
       if (request.current === controller && !controller.signal.aborted) onPlan(result);
     } catch (failure) {
-      if (!controller.signal.aborted) setError(axios.isAxiosError(failure)
-        ? failure.response?.data?.message || '경로를 가져오지 못했어요. 잠시 후 다시 검색해 주세요.'
+      // Phase 3 A6: route codes/statuses map to guidance (routeErrorMessage); other envelopes still show
+      // error.message; 503 MAINTENANCE_MODE switches the app to the maintenance screen.
+      if (!controller.signal.aborted && !reportApiError(failure)) setError(axios.isAxiosError(failure)
+        ? routeErrorMessage(failure, {stationChosen: hasChosenStation(stations)})
         : '길찾기 연결을 확인해 주세요.');
     } finally { if (request.current === controller) {setPending(false);request.current=null;} }
   }
@@ -172,11 +183,20 @@ export function RoutePlanner({onStationSelectionChange, onPlanningChange, active
             aria-pressed={(activeEndpoint==='origin'?pinned:arrival)?.stationId===station.stationId} onClick={()=>chooseStation(station)}>
             <span><b>{station.stationName.replace(/^\s*\d+\s*\.\s*/, '')}</b>
               <small>{distanceLabel(station.distanceMeters)} · {AVAILABILITY_LABEL[state]}</small></span>
-            <span className="route-nearby-stock">{state==='unknown'?'수량 미확인':`${station.availableBikeCount}대`}<small>{activeLabel}로 선택</small></span>
+            <span className="route-nearby-stock">{state==='unknown'?'수량 미확인':`${station.parkingBikeTotCnt}대`}<small>{activeLabel}로 선택</small></span>
           </button>;
         })}</div> : <p>1km 이내에 대여소가 없어요. 다른 장소를 검색해 주세요.</p>}
     </section>}
-    {plan && <div className="route-result" aria-live="polite" ref={resultElement}>
+    {routePlan && plan && <div className="route-result" aria-live="polite" ref={resultElement}>
+      {routePlan.routes.length > 1 && <div className="route-options" role="group" aria-label="경로 후보">
+        {routePlan.routes.map((option,index)=><button key={option.routeId} type="button" aria-pressed={index===selectedRouteIndex}
+          onClick={()=>onSelectRoute(index)}>
+          <b>{index===0?'추천':`대안 ${index}`} · {minutes(option.durationSeconds)}</b>
+          <small>{distanceLabel(option.distanceMeters)} · 도보 {distanceLabel(option.walkingDistanceMeters)}</small>
+          <small>{option.departureStation.stationName.replace(/^\s*\d+\s*\.\s*/, '')} → {option.arrivalStation.stationName.replace(/^\s*\d+\s*\.\s*/, '')}</small>
+        </button>)}
+      </div>}
+      {routePlan.partial && <p className="subtle-notice" role="status">일부 대여소 조합은 경로 서비스 응답이 없어 비교하지 못했어요.</p>}
       <div className="route-summary"><span>예상 이동 시간<strong>{minutes(plan.durationSeconds)}</strong></span><span>총 이동 거리<strong>{distanceLabel(plan.distanceMeters)}</strong></span></div>
       <p className="route-note">대여·반납 시간은 별도예요. 가까운 대여소 후보 중 이동 시간이 짧은 경로를 골랐어요.</p>
       <ol className="route-legs">
@@ -185,7 +205,7 @@ export function RoutePlanner({onStationSelectionChange, onPlanningChange, active
           <p>{index===0?origin?.name:index===1?plan.departureStation.stationName:plan.arrivalStation.stationName}<span> → </span>{index===0?plan.departureStation.stationName:index===1?plan.arrivalStation.stationName:destination?.name}</p>
           {index<2 && <button className="route-station" onClick={()=>onSelectStation(index===0?plan.departureStation:plan.arrivalStation)}>
             <b>{index===0?'대여':'반납'} · {index===0?plan.departureStation.stationName:plan.arrivalStation.stationName}</b>
-            <small>{index===0?`조회 시 ${plan.departureStation.availableBikeCount}대 · ${observationLabel(plan.departureStation)}`:'현장에서 반납 가능 여부를 확인해 주세요.'}</small>
+            <small>{index===0?`조회 시 ${plan.departureStation.parkingBikeTotCnt ?? '—'}대 · ${observationLabel(plan.departureStation)}${plan.rentalAvailability==='AVAILABLE_AT_FETCH'?'':plan.rentalAvailability==='UNAVAILABLE_AT_FETCH'?' · 조회 시 대여 가능한 자전거 없음':' · 대여 가능 여부 미확인'}`:'현장에서 반납 가능 여부를 확인해 주세요.'}</small>
           </button>}
           {leg.steps.length>0 && <details className="route-steps"><summary>구간별 안내</summary><ol>{leg.steps.map((step,i)=><li key={i}>{step.instruction} <small>{distanceLabel(step.distanceMeters)}</small></li>)}</ol></details>}
         </li>)}
@@ -204,7 +224,7 @@ function PlaceInput({label,active,onActivate,selected,onSelect,center,onSearchSt
     <LocationSearchBox id={`route-${label}`} label={`${label} 장소 또는 주소 검색`} variant="route" openOnFocus={!selected} text={text} center={center}
       onTextChange={value=>{setText(value);onSearchStart();onSelect(null);}} onSubmit={onSearchStart}
       onChoose={(suggestion,query)=>onSelect(suggestion.kind==='place'?suggestion.place:
-        {name:suggestion.station.stationName,address:suggestion.station.address,location:suggestion.station.location},query)}/>
+        {name:suggestion.station.stationName,address:suggestion.station.address ?? '',location:stationLocation(suggestion.station)},query)}/>
     {selected && <span className="route-place-selected">선택됨 {selected.address && `· ${selected.address}`}</span>}
   </div>;
 }

@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Fake curl for host-side smoke requests, either through "nginx" (port 18080) or directly to a color's port.
+# Through nginx, /api/... goes to the container whose port is in the live upstream ($FAKE_STATE/live-upstream);
+# a direct request goes to the container published on that port. No running container -> 502.
+#   /api/client-config...  -> 200 {"data":{"maintenance":<container CLIENT_WEB_MAINTENANCE>}}
+#   /api/v1/routes/status  -> 200 {"data":{"configured":true}}; 503 MAINTENANCE_MODE when maintenance is on
+# Knobs: FAKE_SMOKE_FAIL_COLOR=<color>        -> 503 for that color, through nginx only
+#        FAKE_CONFIGURED_FALSE_COLOR=<color>  -> that color answers "configured":false
+#        FAKE_PROXY_CONFIGURED_FALSE_COLOR=<color> -> same, through nginx only (direct requests stay true)
+#        FAKE_WEB_SMOKE_FAIL=1                -> non-/api paths answer 500
+# Other paths: 200 if $WEB_ROOT/current/index.html exists, else 404.
+# Supports -o <file> (body discarded when /dev/null) and -w <format> with \n and %{http_code}.
+set -euo pipefail
+S=${FAKE_STATE:?}
+url=${*: -1}
+echo "curl $url" >>"$S/calls.log"
+out=""; fmt=""
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  case ${args[i]} in
+    -o) out=${args[i+1]} ;;
+    -w) fmt=${args[i+1]} ;;
+  esac
+done
+hostport=${url#http://}; hostport=${hostport%%/*}; reqport=${hostport##*:}
+path=/${url#http://*/}
+code=502; body='{"success":false}'
+if [[ $path == /api/* ]]; then
+  via_proxy=0; port=$reqport
+  if [[ $reqport == 18080 ]]; then
+    via_proxy=1
+    port=$(grep -Eo '127\.0\.0\.1:[0-9]+' "$S/live-upstream" 2>/dev/null | head -1 | cut -d: -f2 || true)
+  fi
+  for d in "$S"/containers/*/; do
+    [[ -f $d/port && $(cat "$d/port") == "$port" && $(cat "$d/running") == true ]] || continue
+    color=$(cat "$d/color")
+    maint=$(sed -n 's/^CLIENT_WEB_MAINTENANCE=//p' "$d/env" 2>/dev/null | tail -n 1)
+    [[ ${maint,,} == true ]] && maint=true || maint=false
+    if [[ $via_proxy == 1 && ${FAKE_SMOKE_FAIL_COLOR:-} == "$color" ]]; then
+      code=503; body='{"success":false,"error":{"code":"FAKE"}}'
+    elif [[ $path == /api/client-config* ]]; then
+      code=200; body="{\"success\":true,\"data\":{\"platform\":\"web\",\"maintenance\": $maint,\"maintenanceMessage\":null}}"
+    elif [[ $maint == true ]]; then
+      code=503; body='{"success":false,"error":{"code":"MAINTENANCE_MODE"}}'
+    elif [[ $path == /api/v1/routes/status* ]]; then
+      conf=true; [[ ${FAKE_CONFIGURED_FALSE_COLOR:-} == "$color" ]] && conf=false
+      [[ $via_proxy == 1 && ${FAKE_PROXY_CONFIGURED_FALSE_COLOR:-} == "$color" ]] && conf=false
+      code=200; body="{\"success\":true,\"data\":{\"configured\":$conf},\"meta\":{}}"
+    else
+      code=404
+    fi
+  done
+else
+  if [[ ${FAKE_WEB_SMOKE_FAIL:-0} == 1 ]]; then code=500
+  elif [[ -f ${WEB_ROOT:?}/current/index.html ]]; then code=200; body="<html></html>"; else code=404; fi
+fi
+if [[ -n $out ]]; then [[ $out == /dev/null ]] || printf '%s' "$body" >"$out"
+elif [[ -n $fmt ]]; then printf '%s' "$body"; fi
+if [[ -n $fmt ]]; then fmt=${fmt//\\n/$'\n'}; printf '%s' "${fmt//%\{http_code\}/$code}"; fi
+[[ $code == 200 ]]

@@ -1,34 +1,43 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { availability, forecastAt, compareStations, stationOutlook, compareOutlooks } from "../src/lib/status.ts";
+import { availability, forecastAt, compareStations, stationOutlook, compareOutlooks, realtimeStatus, observationLabel } from "../src/lib/status.ts";
 import { parseFavorites } from "../src/lib/favoriteStorage.ts";
 import { clusterPoints, separateMarkerGroups } from "../src/lib/clusters.ts";
 const now = Date.parse("2026-10-06T10:00:00Z");
 const station = {
-  updatedAt: new Date(now).toISOString(),
-  availableBikeCount: 0,
+  realtimeUpdatedAt: new Date(now).toISOString(),
+  parkingBikeTotCnt: 0,
 };
 test("zero, low, available and missing quantities remain distinct", () => {
   assert.equal(availability(station, now), "empty");
-  assert.equal(availability({ ...station, availableBikeCount: 3 }, now), "low");
+  assert.equal(availability({ ...station, parkingBikeTotCnt: 3 }, now), "low");
   assert.equal(
-    availability({ ...station, availableBikeCount: 4 }, now),
+    availability({ ...station, parkingBikeTotCnt: 4 }, now),
     "available",
   );
   assert.equal(
-    availability({ ...station, availableBikeCount: null }, now),
+    availability({ ...station, parkingBikeTotCnt: null }, now),
     "unknown",
+  );
+  // Changed by P2-1 (A3, spec 11.0): 301 s used to be "unknown" under the old 5-minute rule. Values are now
+  // served up to 600 s as STALE (count kept, shown as delayed, never rentable); beyond 600 s they are unknown.
+  assert.equal(
+    availability(
+      { ...station, realtimeUpdatedAt: new Date(now - 301000).toISOString() },
+      now,
+    ),
+    "stale",
   );
   assert.equal(
     availability(
-      { ...station, updatedAt: new Date(now - 301000).toISOString() },
+      { ...station, realtimeUpdatedAt: new Date(now - 601000).toISOString() },
       now,
     ),
     "unknown",
   );
   assert.equal(
     availability(
-      { ...station, updatedAt: new Date(now + 60000).toISOString() },
+      { ...station, realtimeUpdatedAt: new Date(now + 60000).toISOString() },
       now,
     ),
     "unknown",
@@ -51,7 +60,7 @@ test("favorites deduplicate, discard cached station values, and reject corrupt s
   const item = {
     stationId: "ST-001",
     addedAt: new Date(now).toISOString(),
-    availableBikeCount: 99,
+    parkingBikeTotCnt: 99,
   };
   assert.deepEqual(
     parseFavorites(
@@ -95,8 +104,8 @@ test("close zoom preserves every station and separates overlapping labels with t
 });
 
 test("station lists prioritize rentable stock, then zero stock, then unknown, by distance within each group", () => {
-  const make = (id, count, distance, updatedAt = station.updatedAt) => ({
-    stationId: id, availableBikeCount: count, distanceMeters: distance, updatedAt,
+  const make = (id, count, distance, realtimeUpdatedAt = station.realtimeUpdatedAt) => ({
+    stationId: id, parkingBikeTotCnt: count, distanceMeters: distance, realtimeUpdatedAt,
   });
   const items = [make('missing-near', null, 10), make('empty-far', 0, 80),
     make('available-far', 10, 500), make('low-near', 1, 100),
@@ -107,7 +116,7 @@ test("station lists prioritize rentable stock, then zero stock, then unknown, by
 });
 
 test("forecast ranking uses future stock and leaves missing or stale predictions last", () => {
-  const make = (id, count, distance) => ({...station, stationId:id, availableBikeCount:count, distanceMeters:distance});
+  const make = (id, count, distance) => ({...station, stationId:id, parkingBikeTotCnt:count, distanceMeters:distance});
   const items=[make('empty-now',0,300),make('available-now',10,100),make('missing',5,10),make('stale',5,20)];
   const forecast=(id,count,time=now)=>({stationId:id,baseTime:new Date(time).toISOString(),dataStatus:'fresh',predictions:[{targetTime:new Date(now+15*60000).toISOString(),expectedBikes:count}]});
   const forecasts=new Map([['empty-now',forecast('empty-now',3)],['available-now',forecast('available-now',0)],['stale',forecast('stale',8,now-601000)]]);
@@ -117,4 +126,31 @@ test("forecast ranking uses future stock and leaves missing or stale predictions
   assert.equal(stationOutlook(items[0],forecast('other',3),15,now).count,null);
   assert.equal(stationOutlook(items[0],forecast('empty-now',-1),15,now).count,null);
   assert.equal(stationOutlook(items[0],forecast('empty-now',3),60,now).count,null);
+});
+
+test("server STALE/UNAVAILABLE win; the client clock downgrades FRESH to STALE (>120 s) and to unavailable", () => {
+  const at = (seconds) => new Date(now - seconds * 1000).toISOString();
+  // Fallback without server status: 120 s FRESH, 121..600 s STALE, 601 s UNAVAILABLE.
+  assert.equal(realtimeStatus({ realtimeUpdatedAt: at(120) }, now), "FRESH");
+  assert.equal(realtimeStatus({ realtimeUpdatedAt: at(121) }, now), "STALE");
+  assert.equal(realtimeStatus({ realtimeUpdatedAt: at(600) }, now), "STALE");
+  assert.equal(realtimeStatus({ realtimeUpdatedAt: at(601) }, now), "UNAVAILABLE");
+  assert.equal(realtimeStatus({ realtimeUpdatedAt: null }, now), "UNAVAILABLE");
+  assert.equal(realtimeStatus({ realtimeUpdatedAt: at(-31) }, now), "UNAVAILABLE");
+  // Changed by the review fix: a server FRESH is no longer kept past 120 s of client-side age (a response left on
+  // screen between refetches must not keep advertising delayed counts as current). Server STALE is never upgraded.
+  assert.equal(realtimeStatus({ realtimeUpdatedAt: at(150), realtimeStatus: "FRESH" }, now), "STALE");
+  assert.equal(realtimeStatus({ realtimeUpdatedAt: at(100), realtimeStatus: "FRESH" }, now), "FRESH");
+  assert.equal(realtimeStatus({ realtimeUpdatedAt: at(30), realtimeStatus: "STALE" }, now), "STALE");
+  assert.equal(realtimeStatus({ realtimeUpdatedAt: at(30), realtimeStatus: "UNAVAILABLE" }, now), "UNAVAILABLE");
+  // A response left on screen past max-stale becomes unavailable even if it said FRESH.
+  assert.equal(realtimeStatus({ realtimeUpdatedAt: at(700), realtimeStatus: "FRESH" }, now), "UNAVAILABLE");
+
+  const stale = { realtimeUpdatedAt: at(30), realtimeStatus: "STALE", parkingBikeTotCnt: 9 };
+  assert.equal(availability(stale, now), "stale");
+  assert.equal(stationOutlook(stale, undefined, 0, now).count, 9);      // count still shown
+  assert.equal(stationOutlook(stale, undefined, 0, now).state, "stale"); // excluded from the rentable filter
+  assert.equal(availability({ ...stale, realtimeStatus: "FRESH", parkingBikeTotCnt: 0 }, now), "empty");
+  assert.equal(observationLabel({ ...stale, realtimeUpdatedAt: at(400) }, now), "6분 전 업데이트 · 갱신 지연");
+  assert.equal(observationLabel({ ...stale, realtimeStatus: "FRESH", realtimeUpdatedAt: at(10) }, now), "방금 업데이트");
 });

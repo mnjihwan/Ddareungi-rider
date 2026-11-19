@@ -1,15 +1,21 @@
 # 따릉라이더(ddareungrider) 로컬 개발
 
+> 현재 작업 내역·코드 현황·미검증 항목·결정 필요 사항은 [docs/status-2026-11-19.md](docs/status-2026-11-19.md)에 정리되어 있습니다(로드맵 Phase 0~3, 개발 브랜치 기준).
+
 현재 서비스 클라이언트는 PC/모바일 브라우저용 `Ddareungi-rider/web`입니다. 기존 `mobile` 디렉터리는 이전 Expo PoC이며 로컬 실행 대상이 아닙니다.
 
 Python 기반 대여·반납 수요 학습은 [AI 실행 안내](ai/README.md)를 참고하세요. 요일·10분 통계와 LightGBM을 시간순으로 평가하고 결과를 저장하는 오프라인 기반 코드입니다. 실제 웹 예측 연결 전 단계이며, 원본 수집 방법은 [데이터 수집 안내](docs/data-collection.md)에 있습니다.
 
+## v0.1.0 — 1차 웹 기능 릴리스
+
+지도, 장소·대여소 검색, 실시간 수량, 즐겨찾기와 도보→따릉이→도보 길찾기를 포함합니다. AI 미래 잔여 수량 예측은 아직 제공하지 않습니다. 구현 범위, 검증 결과와 운영 전 확인사항은 [릴리스 기록](docs/releases/0.1.0.md)을 참고하세요.
+
 ## 저장소 받기
 
-통합 저장소의 개발 브랜치와 수집기 submodule을 함께 받습니다.
+통합 저장소의 릴리스 브랜치와 수집기 submodule을 함께 받습니다. 후속 개발은 `develop` 브랜치에서 진행합니다.
 
 ```powershell
-git clone --branch develop --recurse-submodules https://github.com/mnjihwan/Ddareungi-rider.git ddareungi
+git clone --branch main --recurse-submodules https://github.com/mnjihwan/Ddareungi-rider.git ddareungi
 cd ddareungi
 ```
 
@@ -59,7 +65,7 @@ Git Flow 및 커밋 작성 방법은 [개발 규칙](docs/git-workflow.md)을 �
 
 서울시 대여소·실시간 대여 수량의 데이터 공급자는 그대로 유지합니다. 지도 마커는 좌표에 고정하고 지도 이동 후 새 영역의 대여소를 조회합니다. 가까운 목록의 기본 500m 반경, PC의 왼쪽 목록 옆 상세 패널, 모바일 하단 패널, 즐겨찾기와 AI 예측 영역도 유지했습니다. AI 모델이 연결되지 않은 경우에는 예측 준비 상태를 표시합니다.
 
-경로 선택은 출발·도착 주변 각 최대 3개 대여소의 실제 이동 시간을 비교합니다. 도보 최대 6회와 자전거 최대 9회로 검색 한 건에 최대 15회 호출하며, 최종 표시에는 그 검색 요청에서 받은 구간을 사용합니다. 다른 요청에 경로 응답을 재사용하거나 DB·Redis에 저장하지 않습니다. 대여소 수량의 최신성, 경로 연결 실패, 인증·이용량·빈 응답 오류도 처리합니다. 상세한 계산 규칙과 API 계약은 [길찾기 실행 안내](docs/routing.md)를 참고하세요.
+경로 선택은 출발·도착 주변 각 최대 3개 대여소의 실제 이동 시간을 비교합니다. 도보 최대 6회와 자전거 최대 9회로 검색 한 건에 최대 15회 호출합니다(2026-11-17 이후: 자전거는 양쪽 도보가 연결된 조합만 조회하고, 카카오가 이용량 초과·인증 오류를 반환하면 같은 검색의 남은 호출을 중단). 최종 표시에는 그 검색 요청에서 받은 구간을 사용합니다. 다른 요청에 경로 응답을 재사용하거나 DB·Redis에 저장하지 않습니다. 대여소 수량의 최신성, 경로 연결 실패, 인증·이용량·빈 응답 오류도 처리합니다. 상세한 계산 규칙과 API 계약은 [길찾기 실행 안내](docs/routing.md)를 참고하세요.
 
 ### 검증과 남은 범위
 
@@ -150,8 +156,23 @@ REST 키는 서버에만 전달하고 웹 빌드에 포함하지 않습니다.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-local.ps1 -Mode Sample
 ```
 
-PC: http://localhost:5173. API: http://localhost:8080/actuator/health.
+PC: http://localhost:5173. API: http://localhost:8080/api/v1. 상태 확인(Actuator, 내부 관리 포트): http://localhost:8090/actuator/health/readiness.
 샘플 모드는 강남역 주변 가상 대여소 3건이며 실제 수량이 아닙니다.
+
+## Linux / macOS 실행 (bash)
+
+명세 대비 구현 분석, 성능 개선 내역, 필요한 키 목록은 [분석 문서](docs/analysis-2026-11-13.md)를 참고하세요.
+
+```bash
+git submodule update --init --recursive
+cp .env.example .env
+scripts/start-local.sh sample   # 키·Docker 불필요
+scripts/start-local.sh infra    # Docker MySQL/Redis + 호스트 JVM 수집기·백엔드 (SEOUL_API_KEY 필요)
+scripts/start-local.sh real     # 전체 Docker Compose (SEOUL_API_KEY 필요)
+scripts/stop-local.sh
+```
+
+지도 표시는 `KAKAO_MAPS_JAVASCRIPT_KEY`, 장소 검색·길찾기는 `KAKAO_MAPS_REST_API_KEY`가 필요합니다. 키가 없어도 대여소 목록·대여소 검색은 동작합니다.
 
 ## 실제 데이터 실행
 
@@ -168,6 +189,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-local.ps1 -M
 통합 Compose가 MySQL/Redis, Flyway migration, 수집기, 실제 검색 API를 시작합니다.
 수집기는 시작 시 대여소 마스터와 현재 수량을 수집하며 이후 마스터는 매일 03:20, 수량 스냅샷은 매 5분에 수집합니다. 상세 정보·OD 파일·이용 통계는 매일 04:10에 처리합니다.
 백엔드는 시작 시 및 매분 Redis 수량을 갱신합니다. 수집 실패 또는 캐시 만료 시 수량은 `null`이며 화면에서 '수량 확인 불가'로 표시합니다. 수량 미확인을 0대로 처리하지 않습니다.
+백엔드 컨테이너의 Actuator는 관리 포트 8090에서만 응답하며 호스트로 publish하지 않습니다. Compose healthcheck가 컨테이너 내부에서 `/actuator/health/readiness`(MySQL 포함, Redis 제외)를 확인합니다.
 서버 준비 상태가 정상이어도 외부 API 인증/수집 성공까지 보장하지는 않습니다. 로그와 대여소 표시를 확인하세요.
 
 ```powershell
@@ -208,6 +230,30 @@ OD CSV/ZIP은 `bikeseoul_data/data/oa-21229`, 이용통계 CSV는 `bikeseoul_dat
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\collect-data-once.ps1
 ```
 
+## 배포 (EC2, Phase 3 O7 초안)
+
+main에 push되어 CI가 성공하면 `.github/workflows/deploy.yml`이 `production` 환경 승인 후 GitHub OIDC로 AWS 역할을 맡아 이미지를 ECR에 커밋 SHA 태그로 올리고, **전용 SSM Command 문서**(`deploy/aws/ssm-document-deploy.json`, 기본 이름 `ddareungi-deploy`)로 EC2에 설치된 `deploy/ec2/deploy.sh`를 실행합니다. 문서는 호스트 스크립트의 sha256이 배포 커밋과 같을 때만 실행하므로 `deploy.sh`가 바뀐 커밋은 관리자가 먼저 호스트 스크립트를 갱신해야 합니다. 스크립트는 blue/green(127.0.0.1:18081/18082)으로 새 컨테이너의 readiness를 확인하고, 새 색 포트를 직접 스모크한 뒤 nginx upstream을 바꾸고, nginx 경유 스모크가 실패하면 되돌립니다(INT/TERM 신호도 롤백). 스모크는 `/api/client-config?platform=web`의 `maintenance` 값과 `/api/v1/routes/status`의 `"configured":true`를 확인합니다.
+
+- 수동 실행(Actions → Deploy → Run workflow): `action=deploy` + `image_tag`(이전 SHA로 롤백), `action=force-restart` + `image_tag`(같은 이미지를 바뀐 env·비밀로 재생성), `action=maintenance-on|off`(`image_tag` 비움, 점검 켜기·끄기).
+- AWS 계정·리전·저장소·역할·인스턴스 값은 저장소에 없고 GitHub Environment 변수(`SSM_DEPLOY_DOCUMENT` 선택)와 자리표시자로만 둡니다. 런타임 비밀은 SSM Parameter Store SecureString이며, 조회 실패나 0개면 배포를 중단합니다.
+- 실제 AWS에서는 아직 실행하지 않았습니다. EC2 준비는 [deploy/ec2/bootstrap.md](deploy/ec2/bootstrap.md), 사용자 제공 값·첫 배포 체크리스트·운영 절차·미검증 항목은 [docs/deploy-ec2.md](docs/deploy-ec2.md)를 참고하세요.
+- 배포 전 필수 확인: 프록시 forwarded 설정(틀리면 모든 사용자가 한 Rate Limit 키를 공유해 대량 429), MySQL 대여소 데이터(없으면 readiness 실패로 기존 버전 유지).
+- **공개 저장소 주의**: 배포 실패 시 새 컨테이너 로그 일부(`ROLLBACK_LOG_LINES`, 기본 30줄, 비밀 값·`password=` 등 마스킹)가 SSM을 거쳐 Actions 로그에 남습니다. 공개 저장소라면 `/etc/ddareungi/deploy.env`에 `ROLLBACK_LOG_LINES=0`을 고려하세요.
+- 스크립트 검증: `deploy/ec2/test/run-harness.sh`(가짜 docker·nginx·curl·aws, 루트·AWS 불필요, 2026-11-17 86개 검사 통과).
+
+### 클라이언트 설정·점검 모드 (Phase 3 A7)
+
+- `GET /api/client-config?platform=web|android|ios`(모바일은 `appVersion` 필수): `/api/v1` 밖이라 점검 중에도 200이고 Rate Limit 대상이 아니며 `Cache-Control: no-store`입니다. 웹은 시작할 때 조회해 `maintenance=true`면 점검 화면을 보여 줍니다(조회 실패는 무시).
+- 환경 변수: `CLIENT_WEB_MAINTENANCE`(기본 `false`; 이름과 달리 **서버 전체** 점검으로 `/api/v1/**`가 503 `MAINTENANCE_MODE`, client-config·actuator는 제외), `CLIENT_WEB_MAINTENANCE_MESSAGE`(한 줄 안내 문구, 비우면 기본 문구). 런타임에 바뀌지 않으므로 컨테이너를 다시 만들어야 하며, EC2에서는 위 `maintenance-on|off` 실행을 사용합니다. 최상위 `compose.yaml`의 backend `environment`는 현재 이 두 변수를 전달하지 않으므로, 로컬에서 점검을 시험하려면 그 목록에 추가하거나 `gradlew :backend:bootRun` 실행 환경에 지정합니다.
+- 한글 안내 문구 등 비ASCII 환경 변수는 JVM이 UTF-8로 읽어야 하므로 백엔드 이미지에 `LANG=C.UTF-8`을 설정합니다(리뷰 L2). jar를 직접 실행하는 환경에서도 `LANG=C.UTF-8`(또는 다른 UTF-8 로케일)을 지정하세요.
+- `POST /api/v1/routes/plan`은 `POST /api/v1/routes/search`로 대체되어 `Deprecation`·`Sunset`(2027-06-30) 헤더가 붙습니다. 계약은 [docs/routing.md](docs/routing.md)와 명세 13.1·42장을 참고하세요.
+
+### 관측 (Phase 3 O8)
+
+- Prometheus 지표는 관리 포트 **8090**의 `/actuator/prometheus`에서만 노출됩니다(API 포트 8080은 404, 8090은 호스트에 publish하지 않음). 로컬에서는 `docker compose exec backend curl -s localhost:8090/actuator/prometheus | head`로 확인합니다.
+- EC2에서는 `deploy/observability/`의 Prometheus(`127.0.0.1:9090`)·Grafana(`127.0.0.1:3000`)를 같은 Docker 네트워크에 띄우고 SSM 포트 포워딩으로 봅니다.
+- `infra` 프로필 로그는 ECS JSON 한 줄 형식이고, 접근 로그는 좌표·쿼리 없이 `method`·`path`·`status`·`elapsedMs`만 남깁니다.
+
 ## 운영 범위
 
 현재 웹 화면은 카카오 지도·장소/대여소 검색·주변 목록·즐겨찾기·도보/따릉이/도보 길찾기와 예측 표시 인터페이스를 제공합니다. Python `ai/`에는 별도 오프라인 학습 코드가 있고 웹 화면의 잔여 수량 예측에는 아직 연결하지 않았습니다. 기존 v5 API/ERD 문서는 설계안이며 모든 계약이 구현된 상태는 아닙니다.
@@ -222,9 +268,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\collect-data-once.
 - `KAKAO_MAPS_REST_API_KEY`: 서버의 장소/주소 검색과 도보·자전거 길찾기에 사용합니다. 브라우저에 전달하지 않으며 VITE 접두사를 붙이지 않습니다. 네이버 인증키는 현재 실행 경로에서 사용하지 않습니다.
 - `VITE_FORECAST_API_PATH`: 선택 사항. 제공된 기획서의 stationIds/horizons 요청 및 data 배열 응답 계약을 사용하는 예측 서비스의 경로입니다. 미설정이면 예측 준비 안내를 표시합니다. `ai/`의 오프라인 수요 모델과 이 잔여 수량 예측 API는 서로 다른 출력이며, 호환되는 예측 서버 연결은 아직 없습니다.
 
+백엔드 운영 설정(환경변수, 모두 선택). `PROVIDER_HTTP_*`, `PROVIDER_RESILIENCE_*`, `RATE_LIMIT_*`, `APP_CORS_ALLOWED_ORIGINS`는 백엔드 프로세스(jar 실행·배포 환경)에 직접 전달해야 하며, 현재 `compose.yaml`과 `scripts/start-local.sh`는 이 값을 전달하지 않아 기본값으로 동작합니다(배포 구성은 Phase 3 O7에서 정의):
+
+- `MANAGEMENT_SERVER_PORT`: Actuator 관리 포트. 기본 `8090`이며 API 포트(8080)와 분리됩니다. `/actuator/health/liveness`, `/actuator/health/readiness`를 제공합니다. `infra` 프로필의 readiness는 `readinessState`, MySQL(`db`), 메모리 대여소 카탈로그(`stationCatalog`)를 포함하고 Redis는 제외합니다. `stationCatalog`는 비어 있지 않은 카탈로그가 한 번 적재되기 전(또는 공개 대여소가 0개일 때) DOWN이며, 이때 대여소 API는 503입니다. 재적재가 실패하거나 0행·이전 대비 50% 미만(이전 10행 이상일 때)으로 줄면 이전 카탈로그를 유지하고 `station.catalog.retry-interval`(기본 30초)마다 재시도합니다. `db`는 R3 이전 요청 경로가 MySQL을 직접 조회하던 때부터 포함했고 지금도 카탈로그 재적재의 원천입니다. R3 이후 요청 경로는 메모리 카탈로그만 쓰므로(이미 적재된 인스턴스는 MySQL 장애 중에도 응답 가능) `db`를 readiness에 계속 둘지는 후속 결정입니다. Redis 장애 시에는 마지막 스냅샷을 나이에 따라 STALE→제외로 처리하며 서비스는 계속 동작합니다. 로컬 실행 스크립트와 Vite `/actuator` 프록시가 이 값을 따르며, Compose 컨테이너는 항상 8090을 사용하고 이 포트를 호스트로 publish하지 않습니다.
+- 외부 Provider timeout(`provider.http.*`, Duration 형식 `500ms`, `3s`): 장소 `place`(connect `1s`/read `2500ms`/요청 전체 `3s`, env `PLACE_TOTAL_TIMEOUT`), 길찾기 `route`(`1s`/`4s`/계획 전체 `10s`, env `ROUTE_TOTAL_TIMEOUT`), `ors`(`1s`/`4s`). 개별 값은 relaxed binding(예: `PROVIDER_HTTP_PLACE_READ_TIMEOUT`)으로 지정합니다. 이전 `kakao.http.*`(`KAKAO_HTTP_*`)는 제거되어 설정해도 무시됩니다.
+- 복원력(`provider.resilience.*`): GET 재시도 1회(timeout·5xx·연결 오류만), circuit breaker(창 20, 최소 10회, 실패율 50%, OPEN 30초), 동시 호출 제한(장소 32, 경로 48). timeout은 504 `EXTERNAL_API_TIMEOUT`, breaker OPEN·포화는 502.
+- 장소 검색 캐시(`PLACE_CACHE_ENABLED`, 기본 true, infra 프로필만, TTL 5분, Redis 오류 시 우회).
+- Rate Limit(`RATE_LIMIT_ENABLED`, `RATE_LIMIT_{STATIONS|PLACES|ROUTES}_{BURST|PER_MINUTE}`): 클라이언트 IP(`remoteAddr`) 해시 기준 토큰 버킷. 초과 시 429 `RATE_LIMIT_EXCEEDED`+`Retry-After`. IPv6는 /64 단위로 묶고 IPv4-mapped IPv6는 IPv4로 봅니다. 수치는 운영 측정 전 초안(stations 분당 300/burst 100, places 분당 90/burst 30, routes 10/10)입니다. 지도 드래그 1회에 stations 요청이 최대 4건, 장소 자동완성이 350ms 디바운스마다 요청하는 웹 사용 패턴에 맞춰 리뷰(H1)에서 완화했으며 운영 측정 후 조정합니다. 웹의 429 backoff(Retry-After)와 공유 IP(Vite 프록시·CGNAT) 정책은 후속 결정이며, 프록시 뒤에서는 forwarding 설정이 필요합니다.
+- `APP_CORS_ALLOWED_ORIGINS`(`app.cors.allowed-origins`): `/api/**`에 브라우저 cross-origin 호출을 허용할 origin 목록. 쉼표로 구분한 정확한 `scheme://host[:port]` 값만 허용하며(예: `https://ddareungi.example.com,https://admin.example.com`), 와일드카드는 거부합니다. 기본값은 비어 있어 cross-origin 요청을 허용하지 않습니다. 로컬 개발은 Vite 프록시를 통한 same-origin 호출이므로 설정하지 않아도 됩니다.
+
 Vite는 최상위 `.env`를 읽습니다. 키 변경 후 웹 서버를 재시작합니다. 서버 REST 키는 `scripts/start-local.ps1` 또는 Compose를 통해 전달됩니다. 두 키는 같은 카카오 Developers 앱에서 발급합니다. 지도 연결 실패 시 명확히 표시한 도식 미리보기를 제공하며 실제 지도·경로나 예측값을 생성하지 않습니다.
 
-즐겨찾기는 `bike:favorites:v1`에 ID와 저장 시각만 보관하고 최신 수량은 API로 조회합니다. 5분 이상 갱신되지 않은 수량은 0대와 구분합니다. 길찾기는 서비스 내부에서 세 구간의 경로·거리·시간을 표시합니다. 선택 사항인 외부 장소 정보 버튼은 카카오맵을 엽니다.
+즐겨찾기는 `bike:favorites:v1`에 ID와 저장 시각만 보관하고 최신 수량은 API로 조회합니다. 수량 최신성은 수집 시각 기준 120초 이하 FRESH, 600초 이하 STALE(마지막 수량을 '갱신 지연'으로 표시), 그보다 오래되거나 없으면 UNAVAILABLE(목록에서 제외)로 판정하며(`realtime.freshness.*`), 미상 수량을 0대로 표시하지 않습니다. 길찾기는 서비스 내부에서 세 구간의 경로·거리·시간을 표시합니다. 선택 사항인 외부 장소 정보 버튼은 카카오맵을 엽니다.
 
 검증: `cd Ddareungi-rider/web`, `npm test`, `npm run build`. 카카오 전환 후 PC 1600×900(16:9), 모바일 390×844에서 실제 지도·장소 검색·서울시 대여 수량·도보/자전거 경로를 확인했습니다.
 

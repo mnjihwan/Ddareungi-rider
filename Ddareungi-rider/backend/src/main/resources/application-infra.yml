@@ -2,11 +2,36 @@ spring:
   datasource:
     url: ${MYSQL_URL:jdbc:mysql://localhost:3307/ddareungi?serverTimezone=Asia/Seoul&characterEncoding=UTF-8}
     username: ${MYSQL_USER:ddareungi}
-    password: ${MYSQL_PASSWORD:ddareungi}
+    # Required (no default): a missing MYSQL_PASSWORD fails the startup instead of silently trying a built-in
+    # password. scripts/start-local.sh and compose.yaml already require it.
+    password: ${MYSQL_PASSWORD}
   data:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6380}
+
+realtime:
+  redis:
+    # auto (default): versioned layout when station:realtime:current exists, else legacy per-station hashes.
+    # legacy: only station:realtime:{stationId}. versioned: only current + station:realtime:v{n} (no fallback).
+    # Key names/value JSON are a design proposal (API spec v5 21.2) until the collector implements R2.
+    read-mode: ${REALTIME_REDIS_READ_MODE:auto}
+
+management:
+  endpoint:
+    health:
+      group:
+        readiness:
+          # Redis is intentionally excluded: when it is down the API keeps serving (degraded), so
+          # taking the instance out of rotation would turn a partial outage into a full one.
+          # stationCatalog: DOWN until the in-memory station catalog has loaded once (R3, D4).
+          include: readinessState,db,stationCatalog
+
+station:
+  catalog:
+    # In-memory catalog (R3, D4): synchronous load at startup, periodic reload; a failed reload keeps the previous one.
+    reload-interval: ${STATION_CATALOG_RELOAD_INTERVAL:10m}
+    retry-interval: ${STATION_CATALOG_RETRY_INTERVAL:30s}
 
 seoul-bike:
   api:
@@ -16,3 +41,9 @@ seoul-bike:
     max-pages: 5
     realtime-service: bikeList
     refresh-cron: ${REALTIME_REFRESH_CRON:0 * * * * *}
+
+logging:
+  structured:
+    # One ECS JSON object per line on the console (phase 3 decision 13); the local profile keeps the text format.
+    format:
+      console: ecs

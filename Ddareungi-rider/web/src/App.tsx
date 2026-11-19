@@ -8,11 +8,14 @@ import {
   favoriteStations,
   searchPlaces,
   searchStations,
-  viewportStations,
   nearbySubways,
   forecastPath, loadForecasts,
+  unwrap, type ApiEnvelope, apiErrorMessage,
 } from "./lib/api";
-import { INITIAL_LOCATION, type Coordinates, type Station, type MapBounds, type BikeRoute, type Place, type RouteEndpointRole } from "./lib/types";
+import { INITIAL_LOCATION, stationLocation, type Coordinates, type Station, type MapBounds, type RoutePlan, type Place, type RouteEndpointRole } from "./lib/types";
+import { visibleClusterStationCount } from "./lib/mapClusters";
+import { useMapStationData } from "./lib/useMapStationData";
+import { MaintenanceGate } from "./components/MaintenanceGate";
 import {useRecentPlaces} from './lib/useRecentPlaces';
 import { useFavorites } from "./lib/useFavorites";
 import { availability, compareOutlooks, stationOutlook } from "./lib/status";
@@ -27,11 +30,17 @@ import {bestSearchScore, searchMatchLabel} from './lib/koreanSearch';
 import { useTheme } from "./lib/useTheme";
 import { ThemeToggle } from "./components/ThemeToggle";
 
+/** The maintenance screen (Phase 3 A7) lives in MaintenanceGate; MainApp is the regular app. */
 export default function App() {
+  return <MaintenanceGate><MainApp /></MaintenanceGate>;
+}
+
+function MainApp() {
   const {theme, changeTheme} = useTheme();
   const [initialMap] = useState(()=>loadMapLocation() ?? {location: INITIAL_LOCATION, label: "강남역 주변"});
   const [center, setCenter] = useState(initialMap.location);
   const [viewport, setViewport] = useState<MapBounds | null>(null);
+  const [mapLevel, setMapLevel] = useState<number | null>(null);
   const [nearbyLimit, setNearbyLimit] = useState<number | null>(5);
   const [focus, setFocus] = useState({
     location: initialMap.location,
@@ -60,7 +69,10 @@ export default function App() {
     locate(true);
   }, []);
   const [forecastMinutes, setForecastMinutes] = useState(0);
-  const [route, setRoute] = useState<BikeRoute | null>(null);
+  const [routePlan, setRoutePlan] = useState<RoutePlan | null>(null);
+  const [routeIndex, setRouteIndex] = useState(0);
+  const route = routePlan ? routePlan.routes[routeIndex] ?? routePlan.routes[0] ?? null : null;
+  function setRoute(plan: RoutePlan | null) { setRoutePlan(plan); setRouteIndex(0); }
   const [planningRoute, setPlanningRoute] = useState(false);
   const [pinnedRouteStations, setPinnedRouteStations] = useState<Station[]>([]);
   const hideStationMarkers = view === "route" && (planningRoute || route !== null);
@@ -86,7 +98,7 @@ export default function App() {
   const mode = useQuery({
     queryKey: ["mode"],
     queryFn: async ({ signal }) =>
-      (await api.get("/status", { signal })).data.data.mode,
+      unwrap((await api.get<ApiEnvelope<{ mode: string }>>("/status", { signal })).data).mode,
     staleTime: Infinity,
   });
   const stations = useQuery({
@@ -94,30 +106,20 @@ export default function App() {
     queryFn: ({ signal }) => nearby(center, radius, signal),
     staleTime: 30000,
     refetchInterval: 60000,
-    retry: 1,
   });
   const saved = useQuery({
     queryKey: ["favorites", favorites.ids, center],
     queryFn: ({ signal }) => favoriteStations(favorites.ids, center, signal),
     enabled: favorites.ids.length > 0,
     refetchInterval: 60000,
-    retry: 1,
   });
-  const mapStations = useQuery({
-    queryKey: ["viewport", viewport],
-    queryFn: ({signal}) => viewportStations(viewport!, signal),
-    enabled: !!viewport && mapReady,
-    placeholderData: previous => previous,
-    staleTime: 30000,
-    refetchInterval: 60000,
-    retry: 1,
-  });
+  // Phase 3 R4 map data (viewport stations or server clusters): see lib/useMapStationData.
+  const { mapMode, mapStations, mapClusters, activeMapQuery } = useMapStationData({ viewport, mapLevel, mapReady, hideStationMarkers });
   const selectedQuery = useQuery({
     queryKey: ["selected", selectedId, center],
     queryFn: ({ signal }) => favoriteStations([selectedId!], center, signal),
     enabled: !!selectedId,
     refetchInterval: 60000,
-    retry: 1,
   });
   const search = useQuery({
     queryKey: ["search", submitted, center],
@@ -159,7 +161,7 @@ export default function App() {
   [
     ...(route ? [route.departureStation, route.arrivalStation] : []),
     ...(stations.data ?? []),
-    ...(mapStations.data ?? []),
+    ...(mapStations.data?.stations ?? []),
     ...(saved.data ?? []),
     ...(search.data?.stations ?? []),
     ...(selectedQuery.data ?? []),
@@ -234,12 +236,12 @@ export default function App() {
     setFocusedPlace(place);
   }
   function select(station: Station) {
-    saveMapLocation(station.location, `${station.stationName} 주변`);
+    saveMapLocation(stationLocation(station), `${station.stationName} 주변`);
     allowInitialLocation.current = false;
     setFocusedPlace(null);
     if (submitted && view !== "route") recentPlaces.remember(submitted);
     setSelectedId(station.stationId);
-    setFocus((f) => ({ location: station.location, revision: f.revision + 1 }));
+    setFocus((f) => ({ location: stationLocation(station), revision: f.revision + 1 }));
     setSheet("mid");
   }
   function locate(initial = false) {
@@ -307,8 +309,8 @@ export default function App() {
       saved={favorites.ids.includes(selected.stationId)}
       onFavorite={() => favorites.toggle(selected.stationId)}
       onClose={() => setSelectedId(null)}
-      onRoute={() => chooseEndpoint("origin", {name:selected.stationName,address:selected.address,location:selected.location}, selected)}
-      onArrival={() => chooseEndpoint("destination", {name:selected.stationName,address:selected.address,location:selected.location}, selected)}
+      onRoute={() => chooseEndpoint("origin", {name:selected.stationName,address:selected.address ?? "",location:stationLocation(selected)}, selected)}
+      onArrival={() => chooseEndpoint("destination", {name:selected.stationName,address:selected.address ?? "",location:stationLocation(selected)}, selected)}
     />
   );
   return (
@@ -373,7 +375,7 @@ export default function App() {
             }}
             onChoose={(suggestion,query) => {
               if (suggestion.kind === 'place') openPlace(suggestion.place, query);
-              else {recentPlaces.remember(query);go(suggestion.station.location, `${suggestion.station.stationName} 주변`);select(suggestion.station);}
+              else {recentPlaces.remember(query);go(stationLocation(suggestion.station), `${suggestion.station.stationName} 주변`);select(suggestion.station);}
             }}/>
           <div className="desktop-shortcuts">{searchShortcuts}</div>
         </section>
@@ -415,7 +417,8 @@ export default function App() {
             <div hidden={view !== "route"} className={selected ? "route-planner-container mobile-hidden" : "route-planner-container"}>
               <RoutePlanner onStationSelectionChange={setPinnedRouteStations} onPlanningChange={setPlanningRoute} active={view === "route"} favoriteStations={(saved.data ?? []).filter(station=>favorites.ids.includes(station.stationId))}
                 favoritesLoading={saved.isFetching} favoritesError={saved.isError}
-                userLocation={userLocation} endpointSelection={endpointSelection} plan={route}
+                userLocation={userLocation} endpointSelection={endpointSelection} plan={routePlan}
+                selectedRouteIndex={routeIndex} onSelectRoute={setRouteIndex}
                 onPlaceSelected={focusPlace}
                 searchCenter={center} onSearchStart={()=>setFocusedPlace(null)}
                 userLocationAccuracy={userLocationAccuracy} pickedEndpoint={pickedEndpoint}
@@ -490,7 +493,7 @@ export default function App() {
               <div className="mobile-map-info">
                 {searchShortcuts}
                 <details className="mobile-map-legend"><summary>지도 수량 표시 안내</summary>
-                  <p>파랑 4대 이상 · 노랑 1–3대 · 빨강 0대 · 회색 정보 없음</p>
+                  <p>파랑 4대 이상 · 노랑 1–3대 · 빨강 0대 · 회색 점선 갱신 지연(대여 가능 여부 미확인) · 회색 정보 없음</p>
                 </details>
               </div>
               <div className="list-filter">
@@ -563,8 +566,7 @@ export default function App() {
                 )}
               {!submitted && active.isError && (
                 <p className="error-notice" role="alert">
-                  대여소 정보를 갱신하지 못했어요. 새로고침으로 다시 확인해
-                  주세요.
+                  {apiErrorMessage(active.error, "대여소 정보를 갱신하지 못했어요. 새로고침으로 다시 확인해 주세요.")}
                 </p>
               )}
               {list.map((station) => (
@@ -636,7 +638,8 @@ export default function App() {
             focus={focus}
             userLocation={userLocation}
             onSelect={select}
-            onViewport={setViewport}
+            onViewport={(bounds, level) => {setViewport(bounds);setMapLevel(level);}}
+            clusters={mapMode === "clusters" && !hideStationMarkers ? mapClusters.data ?? null : null}
             onUserPan={location => {
               allowInitialLocation.current=false;
               setCenter(location);
@@ -657,9 +660,12 @@ export default function App() {
           <div className="map-top-label">
             <Icon name="pin" size={16} />
             {view === "route" ? "따릉이 길찾기" : label}
-            {view !== "route" && <span>목록 {radius < 1000 ? `${radius}m` : `${radius / 1000}km`} · {mapStations.isFetching ? "지도 갱신 중" : `지도 ${mapStations.data?.length ?? 0}곳`}</span>}
+            {view !== "route" && <span>목록 {radius < 1000 ? `${radius}m` : `${radius / 1000}km`} · {activeMapQuery.isFetching ? "지도 갱신 중"
+              : `지도 ${mapMode === "clusters" ? visibleClusterStationCount(mapClusters.data?.items ?? [], viewport) : mapStations.data?.stations.length ?? 0}곳`}</span>}
+            {view !== "route" && mapMode === "viewport" && mapStations.data?.truncated &&
+              <span className="map-truncated-badge" role="status">가까운 곳만 표시 중 · 확대하면 모두 보여요</span>}
           </div>
-          {!hideStationMarkers && mapStations.isError && <button className="search-this-area" onClick={() => void mapStations.refetch()}>
+          {!hideStationMarkers && activeMapQuery.isError && <button className="search-this-area" onClick={() => void activeMapQuery.refetch()}>
             <Icon name="refresh" size={17} />지도 대여소 다시 불러오기
           </button>}
           <button
@@ -682,6 +688,10 @@ export default function App() {
             <span>
               <i className="empty" />
               0대
+            </span>
+            <span>
+              <i className="stale" />
+              갱신 지연
             </span>
             <span>
               <i className="unknown" />

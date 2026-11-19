@@ -49,14 +49,32 @@ public class SeoulBikeRealtimeClient {
             for (JsonNode row : envelope.path("row")) {
                 result.add(new RealtimeStationStatus(
                         row.path("stationId").asString(), row.path("stationName").asString(),
-                        row.path("rackTotCnt").asInt(), availableBikes(row),
-                        row.path("shared").asDouble(), row.path("stationLatitude").asDouble(),
+                        optionalInteger(row.path("rackTotCnt")), availableBikes(row),
+                        optionalDouble(row.path("shared")), row.path("stationLatitude").asDouble(),
                         row.path("stationLongitude").asDouble(), updatedAt));
             }
             return result;
         } catch (Exception exception) {
             if (exception instanceof IllegalStateException stateException) throw stateException;
             throw new IllegalStateException("bikeList API 응답을 해석하지 못했습니다.", exception);
+        }
+    }
+
+    /** rackTotCnt is nullable (spec 11.0): absent, blank or non-integer text is null, never 0. */
+    private static Integer optionalInteger(JsonNode node) {
+        String value = node.isMissingNode() || node.isNull() ? "" : node.asString("").trim();
+        return value.matches("[0-9]+") ? Integer.valueOf(value) : null;
+    }
+
+    /** shared is nullable (spec 11.0) and kept as is above 100; absent or non-numeric text is null. */
+    private static Double optionalDouble(JsonNode node) {
+        String value = node.isMissingNode() || node.isNull() ? "" : node.asString("").trim();
+        if (value.isEmpty()) return null;
+        try {
+            double parsed = Double.parseDouble(value);
+            return Double.isFinite(parsed) && parsed >= 0 ? parsed : null;
+        } catch (NumberFormatException exception) {
+            return null;
         }
     }
 

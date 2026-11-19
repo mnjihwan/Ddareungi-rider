@@ -4,7 +4,7 @@
 PC / 모바일 브라우저
   -> React + Vite (5173)
   -> /api 프록시
-  -> Spring Boot (8080)
+  -> Spring Boot (API 8080, Actuator 관리 포트 8090)
   -> StationSearchPort
        local: 메모리 샘플
        infra: MySQL 대여소 후보 + Redis 최신 수량 + 최종 거리 필터
