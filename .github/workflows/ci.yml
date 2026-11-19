@@ -13,6 +13,7 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Actions are pinned to commit SHAs (same policy as deploy.yml); the trailing comment is the resolved tag.
 jobs:
   backend:
     name: Backend test and bootJar
@@ -22,11 +23,11 @@ jobs:
       run:
         working-directory: Ddareungi-rider
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: false
 
-      - uses: actions/setup-java@v6
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
           distribution: temurin
           java-version: "21"
@@ -40,7 +41,7 @@ jobs:
 
       - name: Upload test reports
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: backend-test-reports
           path: |
@@ -57,11 +58,11 @@ jobs:
       run:
         working-directory: Ddareungi-rider/web
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: false
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: npm
@@ -78,7 +79,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: false
 
@@ -86,3 +87,24 @@ jobs:
         env:
           DOCKER_BUILDKIT: "1"
         run: docker build --tag ddareungi-rider-backend:ci-${{ github.sha }} Ddareungi-rider
+
+  deploy-scripts:
+    name: Deploy script harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: false
+
+      # Runs the real deploy/ec2/deploy.sh against fake docker/nginx/curl/aws (no AWS access, no secrets).
+      # Needs only bash, flock, python3 and sha256sum, which ubuntu-latest provides.
+      - name: Syntax check
+        # bash -n reads only its first file argument, so check each script on its own.
+        run: |
+          for f in deploy/ec2/deploy.sh deploy/ec2/test/run-harness.sh deploy/ec2/test/fakebin/*; do
+            bash -n "$f"
+          done
+
+      - name: Run harness
+        run: bash deploy/ec2/test/run-harness.sh "$RUNNER_TEMP/deploy-harness"
