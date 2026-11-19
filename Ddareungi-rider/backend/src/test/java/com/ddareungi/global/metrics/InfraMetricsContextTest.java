@@ -15,7 +15,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @ActiveProfiles("infra")
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE, properties = {
-        "seoul-bike.api.key=local-context-test", "seoul-bike.api.collection-enabled=false"
+        "seoul-bike.api.key=local-context-test", "seoul-bike.api.collection-enabled=false",
+        // MYSQL_PASSWORD has no default in application-infra.yml; the test supplies its own (no database is used).
+        "spring.datasource.password=local-context-test"
 })
 class InfraMetricsContextTest {
     @Autowired MeterRegistry registry;

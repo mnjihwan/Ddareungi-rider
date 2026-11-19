@@ -106,6 +106,11 @@ class RouteSearchTest {
         assertThat(search(options(1000, true, true, 5)).recommended().arrival().stationId()).isEqualTo("a1");
     }
 
+    @Test void generatedAtComesFromTheInjectedClock() {
+        // Backlog (status 2026-11-19 #7): generatedAt follows the freshness policy clock, not the system clock.
+        assertThat(search(options(1000, true, true, 5)).generatedAt()).isEqualTo(NOW);
+    }
+
     @Test void maxCandidatesBoundsTheAlternatives() {
         assertThat(search(options(1000, true, true, 1)).ranked()).hasSize(1);
         assertThat(search(options(1000, true, true, 3)).alternatives()).hasSize(2);

@@ -165,6 +165,13 @@ class GlobalExceptionHandlerTest {
                 .andExpect(jsonPath("$.error.message").value("사용자 메시지"));
     }
 
+    @Test void routeExceptionBuiltFromAPublicCodeKeepsThatCodeAndStatus() throws Exception {
+        var exception = new RouteException(ErrorCode.NO_AVAILABLE_RETURN_STATION, "반납 대여소 없음");
+        org.assertj.core.api.Assertions.assertThat(exception.code).isEqualTo("NO_AVAILABLE_RETURN_STATION");
+        org.assertj.core.api.Assertions.assertThat(exception.status).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertFailureEnvelope(throwing(exception), HttpStatus.UNPROCESSABLE_ENTITY, "NO_AVAILABLE_RETURN_STATION");
+    }
+
     @Test void unknownRouteCodeIsInternalErrorWithoutLeakingMessage() throws Exception {
         assertFailureEnvelope(throwing(new RouteException(HttpStatus.BAD_REQUEST, "SOMETHING_NEW", "internal-detail")),
                 HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_SERVER_ERROR");

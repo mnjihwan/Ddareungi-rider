@@ -131,8 +131,8 @@ public class PlanBikeRoute {
         var departures = candidates(origin, true, criteria.pinnedDeparture(), now, options);
         var arrivals = candidates(destination, false, criteria.pinnedArrival(), now, options);
         String radius = distanceLabel(options.stationSearchRadiusMeters());
-        if (departures.isEmpty()) throw new RouteException(HttpStatus.NOT_FOUND, "NO_RENTAL_STATION", "출발지 " + radius + " 안에 대여 가능한 자전거가 확인된 대여소가 없어요. 출발지나 지정 대여소를 변경해 주세요.");
-        if (arrivals.isEmpty()) throw new RouteException(HttpStatus.NOT_FOUND, "NO_RETURN_STATION", "목적지 " + radius + " 안에 최근 정보가 확인된 대여소가 없어요. 목적지를 변경해 주세요.");
+        if (departures.isEmpty()) throw new RouteException(HttpStatus.UNPROCESSABLE_ENTITY, "NO_RENTAL_STATION", "출발지 " + radius + " 안에 대여 가능한 자전거가 확인된 대여소가 없어요. 출발지나 지정 대여소를 변경해 주세요.");
+        if (arrivals.isEmpty()) throw new RouteException(HttpStatus.UNPROCESSABLE_ENTITY, "NO_RETURN_STATION", "목적지 " + radius + " 안에 최근 정보가 확인된 대여소가 없어요. 목적지를 변경해 주세요.");
         var starts = departures.stream().map(Station::location).toList();
         var ends = arrivals.stream().map(Station::location).toList();
         var walk = walking.forRequest();
@@ -194,7 +194,7 @@ public class PlanBikeRoute {
             // segment order walk → bike → walk); decision 4: everything over the walking limit -> 404.
             if (!failures.isEmpty()) throw failures.getFirst();
             if (overWalkingLimit > 0) throw new RouteException(HttpStatus.NOT_FOUND, "NO_CONNECTED_ROUTE", "도보 거리 " + distanceLabel(options.maxWalkingDistanceMeters()) + " 안에서 연결되는 경로를 찾지 못했어요. 도보 거리 상한을 늘리거나 출발지·목적지를 변경해 주세요.");
-            throw new RouteException(HttpStatus.UNPROCESSABLE_ENTITY, "NO_CONNECTED_ROUTE", "주변 대여소를 연결하는 도보·자전거 경로를 찾지 못했어요. 출발지나 목적지를 변경해 주세요.");
+            throw new RouteException(HttpStatus.NOT_FOUND, "NO_CONNECTED_ROUTE", "주변 대여소를 연결하는 도보·자전거 경로를 찾지 못했어요. 출발지나 목적지를 변경해 주세요.");
         }
         ranked.sort(ORDER);
         boolean partial = !failures.isEmpty();
@@ -237,9 +237,11 @@ public class PlanBikeRoute {
         if (confirmed.isEmpty()) {
             if (stockChanged) throw new RouteException(HttpStatus.CONFLICT, "RENTAL_STOCK_CHANGED", "대여소 수량이 바뀌었어요. 경로를 다시 검색해 주세요.");
             if (!legFailures.isEmpty()) throw legFailures.getFirst();
-            throw new RouteException(HttpStatus.UNPROCESSABLE_ENTITY, "NO_CONNECTED_ROUTE", "주변 대여소를 연결하는 도보·자전거 경로를 찾지 못했어요. 출발지나 목적지를 변경해 주세요.");
+            throw new RouteException(HttpStatus.NOT_FOUND, "NO_CONNECTED_ROUTE", "주변 대여소를 연결하는 도보·자전거 경로를 찾지 못했어요. 출발지나 목적지를 변경해 주세요.");
         }
-        return new RouteSearchResult(origin, destination, confirmed, partial, bikeRoadPreferred, Instant.now(),
+        // generatedAt is the request's single evaluation instant (injected policy clock, read once per request as
+        // D2 requires), not Instant.now().
+        return new RouteSearchResult(origin, destination, confirmed, partial, bikeRoadPreferred, now,
                 attribution(walk.attribution(), ride.attribution()));
     }
     // Same engine for both segments yields one credit; different providers are both credited.
@@ -262,7 +264,7 @@ public class PlanBikeRoute {
             // With excludeStationsWithoutBikes=false a pinned departure is servable like an arrival (spec 13.1).
             boolean usable = rental && requireBikes ? fresh(pinned, now) : returnable(pinned, now);
             if (!usable) throw new RouteException(HttpStatus.SERVICE_UNAVAILABLE, "STATION_STATUS_UNAVAILABLE", "지정한 대여소의 최신 수량을 확인하지 못했어요. 잠시 후 다시 검색하거나 다른 대여소를 선택해 주세요.");
-            if (rental && requireBikes && pinned.availableBikeCount() == 0) throw new RouteException(HttpStatus.CONFLICT, "PINNED_STATION_EMPTY", "지정한 대여소에 대여 가능한 자전거가 없어요. 자동 선택하거나 다른 대여소를 지정해 주세요.");
+            if (rental && requireBikes && pinned.availableBikeCount() == 0) throw new RouteException(HttpStatus.UNPROCESSABLE_ENTITY, "PINNED_STATION_EMPTY", "지정한 대여소에 대여 가능한 자전거가 없어요. 자동 선택하거나 다른 대여소를 지정해 주세요.");
             return List.of(pinned);
         }
         int radius = options.stationSearchRadiusMeters();
@@ -276,7 +278,7 @@ public class PlanBikeRoute {
                 // candidate is FRESH with 0 bikes. If any candidate is STALE/UNAVAILABLE its stock is unknown, so
                 // the answer is 503 (STATION_STATUS_UNAVAILABLE -> public REALTIME_DATA_UNAVAILABLE), not "no bikes".
                 if (nearby.stream().allMatch(s -> fresh(s, now)))
-                    throw new RouteException(HttpStatus.NOT_FOUND, "NO_RENTAL_BIKES", "출발지 " + label + " 안에 대여소는 있지만 대여 가능한 자전거가 확인되지 않았어요. 출발 장소를 변경하거나 다른 대여소를 지정해 주세요.");
+                    throw new RouteException(HttpStatus.UNPROCESSABLE_ENTITY, "NO_RENTAL_BIKES", "출발지 " + label + " 안에 대여소는 있지만 대여 가능한 자전거가 확인되지 않았어요. 출발 장소를 변경하거나 다른 대여소를 지정해 주세요.");
                 throw new RouteException(HttpStatus.SERVICE_UNAVAILABLE, "STATION_STATUS_UNAVAILABLE", "출발지 주변 대여소는 있지만 최신 수량을 확인하지 못했어요. 잠시 후 다시 검색해 주세요.");
             }
             return nearest(location, usable, radius);

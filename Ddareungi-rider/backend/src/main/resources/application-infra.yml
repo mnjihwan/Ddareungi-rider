@@ -2,7 +2,9 @@ spring:
   datasource:
     url: ${MYSQL_URL:jdbc:mysql://localhost:3307/ddareungi?serverTimezone=Asia/Seoul&characterEncoding=UTF-8}
     username: ${MYSQL_USER:ddareungi}
-    password: ${MYSQL_PASSWORD:ddareungi}
+    # Required (no default): a missing MYSQL_PASSWORD fails the startup instead of silently trying a built-in
+    # password. scripts/start-local.sh and compose.yaml already require it.
+    password: ${MYSQL_PASSWORD}
   data:
     redis:
       host: ${REDIS_HOST:localhost}

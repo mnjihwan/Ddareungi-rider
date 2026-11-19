@@ -322,7 +322,8 @@ class PlanBikeRouteTest {
         verify(bicycle,never()).forRequest();
     }
     @Test void allFreshZeroBikeDeparturesAreNoRentalBikes() {
-        assertDepartureDecision("NO_RENTAL_BIKES",HttpStatus.NOT_FOUND,
+        // The carried status now equals the public status of NO_AVAILABLE_ORIGIN_STATION (422); see RouteException.
+        assertDepartureDecision("NO_RENTAL_BIKES",HttpStatus.UNPROCESSABLE_ENTITY,
                 station("z1",d1.location(),0,NOW),station("z2",d2.location(),0,NOW.minusSeconds(120)));
     }
     @Test void freshZeroBikesWithAStaleDepartureIs503NotNoRentalBikes() {
