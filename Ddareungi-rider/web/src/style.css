@@ -930,6 +930,35 @@ p {
   font-weight: 400;
   color: var(--theme-muted, #9199a3);
 }
+.inventory-comparison { margin: 0 0 20px; }
+.comparison-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.comparison-heading h3 { font-size: 14px; }
+.comparison-time { position: relative; display: grid; flex-shrink: 0; }
+.comparison-time label { font-size: 10px; color: var(--theme-muted, #68788f); }
+.comparison-time-trigger { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 36px; min-width: 84px; padding: 6px 10px; border: 1px solid var(--theme-line, #d7dce3); border-radius: 8px; background: var(--surface, #fff); font-size: 12px; }
+.comparison-time-popover { position: absolute; z-index: 10; right: 0; top: calc(100% + 6px); width: 200px; padding: 12px; border: 1px solid var(--theme-line, #d7dce3); border-radius: 12px; background: var(--surface, #fff); box-shadow: 0 8px 28px #0003; }
+.comparison-time-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.comparison-time-columns label { display: grid; gap: 6px; text-align: center; }
+.comparison-time-columns select { width: 100%; height: 168px; padding: 3px; border: 1px solid var(--theme-line, #d7dce3); border-radius: 6px; background: var(--surface, #fff); color: var(--theme-text, #252f3e); font: inherit; font-size: 12px; scrollbar-width: thin; }
+.comparison-time-columns option { padding: 6px 8px; border-radius: 4px; }
+.comparison-time-actions { display: flex; gap: 8px; margin-top: 12px; }
+.comparison-time-actions button { flex: 1; min-height: 34px; border-radius: 6px; background: var(--raised-surface, #f7f9fb); font-size: 12px; }
+.comparison-time-actions .comparison-time-apply { background: var(--accent); color: #fff; }
+.comparison-time select:focus-visible { outline: 3px solid #6785af; outline-offset: 2px; }
+.comparison-table-wrap { border: 1px solid var(--theme-line, #e5e8eb); border-radius: 10px; overflow: hidden; background: var(--surface, #fff); }
+.comparison-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 12px; text-align: center; }
+.comparison-table tbody tr:last-child th, .comparison-table tbody tr:last-child td { border-bottom: 0; }
+.comparison-table thead { background: var(--raised-surface, #f7f9fb); }
+.comparison-table th, .comparison-table td { padding: 10px 3px; border-bottom: 1px solid var(--theme-line, #e5e8eb); }
+.comparison-table tbody th, .comparison-table tbody td { padding-block: 8px; }
+.comparison-table th { font-weight: 600; }
+.comparison-table small { display: block; margin-top: 4px; font-size: 9px; font-weight: 400; color: var(--theme-muted, #68788f); }
+.comparison-table td span { margin-left: 2px; font-size: 10px; }
+.comparison-table td strong { font-size: 16px; }
+.comparison-table .comparison-missing { font-size: 10px; color: var(--theme-muted, #68788f); word-break: keep-all; }
+.comparison-reference { background-color: color-mix(in srgb, var(--selected-surface, #edf1f7) 65%, var(--surface, #fff)); }
+.comparison-live { color: var(--theme-blue, #2563a6); }
+.comparison-note { margin-top: 10px; color: var(--theme-muted, #68788f); font-size: 10px; line-height: 1.7; word-break: keep-all; }
 .forecast-title {
   display: flex;
   align-items: center;
@@ -1330,14 +1359,8 @@ p {
     z-index: 6;
     box-shadow: 0 -5px 30px #29364812;
     transition: height 0.22s;
-    height: 46%;
+    height: var(--mobile-sheet-height);
     padding-bottom: env(safe-area-inset-bottom);
-  }
-  .station-sidebar.sheet-full {
-    height: calc(100% - 77px);
-  }
-  .station-sidebar.sheet-peek {
-    height: 102px;
   }
   .sheet-handle {
     height: 37px;
@@ -1360,6 +1383,8 @@ p {
     height: calc(100% - 37px);
     overscroll-behavior: contain;
   }
+  .station-sidebar.sheet-peek .sheet-handle { height: 100%; }
+  .station-sidebar.sheet-peek .sidebar-content { display: none; }
   .list-content {
     padding: 7px 20px 24px;
   }
@@ -1450,6 +1475,10 @@ p {
     font-size: 12px;
     min-height: 48px;
   }
+  .station-detail .directions-button {
+    font-size: 14px;
+    line-height: 18px;
+  }
   .zoom-controls {
     top: 224px;
     bottom: auto;
@@ -1539,18 +1568,25 @@ p {
   .app-header { height: 64px; padding: 0 12px; }
   .app-header nav { gap: 6px; }
   .app-header nav button { padding: 10px 9px; font-size: 11px; }
-  .workspace { height: calc(100dvh - 64px); --mobile-sheet-height: calc((100dvh - 64px) * 0.46); }
-  .workspace.map-sheet-peek { --mobile-sheet-height: 102px; }
+  .workspace {
+    height: calc(100dvh - 64px);
+    --mobile-sheet-peek-height: calc(44px + env(safe-area-inset-bottom));
+    --mobile-sheet-height: calc((100dvh - 64px) * 0.46);
+  }
+  .workspace.map-sheet-mid:has(.mobile-detail) {
+    --mobile-sheet-height: clamp(calc((100dvh - 64px) * 0.46), calc(381px + env(safe-area-inset-bottom)), calc(100dvh - 141px));
+  }
+  .workspace.map-sheet-peek { --mobile-sheet-height: var(--mobile-sheet-peek-height); }
   .workspace.map-sheet-full { --mobile-sheet-height: calc(100% - 77px); }
   /* Keep the map canvas fixed while the sheet overlays it. */
-  .workspace .map-surface { bottom: 102px; }
+  .workspace .map-surface { bottom: var(--mobile-sheet-peek-height); }
   .workspace .map-top-label, .workspace .map-legend, .desktop-shortcuts { display: none; }
   .mobile-map-info { display: block; margin: 16px 0; }
   .mobile-map-info .search-shortcuts { padding: 0; margin: 0 0 12px; background: transparent; }
   .mobile-map-legend { color: var(--theme-muted, #68788f); font-size: 11px; }
   .mobile-map-legend summary { padding: 8px 0; cursor: pointer; }
   .mobile-map-legend p { line-height: 1.6; margin: 4px 0; }
-  .workspace .zoom-controls { top: auto; bottom: calc(var(--mobile-sheet-height) - 86px); }
+  .workspace .zoom-controls { top: auto; bottom: calc(var(--mobile-sheet-height) - var(--mobile-sheet-peek-height) + 16px); }
   .workspace .location-button { top: auto; bottom: calc(var(--mobile-sheet-height) + 116px); }
   .workspace.map-sheet-full .zoom-controls, .workspace.map-sheet-full .location-button { display: none; }
   .workspace .search-this-area { top: 74px; }

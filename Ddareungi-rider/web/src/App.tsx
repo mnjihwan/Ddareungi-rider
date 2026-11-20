@@ -31,6 +31,8 @@ import { useTheme } from "./lib/useTheme";
 import { ThemeToggle } from "./components/ThemeToggle";
 
 /** The maintenance screen (Phase 3 A7) lives in MaintenanceGate; MainApp is the regular app. */
+const MESSAGE_DURATION_MS = 6_000;
+
 export default function App() {
   return <MaintenanceGate><MainApp /></MaintenanceGate>;
 }
@@ -56,9 +58,16 @@ function MainApp() {
     [submitted, setSubmitted] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null),
     [sheet, setSheet] = useState<"peek" | "mid" | "full">("mid");
-  const [message, setMessage] = useState(""),
+  const [message, setMessage] = useState<{ text: string } | null>(null),
     [locating, setLocating] = useState(false),
     [, tick] = useState(0);
+  useEffect(() => {
+    if (!message) return;
+    const timer = window.setTimeout(() => {
+      setMessage(current => current === message ? null : current);
+    }, MESSAGE_DURATION_MS);
+    return () => window.clearTimeout(timer);
+  }, [message]);
   const drag = useRef<number | null>(null);
   const initialLocationRequested = useRef(false);
   const allowInitialLocation = useRef(true);
@@ -210,7 +219,7 @@ function MainApp() {
     setSelectedId(null);
     setView("nearby");
     setSheet("mid");
-    setMessage("");
+    setMessage(null);
   }
   function focusPlace(place:Place, query?:string) {
     allowInitialLocation.current = false;
@@ -247,9 +256,7 @@ function MainApp() {
   function locate(initial = false) {
     const requestId = ++locationRequest.current;
     if (!window.isSecureContext || !navigator.geolocation) {
-      setMessage(
-        "현재 위치를 사용할 수 없어요. 장소 검색이나 지도 이동으로 찾아주세요. 모바일 위치 기능은 HTTPS 연결이 필요해요.",
-      );
+      setMessage({ text: "현재 위치를 사용할 수 없어요. 장소 검색이나 지도 이동으로 찾아주세요. 모바일 위치 기능은 HTTPS 연결이 필요해요." });
       return;
     }
     setLocating(true);
@@ -260,7 +267,7 @@ function MainApp() {
         // A delayed permission response must not replace a place the user already chose.
         if (initial && !allowInitialLocation.current) return;
         if (!Number.isFinite(coords.accuracy) || coords.accuracy > MAX_LOCATION_ACCURACY) {
-          setMessage(`현재 위치 오차가 ${Number.isFinite(coords.accuracy) ? `약 ${Math.round(coords.accuracy)}m로 커서` : '확인되지 않아'} 지도를 이동하지 않았어요. 장소 검색으로 실제 위치를 지정해 주세요.`);
+          setMessage({ text: `현재 위치 오차가 ${Number.isFinite(coords.accuracy) ? `약 ${Math.round(coords.accuracy)}m로 커서` : '확인되지 않아'} 지도를 이동하지 않았어요. 장소 검색으로 실제 위치를 지정해 주세요.` });
           return;
         }
         const location = {
@@ -270,7 +277,7 @@ function MainApp() {
         setUserLocation(location);
         setUserLocationAccuracy(coords.accuracy);
         go(location, "내 위치 주변", true);
-        if (coords.accuracy > 100) setMessage(`브라우저 위치 오차가 약 ${Math.round(coords.accuracy)}m예요. 실제 위치와 다르면 장소 검색이나 지도에서 출발 위치를 지정해 주세요.`);
+        if (coords.accuracy > 100) setMessage({ text: `브라우저 위치 오차가 약 ${Math.round(coords.accuracy)}m예요. 실제 위치와 다르면 장소 검색이나 지도에서 출발 위치를 지정해 주세요.` });
         setLocating(false);
       },
       (error) => {
@@ -282,7 +289,7 @@ function MainApp() {
           : error.code === 3
             ? "위치 확인 시간이 초과됐어요. 현재 위치 버튼으로 다시 시도해 주세요."
             : "브라우저가 현재 위치를 제공하지 못했어요. 운영체제 위치 서비스와 네트워크 연결을 확인해 주세요.";
-        setMessage(reason + (initial ? ` 현재는 ${initialMap.label}을 보여드려요.` : " 장소 검색은 계속 사용할 수 있어요."));
+        setMessage({ text: reason + (initial ? ` 현재는 ${initialMap.label}을 보여드려요.` : " 장소 검색은 계속 사용할 수 있어요.") });
         setLocating(false);
       },
     );
@@ -365,13 +372,13 @@ function MainApp() {
             onSubmit={() => {
               setFocusedPlace(null);
               if (text.trim().length < 2) {
-                setMessage("장소나 대여소 이름을 두 글자 이상 입력해 주세요.");
+                setMessage({ text: "장소나 대여소 이름을 두 글자 이상 입력해 주세요." });
                 return;
               }
               setSubmitted(text.trim());
               setSelectedId(null);
               setSheet("full");
-              setMessage("");
+              setMessage(null);
             }}
             onChoose={(suggestion,query) => {
               if (suggestion.kind === 'place') openPlace(suggestion.place, query);
@@ -704,9 +711,9 @@ function MainApp() {
       {(message || favorites.message) && (
         <div className="toast" role="status">
           <Icon name="info" size={19} />
-          <span>{message || favorites.message}</span>
+          <span>{message?.text ?? favorites.message}</span>
           {message && (
-            <button aria-label="안내 닫기" onClick={() => setMessage("")}>
+            <button aria-label="안내 닫기" onClick={() => setMessage(null)}>
               <Icon name="close" size={17} />
             </button>
           )}
