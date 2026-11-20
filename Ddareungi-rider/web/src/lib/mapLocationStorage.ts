@@ -1,15 +1,7 @@
 import type {Coordinates} from "./types";
-export const MAP_LOCATION_KEY = "ddareungrider:last-map-location:v1";
-export interface SavedMapLocation { location: Coordinates; label: string }
-export function parseMapLocation(raw: string | null): SavedMapLocation | null {
-  try {
-    const value = JSON.parse(raw ?? "null");
-    const lat = value?.location?.latitude, lng = value?.location?.longitude;
-    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180 ||
-        typeof value.label !== "string" || !value.label.trim() || value.label.length > 200) return null;
-    return {location: {latitude: lat, longitude: lng}, label: value.label};
-  } catch { return null; }
-}
+import {MAP_LOCATION_KEY, parseMapLocation, type SavedMapLocation} from "../../../mobile/src/shared/rider-contract/mapLocationStorage.ts";
+
+export * from "../../../mobile/src/shared/rider-contract/mapLocationStorage.ts";
 export function loadMapLocation(): SavedMapLocation | null {
   try { return parseMapLocation(localStorage.getItem(MAP_LOCATION_KEY)); } catch { return null; }
 }

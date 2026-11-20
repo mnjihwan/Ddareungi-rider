@@ -4,6 +4,7 @@ import { clusterPoints, separateMarkerGroups, type MarkerGroup } from "../lib/cl
 import { CLUSTER_MIN_LEVEL, clusterZoomLevel, mergeOverlappingClusters, type ClusterMarker } from "../lib/mapClusters";
 import { stationLocation, type Coordinates, type Station, type MapBounds, type BikeRoute, type Place, type RouteEndpointRole, type StationClusters } from "../lib/types";
 import { availability, AVAILABILITY_LABEL } from "../lib/status";
+import { displayStationName } from "../lib/stationName";
 import { Icon } from "./Icon";
 import { MapMarker } from "./MapMarker";
 
@@ -417,6 +418,7 @@ export function StationMap({
           );
           if (!station) return null;
           const status = availability(station);
+          const name = displayStationName(station.stationName);
           return anchored(
             <span key={group.id} className="individual-marker">
             {!!(group.offsetX || group.offsetY) && state==="ready" && <span className="marker-connector" aria-hidden="true"
@@ -429,12 +431,12 @@ export function StationMap({
               data-route-station={routeStationsOnly || undefined}
               data-station-ids={group.stationIds.join(",")}
               onClick={() => onSelect(station)}
-              aria-label={`${station.stationName}, ${AVAILABILITY_LABEL[status]}, ${status === "unknown" ? "수량 미확인" : status === "stale" ? `마지막 확인 ${station.parkingBikeTotCnt}대` : `${station.parkingBikeTotCnt}대`}`}
+              aria-label={`${name}, ${AVAILABILITY_LABEL[status]}, ${status === "unknown" ? "수량 미확인" : status === "stale" ? `마지막 확인 ${station.parkingBikeTotCnt}대` : `${station.parkingBikeTotCnt}대`}`}
               aria-pressed={station.stationId === selectedId}
             >
               <Icon name="bike" size={18} />
               <b>{status === "unknown" ? "—" : station.parkingBikeTotCnt}</b>
-              <span className="marker-name">{station.stationName}</span>
+              <span className="marker-name">{name}</span>
             </button>
             </span>
           );

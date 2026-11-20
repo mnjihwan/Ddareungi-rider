@@ -1,0 +1,26 @@
+{
+  "cli": {
+    "appVersionSource": "local"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "environment": "development"
+    },
+    "preview": {
+      "distribution": "internal",
+      "environment": "preview",
+      "env": { "RIDER_RELEASE_BUILD": "true" },
+      "android": { "buildType": "apk" },
+      "ios": { "buildConfiguration": "Release" }
+    },
+    "production": {
+      "distribution": "store",
+      "environment": "production",
+      "env": { "RIDER_RELEASE_BUILD": "true" },
+      "android": { "buildType": "app-bundle" },
+      "ios": { "buildConfiguration": "Release" }
+    }
+  }
+}
