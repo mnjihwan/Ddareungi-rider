@@ -118,6 +118,12 @@ docker compose --env-file .env --profile real up -d --no-deps --build --wait --w
 
 `PlanBikeRoute`는 구간별 포트 `WalkingRouteProvider`(도보)와 `BicycleRouteProvider`(자전거)만 사용합니다. 각 포트의 구현은 엔진 어댑터 `EngineWalkingRouteProvider`·`EngineBicycleRouteProvider`이며, `routing.provider`로 선택한 하나의 엔진(`RouteProvider` 내부 SPI: 기본 카카오 `KakaoRouteClient`, 선택 시 ORS `OpenRouteServiceClient`)에 프로필(`foot-walking`/`cycling-regular`)을 고정해 호출합니다. 어댑터는 엔진의 공급자 실패 코드(`ROUTING_UNAVAILABLE`/`ROUTING_LIMIT`/`ROUTING_AUTH`)를 구간별 `WALK_ROUTE_PROVIDER_ERROR`/`BIKE_ROUTE_PROVIDER_ERROR`(502)로 바꾸고, `NO_ROAD_ROUTE`(→ `ROUTE_NOT_FOUND`)와 `ROUTING_NOT_CONFIGURED`(→ `SERVICE_UNAVAILABLE`)는 그대로 전달합니다. 어댑터를 거치지 않은 엔진 실패 코드가 핸들러에 도달하면 안전망으로 `BIKE_ROUTE_PROVIDER_ERROR`(502)로 응답합니다.
 
+## 모바일 앱에서 길찾기 API 사용
+
+- 장소 검색, 기기 위치 또는 지도에서 얻은 좌표를 `POST /api/v1/routes/search`로 전달합니다. 대여·반납 지점을 직접 선택했을 때만 해당 대여소 ID를 보냅니다. 앱의 요청과 응답 처리에는 웹의 `Ddareungi-rider/web/src/lib/routeSearch.ts`와 `Ddareungi-rider/web/src/lib/apiEnvelope.ts`를 참고합니다.
+- 성공 응답의 `data.recommended.segments`는 WALK → BIKE → WALK 순서입니다. 각 `encodedPolyline`을 좌표로 변환해 경로선을 그리고, `originStation`·`destinationStation`으로 대여·반납 마커를 표시합니다. 전체 거리와 시간은 `totalDistanceMeters`·`estimatedDurationSeconds`를 사용합니다. 출발지나 목적지를 바꾸면 이전 경로를 지우고 늦게 도착한 이전 응답을 무시합니다.
+- 샘플 모드는 대여소 조회에 사용합니다. 고정 응답으로 경로선 렌더링을 검증할 수 있으며, 실제 경로 계산은 카카오 REST 키와 최신 대여소 수량이 연결된 환경에서 확인합니다. `routes/status`의 `configured` 확인과 실제 `routes/search` 성공을 구분합니다. [모바일 앱 실행 안내](../Ddareungi-rider/mobile/README.md)
+
 ## 실제 검증 (2026-10-10)
 
 카카오 장소 검색, 도보·자전거 REST 인증, 등록한 localhost 도메인에서 JavaScript SDK와 실제 지도 타일 로딩을 확인했습니다. PC 1600×900(16:9) 및 모바일 390×844 브라우저에서 실제 서울시 대여 수량과 카카오 API로 강남역 주변 → 역삼역 경로를 계산했습니다. 결과는 1,054m·661초였으며 지도에 세 구간 경로선과 네 지점을 표시했습니다. 브라우저 위치는 테스트용 강남역 좌표로 설정했고 검색·대여 수량·경로 응답은 실제 API를 사용했습니다.
