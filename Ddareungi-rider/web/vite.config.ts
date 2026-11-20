@@ -14,6 +14,12 @@ export default defineConfig(({ mode }) => {
     },
     plugins: [react()],
     server: {
+      fs: {
+        allow: [
+          fileURLToPath(new URL(".", import.meta.url)),
+          fileURLToPath(new URL("../mobile/src/shared/rider-contract/", import.meta.url)),
+        ],
+      },
       port: 5173,
       strictPort: true,
       proxy: {
