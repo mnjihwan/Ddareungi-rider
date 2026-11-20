@@ -15,7 +15,7 @@ try {
     page.on('pageerror',error=>errors.push(error.message));
     await page.goto(process.env.CHECK_BASE_URL || 'http://localhost:5173/',{waitUntil:'networkidle'});
     await page.locator('.station-card-select').first().click();
-    await page.getByRole('button',{name:'여기서 출발',exact:true}).filter({visible:true}).click();
+    await page.getByRole('button',{name:'출발지',exact:true}).filter({visible:true}).click();
     await page.locator('.pinned-station').waitFor();
     await page.getByLabel('출발지',{exact:true}).fill('서울대입구역');
     assert.equal(await page.locator('.pinned-station').count(),0,'Changing origin must clear the previous station');
@@ -24,14 +24,14 @@ try {
     await page.getByLabel('목적지',{exact:true}).fill('멀티캠퍼스 역삼');
     await page.getByRole('button',{name:'목적지 검색',exact:true}).click();
     await page.locator('.route-place-results button').filter({hasText:'멀티캠퍼스 역삼'}).first().click();
-    const routeResponse=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/v1/routes/plan',{timeout:90000});
+    const routeResponse=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/v1/routes/search',{timeout:90000});
     await page.getByRole('button',{name:'따릉이 경로 찾기',exact:true}).click();
     const response=await routeResponse;
     assert.equal(response.status(),200,JSON.stringify(await response.json()));
-    const plan=(await response.json()).data;
+    const plan=(await response.json()).data.recommended;
     assert.equal(response.request().postDataJSON().departureStationId,undefined);
-    assert.deepEqual(plan.legs.map(leg=>leg.mode),['walk','bicycle','walk']);
-    assert(plan.departureStation.distanceMeters<=500,'Automatic station must be near Seoul National University station');
+    assert.deepEqual(plan.segments.map(segment=>segment.type),['WALK','BIKE','WALK']);
+    assert(plan.originStation.distanceMeters<=500,'Automatic station must be near Seoul National University station');
     await page.locator('.route-summary').waitFor();
     await page.waitForTimeout(1000);
     await page.waitForFunction(()=>[...document.querySelectorAll('.kakao-map img')].some(image=>image.complete && image.naturalWidth>100));
@@ -64,8 +64,8 @@ try {
     assert.equal(await page.locator('.pinned-station').count(),0);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
     assert.deepEqual(errors,[]);
-    results.push({name,route:{departure:plan.departureStation.stationName,stationDistanceMeters:plan.departureStation.distanceMeters,
-      distanceMeters:plan.distanceMeters,durationSeconds:plan.durationSeconds},previousPinCleared:true,accuracyShown:true,mapOriginPicked:true,pageErrors:errors});
+    results.push({name,route:{departure:plan.originStation.stationName,stationDistanceMeters:plan.originStation.distanceMeters,
+      distanceMeters:plan.totalDistanceMeters,durationSeconds:plan.estimatedDurationSeconds},previousPinCleared:true,accuracyShown:true,mapOriginPicked:true,pageErrors:errors});
     await context.close();
   }
   await writeFile(new URL('.local/route-origin-result.json',root),JSON.stringify(results,null,2));

@@ -26,14 +26,16 @@ import java.util.concurrent.TimeoutException;
 
 /**
  * Bike route search (spec 13.1, A6). Up to {@code routing.search.max-station-candidates} departures × arrivals are
- * compared with real walking/cycling routes (Kakao: at most 6 + 9 = 15 directions calls, every later leg comes from
- * the per-request cache; cycling pairs are only asked when both of their walks are routed, review H1), ranked by total duration → walking distance → total distance → departure id → arrival id, and the
+ * compared with real walking/cycling routes (Kakao: at most 6 + 9 = 15 calls for the default candidate matrices).
+ * Each selected candidate may recheck its return access with both providers. Routes are ranked by
+ * total duration → walking distance → total distance → departure id → arrival id, and the
  * best {@code maxCandidates} are returned. {@link #execute} is the legacy {@code /routes/plan} entry point: the same
  * search with {@link RouteSearchOptions#legacyPlan()}, answering the recommended route in the former shape.
  */
 @Service
 public class PlanBikeRoute {
     private static final double WITHIN_PREFERRED_METERS = 500;
+    private static final double RETURN_ACCESS_TOLERANCE_METERS = 5;
     private final StationSearchPort stations;
     private final WalkingRouteProvider walking;
     private final BicycleRouteProvider bicycle;
@@ -199,23 +201,33 @@ public class PlanBikeRoute {
         ranked.sort(ORDER);
         boolean partial = !failures.isEmpty();
 
-        // Legs of the best maxCandidates pairs only. Kakao: every leg is in the per-request cache, 0 extra calls.
-        // ORS has no per-request cache (forRequest() is the engine itself), so each returned route costs its own
-        // 3 directions calls: at most maxCandidates (5) × 3 = 15 calls after the matrices (review L4).
+        // Resolve the best maxCandidates pairs, then re-rank the selected routes if a return approach changes.
         var routes = new ArrayList<RouteSearchResult.Route>();
+        var finalRanks = new HashMap<RouteSearchResult.Route, Ranked>();
         var legFailures = new ArrayList<RouteException>();
         for (var pair : ranked.subList(0, Math.min(options.maxCandidates(), ranked.size()))) {
             var departure = departures.get(pair.start()); var arrival = arrivals.get(pair.end());
             try {
-                routes.add(new RouteSearchResult.Route(departure, arrival, List.of(walk.route(origin, departure.location()),
-                        ride.route(departure.location(), arrival.location()),
-                        walk.route(arrival.location(), destination))));
+                var firstWalk = walk.route(origin, departure.location());
+                var bike = ride.route(departure.location(), arrival.location());
+                var finalWalk = walk.route(arrival.location(), destination);
+                var connected = connectReturn(walk, ride, departure.location(), arrival.location(), destination,
+                        firstWalk, bike, finalWalk, options.maxWalkingDistanceMeters());
+                var legs = List.of(firstWalk, connected.bicycle(), connected.walk());
+                var route = new RouteSearchResult.Route(departure, arrival, legs);
+                routes.add(route);
+                finalRanks.put(route, connected.bicycle() == bike && connected.walk() == finalWalk ? pair : new Ranked(pair.start(), pair.end(),
+                        legs.stream().mapToLong(leg -> round(leg.durationSeconds())).sum(),
+                        round(firstWalk.distanceMeters()) + round(connected.walk().distanceMeters()),
+                        legs.stream().mapToLong(leg -> round(leg.distanceMeters())).sum(),
+                        pair.departureId(), pair.arrivalId()));
             } catch (RouteException error) {
                 if (error.code.equals("NO_ROAD_ROUTE")) continue;
                 legFailures.add(error);
             }
         }
         partial |= !legFailures.isEmpty();
+        routes.sort(Comparator.comparing(finalRanks::get, ORDER));
 
         // Check again after the external routing calls, when stock may have changed (one lookup for all departures).
         // A route whose departure lost its bikes is dropped and the next one moves up (phase 3 decision 6, no extra
@@ -244,6 +256,57 @@ public class PlanBikeRoute {
         return new RouteSearchResult(origin, destination, confirmed, partial, bikeRoadPreferred, now,
                 attribution(walk.attribution(), ride.attribution()));
     }
+    private record ReturnLegs(RouteProvider.Leg bicycle, RouteProvider.Leg walk) {}
+
+    private static ReturnLegs connectReturn(WalkingRouteProvider walking, BicycleRouteProvider bicycle,
+                                             Location departure, Location station, Location destination,
+                                             RouteProvider.Leg firstWalk, RouteProvider.Leg bike, RouteProvider.Leg walk,
+                                             @Nullable Integer walkingLimit) {
+        var original = new ReturnLegs(bike, walk);
+        if (bike.path() == null || bike.path().isEmpty() || walk.path() == null || walk.path().size() < 2) return original;
+        var walkStart = walk.path().getFirst();
+        if (bike.path().getLast().distanceTo(walkStart) <= RETURN_ACCESS_TOLERANCE_METERS || walkStart.equals(station)) {
+            return original;
+        }
+
+        try {
+            var walkApproach = walk;
+            var nearbyAccess = projectOntoApproach(station, walkStart, walk.path().get(1));
+            if (nearbyAccess.distanceTo(station) + RETURN_ACCESS_TOLERANCE_METERS < walkStart.distanceTo(station)) {
+                var candidate = walking.route(nearbyAccess, destination);
+                if (candidate.path() != null && !candidate.path().isEmpty()
+                        && candidate.path().getFirst().distanceTo(station) < walkStart.distanceTo(station)
+                        && (walkingLimit == null || round(firstWalk.distanceMeters()) + round(candidate.distanceMeters()) <= walkingLimit)) {
+                    walkApproach = candidate;
+                }
+            }
+
+            var access = walkApproach.path().getFirst();
+            var bikeApproach = bicycle.route(departure, access);
+            if (bikeApproach.path() != null && !bikeApproach.path().isEmpty()
+                    && bikeApproach.path().getLast().distanceTo(access) <= RETURN_ACCESS_TOLERANCE_METERS) {
+                return new ReturnLegs(bikeApproach, walkApproach);
+            }
+        } catch (RouteException ignored) {
+            // The original provider geometry is still available if the optional approach fails.
+        }
+        return original;
+    }
+
+    // The projection is a routing input. Both displayed legs come from their respective providers.
+    private static Location projectOntoApproach(Location station, Location start, Location next) {
+        double longitudeScale = Math.cos(Math.toRadians(station.latitude()));
+        double dx = (next.longitude() - start.longitude()) * longitudeScale;
+        double dy = next.latitude() - start.latitude();
+        double lengthSquared = dx * dx + dy * dy;
+        if (lengthSquared == 0) return start;
+        double x = (station.longitude() - start.longitude()) * longitudeScale;
+        double y = station.latitude() - start.latitude();
+        double fraction = Math.min(1, (x * dx + y * dy) / lengthSquared);
+        return new Location(start.latitude() + fraction * dy,
+                start.longitude() + fraction * (next.longitude() - start.longitude()));
+    }
+
     // Same engine for both segments yields one credit; different providers are both credited.
     private static String attribution(String walking, String cycling) {
         return walking.equals(cycling) ? walking : walking + " / " + cycling;

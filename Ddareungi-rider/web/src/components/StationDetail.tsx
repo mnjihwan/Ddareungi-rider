@@ -11,6 +11,7 @@ import {
 import { forecastPath, loadForecast } from "../lib/api";
 import type { Station } from "../lib/types";
 import { Icon } from "./Icon";
+import { InventoryComparison } from "./InventoryComparison";
 
 export function StationDetail({
   station,
@@ -109,7 +110,8 @@ export function StationDetail({
           </span>
         </div>
       </div>
-      <div className="forecast-panel">
+      <InventoryComparison station={station} sample={sample} />
+      {forecastPath && <div className="forecast-panel">
         <div className="forecast-title">
           <span>
             <Icon name="spark" size={18} />
@@ -170,16 +172,16 @@ export function StationDetail({
             예상 수량은 도착 시 대여를 보장하지 않아요.
           </p>
         )}
-      </div>
+      </div>}
       <div className="endpoint-actions">
       <button className="primary-button directions-button" onClick={onRoute}
         disabled={actions.departure.disabled}
         aria-describedby={actions.departure.reason ? departureNoteId : undefined}>
-        <Icon name="arrow" size={18} />여기서 출발
+        출발지
       </button>
       <button className="primary-button directions-button" onClick={onArrival}
         disabled={actions.arrival.disabled}
-        aria-describedby={actions.arrival.reason ? (sharedNote ? departureNoteId : arrivalNoteId) : undefined}>여기로 도착</button>
+        aria-describedby={actions.arrival.reason ? (sharedNote ? departureNoteId : arrivalNoteId) : undefined}>도착지</button>
       </div>
       {(actions.departure.reason || actions.arrival.reason) && (
         <div className="endpoint-notes" role="status">

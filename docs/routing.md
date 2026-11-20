@@ -46,7 +46,7 @@ docker compose --env-file .env --profile real up -d --no-deps --build --wait --w
 
 자동 선택은 출발·도착 위치의 직선 반경 `min(500m, stationSearchRadiusMeters)` 안에서 각 최대 3개 후보를 선택합니다(`routing.search.max-station-candidates`). 사용 가능한 후보가 없으면 `stationSearchRadiusMeters`(기본 1km)로 확대합니다. 출발 후보는 FRESH(수집 시각 기준 120초 이하, `realtime.freshness.fresh-seconds`) 수량이 1대 이상이어야 하며 STALE·UNAVAILABLE 대여소는 제외합니다. 반납 후보와 지정 반납 대여소는 UNAVAILABLE(600초 초과 또는 수집 이력 없음)만 제외하고 STALE(120초 초과 600초 이하)도 허용합니다(명세 11.0, 반납 가능 여부는 v1에서 항상 UNKNOWN). 출발 후보 중 FRESH·1대 이상이 없을 때, 모든 후보가 FRESH·0대이면 '대여 가능한 자전거 없음'(422), STALE·UNAVAILABLE이 하나라도 섞여 있으면 수량을 확인할 수 없으므로 503입니다. FRESH 120초는 수집기의 60초 주기 실시간 Redis 갱신 job(명세 11.0·21.2, R2)을 전제로 합니다. 5분 주기 수집만으로는 대부분 STALE이 되어 출발 후보가 없고 길찾기가 503으로 실패합니다. 직접 지정한 출발 대여소는 자동 선택 반경과 무관하게 ID로 조회합니다. 지정 대여소의 수량이 없거나 확인되지 않으면 해당 원인을 안내하며 임의로 다른 대여소를 지정하지 않습니다. 주변 대여소 없음·대여 가능한 자전거 없음·최신 수량 확인 불가는 각각 다른 오류로 안내합니다.
 
-후보별 실제 도보·자전거 경로를 조회해 세 구간의 예상 시간 합이 가장 짧은 조합을 추천(`recommended`)으로, 다음 조합들을 대안(`alternatives`, 최대 `maxCandidates - 1`개)으로 반환합니다. 정렬은 총 소요시간 → 도보거리 → 총거리 → 출발 ID → 도착 ID이며, 두 도보 구간의 실제 거리 합이 `maxWalkingDistanceMeters`를 넘는 조합은 제외합니다. 같은 대여소를 출발·반납 지점으로 선택하지 않습니다. 연결할 수 없는 조합은 제외하며 직선거리로 경로나 시간을 대체하지 않습니다. 후보가 양쪽 모두 3개라면 도보 최대 6회, 자전거 최대 9회로 검색 한 건에 최대 15회 호출합니다. 선택된 구간은 그 요청에서 이미 조회한 응답을 사용하므로 최종 표시를 위해 다시 호출하지 않습니다. 응답은 해당 검색 요청 동안에만 보관하며 다른 요청과 공유하거나 DB·Redis에 저장하지 않습니다.
+후보별 실제 도보·자전거 경로를 조회해 세 구간의 예상 시간 합이 가장 짧은 조합을 추천(`recommended`)으로, 다음 조합들을 대안(`alternatives`, 최대 `maxCandidates - 1`개)으로 반환합니다. 정렬은 총 소요시간 → 도보거리 → 총거리 → 출발 ID → 도착 ID이며, 두 도보 구간의 실제 거리 합이 `maxWalkingDistanceMeters`를 넘는 조합은 제외합니다. 같은 대여소를 출발·반납 지점으로 선택하지 않습니다. 연결할 수 없는 조합은 제외하며 직선거리로 경로나 시간을 대체하지 않습니다. 후보가 양쪽 모두 3개라면 후보 비교에 도보 최대 6회, 자전거 최대 9회가 필요합니다. 반납 지점의 자전거와 도보 접점이 5m 넘게 떨어진 경우, 표시할 후보마다 가까운 접근점으로 도보와 자전거를 최대 한 번씩 다시 조회합니다. 두 공급자 경로가 이어지고 도보 거리 상한을 충족하면 다시 계산된 거리와 시간으로 표시할 후보를 정렬합니다. 응답은 해당 검색 요청 동안에만 보관하며 다른 요청과 공유하거나 DB·Redis에 저장하지 않습니다.
 
 최종 경로를 계산한 뒤 출발 대여소의 수량을 다시 조회합니다. 추천 경로 출발지의 수량이 사라지면 다음 유효 대안을 추천으로 올리고(추가 호출 없음), 남은 대안이 없을 때만 다시 검색하도록 알립니다(409). 서비스 자체의 출발·목적지 50km 제한은 2026-10-11 제거했습니다. 대여소가 있고 공급자가 연결 가능한 경로를 반환하는 조건으로 판단합니다. 실제 대여 수량이 없는 샘플 프로필에서는 길찾기를 비활성화합니다.
 
@@ -108,7 +108,7 @@ docker compose --env-file .env --profile real up -d --no-deps --build --wait --w
 | 길찾기 키 미설정·비활성, 데이터 저장소(Redis/DB) 장애 | 503 | `SERVICE_UNAVAILABLE` |
 | 재조회 시 추천·대안 출발지 모두 수량 소진(확장 코드, `excludeStationsWithoutBikes=true`일 때만) | 409 | `RENTAL_STOCK_CHANGED` |
 
-검색 1건의 카카오 호출은 최대 15회(도보 6 + 자전거 9)이며 대안 경로는 같은 요청의 결과로 만들어 추가 호출이 없습니다.
+기본 설정의 후보 비교는 카카오를 최대 15회 호출합니다(도보 6회, 자전거 9회). 반환할 경로마다 반납 접점이 떨어진 경우 최대 2회가 추가됩니다.
 
 - `POST /api/v1/routes/plan`(**Deprecated**, 한 릴리스 병행): 요청 `{origin, destination, departureStationId?, arrivalStationId?}`, 응답은 옛 형식(`origin`, `destination`, `departureStation`, `arrivalStation`, `legs[{mode, path, steps, distanceMeters, durationSeconds}]`, `distanceMeters`, `durationSeconds`, `generatedAt`, `attribution`)으로 `/routes/search`의 추천 경로를 돌려줍니다(옵션 없음: 반경 1km, 도보 상한 없음, 엔진 기본 모드, 422 없음). 성공·오류 응답 모두 `Deprecation: @1794873600`(2026-11-17T00:00:00Z), `Sunset: Wed, 30 Jun 2027 23:59:59 GMT` 헤더가 붙습니다(`application.yml`의 `api.deprecations`). 새 클라이언트는 사용하지 마세요.
 

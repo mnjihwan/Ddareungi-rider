@@ -4,11 +4,19 @@ import type { Coordinates, Forecast, Place, Station, MapBounds, NearbyStations, 
 import { unwrap, type ApiEnvelope } from "./apiEnvelope.ts";
 import { buildRouteSearchBody, toRoutePlan, type RouteStationChoice } from "./routeSearch.ts";
 import { isTruncated } from "./mapClusters.ts";
+import type { InventoryRecord } from "./inventoryComparison.ts";
 
 export { unwrap, apiError, apiErrorMessage, isRateLimited, retryAfterMs, shouldRetryQuery, queryRetryDelay, RATE_LIMIT_MESSAGE } from "./apiEnvelope.ts";
 export type { ApiEnvelope, ApiErrorEnvelope, ApiMeta } from "./apiEnvelope.ts";
 
 export const api = axios.create({ baseURL: "/api/v1", timeout: 10_000 });
+
+export async function loadInventoryHistory(stationId: string, startTime: string, signal?: AbortSignal): Promise<InventoryRecord[]> {
+  return unwrap((await api.get<ApiEnvelope<InventoryRecord[]>>(
+    `/stations/${encodeURIComponent(stationId)}/inventory-history`, { params: { startTime, includePrevious: true }, signal },
+  )).data);
+}
+
 /**
  * `POST /routes/search` (spec 13.1, phase 3 A6; replaces the deprecated `/routes/plan`). The body comes from
  * `buildRouteSearchBody` (chosen stations lift the walking limit; `status` decides `preferBikeRoad`; no nulls).

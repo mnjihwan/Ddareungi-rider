@@ -505,7 +505,7 @@ export function StationMap({
 
 function fitRoute(map: kakao.maps.Map, sdk: typeof kakao.maps, route: BikeRoute) {
   const bounds = new sdk.LatLngBounds();
-  [route.origin, route.destination, ...route.legs.flatMap(leg => leg.path)]
+  [route.origin, stationLocation(route.arrivalStation), route.destination, ...route.legs.flatMap(leg => leg.path)]
     .forEach(point => bounds.extend(new sdk.LatLng(point.latitude, point.longitude)));
   const mobile = window.innerWidth < 768;
   map.setBounds(bounds, mobile ? 65 : 100, mobile ? 30 : 60, mobile ? 40 : 100, mobile ? 30 : 60);
