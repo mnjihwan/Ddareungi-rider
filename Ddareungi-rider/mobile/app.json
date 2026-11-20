@@ -1,24 +1,52 @@
 {
   "expo": {
-    "name": "따릉이 라이더",
+    "name": "따릉라이더",
     "slug": "ddareungi-rider",
     "version": "0.1.0",
+    "icon": "./assets/icon.png",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "plugins": [
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "주변 따릉이 대여소를 찾기 위해 위치를 사용합니다."
+          "locationWhenInUsePermission": "주변 따릉이 대여소를 찾고 현재 위치를 길찾기에 사용하기 위해 위치를 확인합니다.",
+          "locationAlwaysAndWhenInUsePermission": false,
+          "locationAlwaysPermission": false,
+          "motionUsagePermission": false,
+          "isIosBackgroundLocationEnabled": false,
+          "isAndroidBackgroundLocationEnabled": false,
+          "isAndroidForegroundServiceEnabled": false
         }
       ],
-      "expo-status-bar"
+      "expo-dev-client",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "extraMavenRepos": ["https://devrepo.kakao.com/nexus/repository/kakaomap-releases/"],
+            "buildArchs": ["arm64-v8a", "armeabi-v7a"],
+            "usesCleartextTraffic": false
+          }
+        }
+      ]
     ],
     "android": {
-      "package": "com.ddareungi.rider"
+      "package": "com.ddareungi.rider",
+      "versionCode": 1,
+      "allowBackup": false,
+      "blockedPermissions": [
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.FOREGROUND_SERVICE_LOCATION"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon-foreground.png",
+        "backgroundColor": "#F4FAF7"
+      }
     },
     "ios": {
-      "bundleIdentifier": "com.ddareungi.rider"
+      "bundleIdentifier": "com.ddareungi.rider",
+      "buildNumber": "1"
     }
   }
 }
