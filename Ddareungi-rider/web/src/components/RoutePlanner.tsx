@@ -7,6 +7,7 @@ import { hasChosenStation, routeErrorMessage } from '../lib/routeSearch';
 import { reportApiError } from '../lib/clientConfig';
 import { stationLocation, type BikeRoute, type Coordinates, type Place, type RoutePlan, type Station, type RouteEndpointRole } from '../lib/types';
 import { availability, AVAILABILITY_LABEL, compareStations, distanceLabel, observationLabel } from '../lib/status';
+import { displayStationName } from '../lib/stationName';
 import { Icon } from './Icon';
 import { LocationSearchBox } from './LocationSearchBox';
 import { SwipeRow } from './SwipeRow';
@@ -49,6 +50,8 @@ export function RoutePlanner({onStationSelectionChange, onPlanningChange, active
   const request = useRef<AbortController | null>(null);
   const resultElement = useRef<HTMLDivElement>(null);
   const plan: BikeRoute | null = routePlan ? routePlan.routes[selectedRouteIndex] ?? routePlan.routes[0] ?? null : null;
+  const departureName = plan ? displayStationName(plan.departureStation.stationName) : '';
+  const arrivalName = plan ? displayStationName(plan.arrivalStation.stationName) : '';
   const status = useQuery({queryKey:['routing-status'], queryFn: ({signal}) => routingStatus(signal), staleTime:30_000});
   const nearbyCenter = (activeEndpoint === 'origin' ? origin : destination)?.location ?? searchCenter;
   const nearbyStations = useQuery({
@@ -65,7 +68,7 @@ export function RoutePlanner({onStationSelectionChange, onPlanningChange, active
     else {setDestination(place);setArrival(station);}
   }
   function chooseStation(station: Station) {
-    const place = {name:station.stationName,address:station.address ?? '',location:stationLocation(station)};
+    const place = {name:displayStationName(station.stationName),address:station.address ?? '',location:stationLocation(station)};
     assignEndpoint(activeEndpoint,place,station);onPlaceSelected(place);
   }
   useEffect(() => { onPlanningChange(pending); }, [pending, onPlanningChange]);
@@ -152,7 +155,7 @@ export function RoutePlanner({onStationSelectionChange, onPlanningChange, active
         {favoriteStations.length ? <SwipeRow labelId="route-favorites-label">
           {favoriteStations.map(station=><button key={station.stationId} type="button"
             aria-pressed={(activeEndpoint==='origin'?pinned:arrival)?.stationId===station.stationId}
-            onClick={()=>chooseStation(station)}>{station.stationName.replace(/^\s*\d+\s*\.\s*/, '')}</button>)}
+            onClick={()=>chooseStation(station)}>{displayStationName(station.stationName)}</button>)}
         </SwipeRow> : <p className="route-favorites-empty" role="status">{favoritesLoading?'불러오는 중…':favoritesError?'즐겨찾기를 불러오지 못했어요':'저장된 대여소가 없어요'}</p>}
       </div>
       <div className="route-origin-actions">
@@ -163,9 +166,9 @@ export function RoutePlanner({onStationSelectionChange, onPlanningChange, active
       </div>
       {(activeEndpoint==='origin'?origin:destination) && accuracies[activeEndpoint]!==null && <p className="subtle-notice" role="status">브라우저 위치 정확도 약 {distanceLabel(accuracies[activeEndpoint]!)}{accuracies[activeEndpoint]!>100?' · 실제 위치와 다르면 장소를 검색해 주세요.':''}</p>}
     </div>
-    {pinned && <div className="pinned-station"><span>출발 대여소 <b>{pinned.stationName}</b></span>
+    {pinned && <div className="pinned-station"><span>출발 대여소 <b>{displayStationName(pinned.stationName)}</b></span>
       <button onClick={()=>{invalidate();clearPinned();}}>자동 선택</button></div>}
-    {arrival && <div className="pinned-station"><span>도착 대여소 <b>{arrival.stationName}</b></span>
+    {arrival && <div className="pinned-station"><span>도착 대여소 <b>{displayStationName(arrival.stationName)}</b></span>
       <button onClick={()=>{invalidate();setArrival(null);}}>자동 선택</button></div>}
     <button className="primary-button route-submit" onClick={()=>void submit()} disabled={!origin||!destination||pending||locating}>
       <Icon name={pending?'refresh':'arrow'} size={18}/>{pending?'이동 경로를 비교하고 있어요…':plan?'수량 확인하고 다시 검색':'따릉이 경로 찾기'}
@@ -181,7 +184,7 @@ export function RoutePlanner({onStationSelectionChange, onPlanningChange, active
           const state = availability(station);
           return <button key={station.stationId} className="route-nearby-station"
             aria-pressed={(activeEndpoint==='origin'?pinned:arrival)?.stationId===station.stationId} onClick={()=>chooseStation(station)}>
-            <span><b>{station.stationName.replace(/^\s*\d+\s*\.\s*/, '')}</b>
+            <span><b>{displayStationName(station.stationName)}</b>
               <small>{distanceLabel(station.distanceMeters)} · {AVAILABILITY_LABEL[state]}</small></span>
             <span className="route-nearby-stock">{state==='unknown'?'수량 미확인':`${station.parkingBikeTotCnt}대`}<small>{activeLabel}로 선택</small></span>
           </button>;
@@ -193,7 +196,7 @@ export function RoutePlanner({onStationSelectionChange, onPlanningChange, active
           onClick={()=>onSelectRoute(index)}>
           <b>{index===0?'추천':`대안 ${index}`} · {minutes(option.durationSeconds)}</b>
           <small>{distanceLabel(option.distanceMeters)} · 도보 {distanceLabel(option.walkingDistanceMeters)}</small>
-          <small>{option.departureStation.stationName.replace(/^\s*\d+\s*\.\s*/, '')} → {option.arrivalStation.stationName.replace(/^\s*\d+\s*\.\s*/, '')}</small>
+          <small>{displayStationName(option.departureStation.stationName)} → {displayStationName(option.arrivalStation.stationName)}</small>
         </button>)}
       </div>}
       {routePlan.partial && <p className="subtle-notice" role="status">일부 대여소 조합은 경로 서비스 응답이 없어 비교하지 못했어요.</p>}
@@ -202,9 +205,9 @@ export function RoutePlanner({onStationSelectionChange, onPlanningChange, active
       <ol className="route-legs">
         {plan.legs.map((leg,index)=><li key={index} className={leg.mode}>
           <div className="route-leg-heading"><Icon name={leg.mode==='walk'?'walk':'bike'} size={21}/><b>{leg.mode==='walk'?'도보':'자전거'} {minutes(leg.durationSeconds)}</b><span>{distanceLabel(leg.distanceMeters)}</span></div>
-          <p>{index===0?origin?.name:index===1?plan.departureStation.stationName:plan.arrivalStation.stationName}<span> → </span>{index===0?plan.departureStation.stationName:index===1?plan.arrivalStation.stationName:destination?.name}</p>
+          <p>{index===0?origin?.name:index===1?departureName:arrivalName}<span> → </span>{index===0?departureName:index===1?arrivalName:destination?.name}</p>
           {index<2 && <button className="route-station" onClick={()=>onSelectStation(index===0?plan.departureStation:plan.arrivalStation)}>
-            <b>{index===0?'대여':'반납'} · {index===0?plan.departureStation.stationName:plan.arrivalStation.stationName}</b>
+            <b>{index===0?'대여':'반납'} · {index===0?departureName:arrivalName}</b>
             <small>{index===0?`조회 시 ${plan.departureStation.parkingBikeTotCnt ?? '—'}대 · ${observationLabel(plan.departureStation)}${plan.rentalAvailability==='AVAILABLE_AT_FETCH'?'':plan.rentalAvailability==='UNAVAILABLE_AT_FETCH'?' · 조회 시 대여 가능한 자전거 없음':' · 대여 가능 여부 미확인'}`:'현장에서 반납 가능 여부를 확인해 주세요.'}</small>
           </button>}
           {leg.steps.length>0 && <details className="route-steps"><summary>구간별 안내</summary><ol>{leg.steps.map((step,i)=><li key={i}>{step.instruction} <small>{distanceLabel(step.distanceMeters)}</small></li>)}</ol></details>}
@@ -224,7 +227,7 @@ function PlaceInput({label,active,onActivate,selected,onSelect,center,onSearchSt
     <LocationSearchBox id={`route-${label}`} label={`${label} 장소 또는 주소 검색`} variant="route" openOnFocus={!selected} text={text} center={center}
       onTextChange={value=>{setText(value);onSearchStart();onSelect(null);}} onSubmit={onSearchStart}
       onChoose={(suggestion,query)=>onSelect(suggestion.kind==='place'?suggestion.place:
-        {name:suggestion.station.stationName,address:suggestion.station.address ?? '',location:stationLocation(suggestion.station)},query)}/>
+        {name:displayStationName(suggestion.station.stationName),address:suggestion.station.address ?? '',location:stationLocation(suggestion.station)},query)}/>
     {selected && <span className="route-place-selected">선택됨 {selected.address && `· ${selected.address}`}</span>}
   </div>;
 }

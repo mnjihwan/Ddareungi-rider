@@ -1,4 +1,4 @@
-import {loadMapLocation, saveMapLocation} from "./lib/mapLocationStorage";
+import {displaySavedMapLabel, loadMapLocation, saveMapLocation} from "./lib/mapLocationStorage";
 import {requestLocation, MAX_LOCATION_ACCURACY} from "./lib/location";
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -19,6 +19,7 @@ import { MaintenanceGate } from "./components/MaintenanceGate";
 import {useRecentPlaces} from './lib/useRecentPlaces';
 import { useFavorites } from "./lib/useFavorites";
 import { availability, compareOutlooks, stationOutlook } from "./lib/status";
+import { displayStationName } from "./lib/stationName";
 import { StationMap } from "./components/StationMap";
 import { StationCard } from "./components/StationCard";
 import { StationDetail } from "./components/StationDetail";
@@ -58,7 +59,7 @@ function MainApp() {
     [submitted, setSubmitted] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null),
     [sheet, setSheet] = useState<"peek" | "mid" | "full">("mid");
-  const [message, setMessage] = useState<{ text: string } | null>(null),
+  const [message, setMessage] = useState<{ text: string; showInitialMap?: boolean } | null>(null),
     [locating, setLocating] = useState(false),
     [, tick] = useState(0);
   useEffect(() => {
@@ -175,6 +176,8 @@ function MainApp() {
     ...(search.data?.stations ?? []),
     ...(selectedQuery.data ?? []),
   ].forEach((s) => merged.set(s.stationId, s));
+  const initialMapLabel = displaySavedMapLabel(initialMap, merged.values());
+  const displayLabel = center === initialMap.location && label === initialMap.label ? initialMapLabel : label;
   const displayedMapStations = hideStationMarkers
     ? Array.from(new Map((route ? [route.departureStation,route.arrivalStation] : pinnedRouteStations)
         .map(station=>[station.stationId,merged.get(station.stationId) ?? station])).values())
@@ -240,12 +243,13 @@ function MainApp() {
   }
   function chooseEndpoint(role:"origin"|"destination", place:Place, station?:Station) {
     allowInitialLocation.current = false;
-    setEndpointSelection(previous=>({role,place,station,revision:(previous?.revision??0)+1}));
+    const displayPlace = station ? {...place, name:displayStationName(station.stationName)} : place;
+    setEndpointSelection(previous=>({role,place:displayPlace,station,revision:(previous?.revision??0)+1}));
     setRoute(null); setPickingEndpoint(null); setView("route"); setSelectedId(null); setSheet("full");
-    setFocusedPlace(place);
+    setFocusedPlace(displayPlace);
   }
   function select(station: Station) {
-    saveMapLocation(stationLocation(station), `${station.stationName} 주변`);
+    saveMapLocation(stationLocation(station), `${displayStationName(station.stationName)} 주변`);
     allowInitialLocation.current = false;
     setFocusedPlace(null);
     if (submitted && view !== "route") recentPlaces.remember(submitted);
@@ -289,7 +293,7 @@ function MainApp() {
           : error.code === 3
             ? "위치 확인 시간이 초과됐어요. 현재 위치 버튼으로 다시 시도해 주세요."
             : "브라우저가 현재 위치를 제공하지 못했어요. 운영체제 위치 서비스와 네트워크 연결을 확인해 주세요.";
-        setMessage({ text: reason + (initial ? ` 현재는 ${initialMap.label}을 보여드려요.` : " 장소 검색은 계속 사용할 수 있어요.") });
+        setMessage({ text: reason + (initial ? "" : " 장소 검색은 계속 사용할 수 있어요."), showInitialMap: initial });
         setLocating(false);
       },
     );
@@ -382,7 +386,7 @@ function MainApp() {
             }}
             onChoose={(suggestion,query) => {
               if (suggestion.kind === 'place') openPlace(suggestion.place, query);
-              else {recentPlaces.remember(query);go(stationLocation(suggestion.station), `${suggestion.station.stationName} 주변`);select(suggestion.station);}
+              else {recentPlaces.remember(query);go(stationLocation(suggestion.station), `${displayStationName(suggestion.station.stationName)} 주변`);select(suggestion.station);}
             }}/>
           <div className="desktop-shortcuts">{searchShortcuts}</div>
         </section>
@@ -460,7 +464,7 @@ function MainApp() {
                       ? `“${submitted}”`
                       : view === "favorites"
                         ? "저장한 대여소"
-                        : label}
+                        : displayLabel}
                     <span>{list.length}</span>
                   </h2>
                 </div>
@@ -666,7 +670,7 @@ function MainApp() {
           />
           <div className="map-top-label">
             <Icon name="pin" size={16} />
-            {view === "route" ? "따릉이 길찾기" : label}
+            {view === "route" ? "따릉이 길찾기" : displayLabel}
             {view !== "route" && <span>목록 {radius < 1000 ? `${radius}m` : `${radius / 1000}km`} · {activeMapQuery.isFetching ? "지도 갱신 중"
               : `지도 ${mapMode === "clusters" ? visibleClusterStationCount(mapClusters.data?.items ?? [], viewport) : mapStations.data?.stations.length ?? 0}곳`}</span>}
             {view !== "route" && mapMode === "viewport" && mapStations.data?.truncated &&
@@ -711,7 +715,7 @@ function MainApp() {
       {(message || favorites.message) && (
         <div className="toast" role="status">
           <Icon name="info" size={19} />
-          <span>{message?.text ?? favorites.message}</span>
+          <span>{message?.text ?? favorites.message}{message?.showInitialMap && ` 현재는 ${initialMapLabel}을 보여드려요.`}</span>
           {message && (
             <button aria-label="안내 닫기" onClick={() => setMessage(null)}>
               <Icon name="close" size={17} />

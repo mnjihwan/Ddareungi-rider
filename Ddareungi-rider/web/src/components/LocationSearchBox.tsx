@@ -5,6 +5,7 @@ import {buildSearchSuggestions, matchingParts, type SearchSuggestion} from '../l
 import type {Coordinates} from '../lib/types';
 import {Icon} from './Icon';
 import {searchMatchLabel} from '../lib/koreanSearch';
+import {displayStationName} from '../lib/stationName';
 
 export function LocationSearchBox({id, label, text, center, variant = 'main', openOnFocus = true, onTextChange, onSubmit, onChoose}: {
   id: string; label: string; text: string; center: Coordinates; variant?: 'main' | 'route'; openOnFocus?: boolean;
@@ -77,7 +78,7 @@ export function LocationSearchBox({id, label, text, center, variant = 'main', op
         {items.map((item, index) => <li key={item.key} id={`${id}-option-${index}`} role="option" aria-selected={active === index}>
           <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => choose(item)}>
             <Icon name={item.kind === 'station' ? 'bike' : 'search'} size={17}/>
-            <span className="suggestion-text"><b>{matchingParts(item.name, term).map((part, i) => part.matched ? <mark key={i}>{part.text}</mark> : part.text)}</b>
+            <span className="suggestion-text"><b>{matchingParts(item.kind === 'station' ? displayStationName(item.name) : item.name, term).map((part, i) => part.matched ? <mark key={i}>{part.text}</mark> : part.text)}</b>
               <small>{[searchMatchLabel(item.name, item.address, term), item.address].filter(Boolean).join(' · ')}</small></span>
             <span className="suggestion-kind">{item.kind === 'station' ? '대여소' : item.place.categoryGroupCode === 'SW8' ? '지하철역' : '장소'}</span>
           </button>

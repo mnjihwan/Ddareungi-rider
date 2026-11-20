@@ -10,6 +10,7 @@ import {
 } from "../lib/status";
 import { forecastPath, loadForecast } from "../lib/api";
 import type { Station } from "../lib/types";
+import { displayStationName } from "../lib/stationName";
 import { Icon } from "./Icon";
 import { InventoryComparison } from "./InventoryComparison";
 
@@ -33,6 +34,7 @@ export function StationDetail({
   const [minutes, setMinutes] = useState(15);
   const now = Date.now();
   const state = availability(station, now);
+  const name = displayStationName(station.stationName);
   const actions = endpointActions(station, sample, now);
   const departureNoteId = useId(), arrivalNoteId = useId();
   // One shared note when both buttons have the same reason (e.g. sample data).
@@ -47,7 +49,7 @@ export function StationDetail({
   return (
     <section
       className="station-detail"
-      aria-label={`${station.stationName} 상세`}
+      aria-label={`${name} 상세`}
     >
       <div className="detail-top">
         <span className="eyebrow">선택한 대여소</span>
@@ -69,7 +71,7 @@ export function StationDetail({
           </button>
         </div>
       </div>
-      <h2>{station.stationName}</h2>
+      <h2>{name}</h2>
       <p className="detail-address">{station.address || "주소 정보 없음"}</p>
       <div className={`detail-inventory ${state}`}>
         <div>
