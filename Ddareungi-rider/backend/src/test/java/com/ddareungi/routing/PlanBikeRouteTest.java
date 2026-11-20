@@ -67,6 +67,45 @@ class PlanBikeRouteTest {
         verify(walking,times(2)).route(any(),any());
         verify(bicycle,times(1)).route(any(),any());
     }
+    @Test void reroutesBothLegsToTheSameRoadAccessNearTheReturnStation() {
+        var walkStart = new Location(37.5211, 127.0403);
+        var next = new Location(37.5211, 127.0406);
+        var projected = new Location(37.5211, 127.04);
+        var confirmedAccess = new Location(37.52111, 127.04001);
+        var snappedBicycle = new RouteProvider.Leg("bicycle", 150, 60,
+                List.of(d2.location(), new Location(37.5206, 127.04)), List.of());
+        var snappedWalk = new RouteProvider.Leg("walk", 150, 60, List.of(walkStart, next, destination), List.of());
+        var routedWalk = new RouteProvider.Leg("walk", 90, 75, List.of(confirmedAccess, next, destination), List.of());
+        var routedBicycle = new RouteProvider.Leg("bicycle", 180, 65,
+                List.of(d2.location(), new Location(37.52108, 127.0399), confirmedAccess), List.of());
+        when(bicycle.route(d2.location(), a2.location())).thenReturn(snappedBicycle);
+        when(walking.route(a2.location(), destination)).thenReturn(snappedWalk);
+        when(walking.route(projected, destination)).thenReturn(routedWalk);
+        when(bicycle.route(d2.location(), confirmedAccess)).thenReturn(routedBicycle);
+
+        var plan = planner.execute(origin, destination, null);
+
+        assertThat(plan.arrivalStation()).isEqualTo(a2);
+        assertThat(plan.legs().get(1)).isEqualTo(routedBicycle);
+        assertThat(plan.legs().get(2)).isEqualTo(routedWalk);
+        assertThat(plan.distanceMeters()).isEqualTo(420);
+        assertThat(plan.durationSeconds()).isEqualTo(200);
+    }
+    @Test void keepsTheProvidersPathsIfTheAdditionalReturnApproachIsUnavailable() {
+        var walkStart = new Location(37.5211, 127.0403);
+        var originalBike = new RouteProvider.Leg("bicycle", 150, 60,
+                List.of(d2.location(), new Location(37.5206, 127.04)), List.of());
+        var walk = new RouteProvider.Leg("walk", 150, 60,
+                List.of(walkStart, new Location(37.5211, 127.0406), destination), List.of());
+        when(bicycle.route(d2.location(), a2.location())).thenReturn(originalBike);
+        when(walking.route(a2.location(), destination)).thenReturn(walk);
+        when(walking.route(new Location(37.5211, 127.04), destination))
+                .thenThrow(new RouteException(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY, "NO_ROAD_ROUTE", "경로 없음"));
+
+        var plan = planner.execute(origin, destination, null);
+
+        assertThat(plan.legs().subList(1, 3)).containsExactly(originalBike, walk);
+    }
     @Test void differentSegmentProvidersAreBothCredited() {
         when(bicycle.attribution()).thenReturn("openrouteservice · © OpenStreetMap contributors");
         assertThat(planner.execute(origin,destination,null).attribution())
