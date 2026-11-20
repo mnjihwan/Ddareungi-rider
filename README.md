@@ -2,7 +2,7 @@
 
 > 현재 작업 내역·코드 현황·미검증 항목·결정 필요 사항은 [docs/status-2026-11-19.md](docs/status-2026-11-19.md)에 정리되어 있습니다(로드맵 Phase 0~3, 개발 브랜치 기준).
 
-현재 서비스 클라이언트는 PC/모바일 브라우저용 `Ddareungi-rider/web`입니다. 기존 `mobile` 디렉터리는 이전 Expo PoC이며 로컬 실행 대상이 아닙니다.
+현재 서비스는 PC·모바일 브라우저용 `Ddareungi-rider/web`에서 이용할 수 있습니다. Android·iOS 앱 개발은 `Ddareungi-rider/mobile`의 Expo PoC에서 시작합니다. 앱의 현재 상태와 실행 준비는 [모바일 앱 안내](Ddareungi-rider/mobile/README.md), 전체 개발 순서는 [AGENTS.md](AGENTS.md)를 참고하세요.
 
 Python 기반 대여·반납 수요 학습은 [AI 실행 안내](ai/README.md)를 참고하세요. 요일·10분 통계와 LightGBM을 시간순으로 평가하고 결과를 저장하는 오프라인 기반 코드입니다. 실제 웹 예측 연결 전 단계이며, 원본 수집 방법은 [데이터 수집 안내](docs/data-collection.md)에 있습니다.
 
@@ -204,6 +204,10 @@ docker compose --env-file .env --profile real logs --tail 50 collector backend
 PC와 같은 Wi-Fi에서 `http://PC의IPv4주소:5173`으로 접속합니다. 필요하면 Windows 방화벽의 개인 네트워크 Node.js 허용을 확인하세요.
 브라우저 위치 조회는 HTTPS(또는 해당 기기의 localhost)에서만 가능합니다. LAN HTTP에서는 장소·대여소 검색과 지도로 조회할 수 있습니다. 지도 제공자의 웹 서비스 URL에도 사용하는 LAN 주소를 등록해야 합니다.
 Vite가 `/api`를 PC의 백엔드로 프록시하므로 휴대폰이 자기 자신의 localhost로 API를 호출하지 않습니다.
+
+## Android·iOS 앱 개발
+
+Expo 앱은 Spring Boot의 `/api/v1`을 사용합니다. 모바일 앱에는 기기에서 접속할 수 있는 서버 주소를 `EXPO_PUBLIC_API_BASE_URL`로 설정합니다. 샘플 모드에서 주변 대여소 조회를 먼저 확인하고, 장소 검색과 실제 도보·자전거 경로 검증에는 카카오 키와 실시간 수량이 연결된 환경을 사용하세요. [앱 설정과 실행](Ddareungi-rider/mobile/README.md) · [앱의 길찾기 API 사용법](docs/routing.md#모바일-앱에서-길찾기-api-사용)
 
 ## 중지 / 테스트
 
