@@ -13,16 +13,22 @@ interface SavedItems {
   recent: RecentPlace[];
 }
 
-function parseSavedItems(raw: string | null): SavedItems {
+export function parseSavedItems(raw: string | null): SavedItems {
+  let parsed: { favorites?: unknown; recent?: unknown } = {};
   try {
-    const parsed = JSON.parse(raw ?? '{}');
-    return {
-      favorites: parseFavorites(JSON.stringify({ schemaVersion: 1, items: parsed.favorites ?? [] })),
-      recent: parseRecentPlaces(JSON.stringify(parsed.recent)),
-    };
+    const value: unknown = JSON.parse(raw ?? '{}');
+    if (value && typeof value === 'object' && !Array.isArray(value)) parsed = value;
   } catch {
-    return { favorites: [], recent: [] };
+    // Unreadable storage starts empty.
   }
+  // Parse each list on its own so one malformed field does not erase the other on the next write.
+  let favorites: Favorite[] = [];
+  try {
+    favorites = parseFavorites(JSON.stringify({ schemaVersion: 1, items: parsed.favorites ?? [] }));
+  } catch {
+    favorites = [];
+  }
+  return { favorites, recent: parseRecentPlaces(JSON.stringify(parsed.recent ?? [])) };
 }
 
 export function createRiderStorage(adapter: StorageAdapter) {

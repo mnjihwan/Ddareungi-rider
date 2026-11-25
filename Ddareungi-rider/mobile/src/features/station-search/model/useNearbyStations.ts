@@ -55,6 +55,10 @@ export function useStationDetail(id?: string) {
   });
 }
 
+function sameIds(previous: unknown, ids: readonly string[]): boolean {
+  return Array.isArray(previous) && previous.length === ids.length && previous.every((id, index) => id === ids[index]);
+}
+
 export function useBatchStations(ids: string[], center: Coordinates) {
   return useQuery({
     queryKey: ['station-batch', ids, center],
@@ -62,5 +66,7 @@ export function useBatchStations(ids: string[], center: Coordinates) {
     enabled: ids.length > 0,
     staleTime: STATION_REFRESH_MS,
     refetchInterval: STATION_POLL_MS,
+    // Moving the map changes only the distance center. Keep the same stations on screen while distances refresh.
+    placeholderData: (previous, previousQuery) => sameIds(previousQuery?.queryKey[1], ids) ? previous : undefined,
   });
 }

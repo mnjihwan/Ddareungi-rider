@@ -149,11 +149,12 @@ export function RiderMap({
   }, [onViewportChange]);
 
   useEffect(() => {
-    if (!ready || !fitCoordinates?.length) return;
+    // Fit again whenever the route overview returns, e.g. after closing a route station's detail.
+    if (!ready || !fitRoute || !fitCoordinates?.length) return;
     map.current?.updateCamera({ type: 'fit', coordinates: fitCoordinates }).catch(() => {
       setError('경로에 맞춰 지도를 이동하지 못했습니다.');
     });
-  }, [ready, fitCoordinates]);
+  }, [ready, fitRoute, fitCoordinates]);
 
   useEffect(() => {
     const view = ready ? map.current : null;

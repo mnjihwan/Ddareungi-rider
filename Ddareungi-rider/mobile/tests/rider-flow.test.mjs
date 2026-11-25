@@ -4,7 +4,8 @@ import { QueryClient, QueryObserver } from '@tanstack/react-query';
 import { isCurrentFix, locationLossOnResume, LOCATION_MAX_AGE_MS, LOCATION_MESSAGES, readLocation } from '../src/features/current-location/model/location.ts';
 import { asFixedLocation } from '../src/features/route-planning/model/endpoints.ts';
 import { routeStationObservation } from '../src/features/route-planning/model/routeStationObservation.ts';
-import { createRiderStorage } from '../src/features/saved/model/riderStorage.ts';
+import { createRiderStorage, parseSavedItems } from '../src/features/saved/model/riderStorage.ts';
+import { mergeStationDetail } from '../src/features/station-search/model/mergeStationDetail.ts';
 import { stationCountLabel } from '../src/features/station-search/model/stationCountLabel.ts';
 import { createLatestRequest } from '../src/shared/api/latestRequest.ts';
 import { buildSearchSuggestions, matchSearchResults } from '../src/shared/rider-contract/searchSuggestions.ts';
@@ -270,4 +271,47 @@ test('storage hydrates before writes, serializes edits and reopens with IDs and 
   await Promise.all([store.toggleFavorite('stored'), store.clearRecent()]);
   assert.deepEqual((await createRiderStorage(adapter).load()).favorites.map(({ stationId }) => stationId), ['new']);
   assert.deepEqual((await createRiderStorage(adapter).load()).recent, []);
+});
+
+test('a malformed favorites field keeps the stored recent searches', () => {
+  const recent = [{ query: '강남역', usedAt: 1 }];
+  assert.deepEqual(parseSavedItems(JSON.stringify({ favorites: {}, recent })), { favorites: [], recent });
+  assert.deepEqual(parseSavedItems(JSON.stringify({ favorites: [{ stationId: 'ST-1', addedAt: '2026-11-18T10:00:00Z' }], recent: 'x' })),
+    { favorites: [{ stationId: 'ST-1', addedAt: '2026-11-18T10:00:00Z' }], recent: [] });
+  assert.deepEqual(parseSavedItems('not json'), { favorites: [], recent: [] });
+  assert.deepEqual(parseSavedItems(null), { favorites: [], recent: [] });
+});
+
+test('route search keeps only drawable WALK, BIKE, WALK alternatives', async (t) => {
+  const destination = { latitude: 37.5006, longitude: 127.0364 };
+  const route = (routeId, types, encodedPolyline = '_p~iF~ps|U_ulLnnqC') => ({
+    routeId, originStation: station, destinationStation: { ...station, stationId: 'ST-44' },
+    totalDistanceMeters: 922, estimatedDurationSeconds: 558, walkingDistanceMeters: 222, bikeDistanceMeters: 700,
+    rentalAvailability: 'AVAILABLE_AT_FETCH', returnAvailability: 'UNKNOWN',
+    segments: types.map((type) => ({ type, distanceMeters: 10, durationSeconds: 5, encodedPolyline, steps: [] })),
+  });
+  const walkBikeWalk = ['WALK', 'BIKE', 'WALK'];
+  let alternatives = [];
+  let recommended = route('recommended', walkBikeWalk);
+  useAdapter(t, async (config) => success(config, { recommended, alternatives, attribution: 'fixture' }));
+  const signal = new AbortController().signal;
+  alternatives = [route('two-legs', ['WALK', 'BIKE']), route('valid', walkBikeWalk), route('single-point', walkBikeWalk, '_p~iF~ps|U')];
+  const result = await fetchRecommendedRoute(center, destination, {}, { configured: true }, signal);
+  assert.deepEqual(result.alternatives.map(({ routeId }) => routeId), ['valid']);
+  recommended = route('broken', ['WALK', 'BIKE']);
+  await assert.rejects(fetchRecommendedRoute(center, destination, {}, { configured: true }, signal), /Invalid route legs/);
+});
+
+test('station detail never replaces a newer list observation', () => {
+  const listed = { ...station, parkingBikeTotCnt: 5, realtimeUpdatedAt: '2026-11-20T03:01:00Z' };
+  const older = { ...station, address: '서울 강남구', parkingBikeTotCnt: 2, realtimeUpdatedAt: '2026-11-20T03:00:00Z' };
+  const kept = mergeStationDetail(listed, older);
+  assert.equal(kept.parkingBikeTotCnt, 5);
+  assert.equal(kept.realtimeUpdatedAt, listed.realtimeUpdatedAt);
+  assert.equal(kept.address, '서울 강남구');
+  const newer = { ...older, parkingBikeTotCnt: 7, realtimeUpdatedAt: '2026-11-20T03:02:00Z' };
+  assert.equal(mergeStationDetail(listed, newer).parkingBikeTotCnt, 7);
+  assert.equal(mergeStationDetail({ ...listed, realtimeUpdatedAt: null }, older).parkingBikeTotCnt, 2);
+  assert.equal(mergeStationDetail(listed, { ...newer, stationId: 'other' }), listed);
+  assert.equal(mergeStationDetail(listed, undefined), listed);
 });
