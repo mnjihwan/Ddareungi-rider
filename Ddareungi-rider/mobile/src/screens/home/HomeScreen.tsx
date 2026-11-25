@@ -25,6 +25,7 @@ import {
   useStationDetail,
   useViewportStations,
 } from '../../features/station-search/model/useNearbyStations';
+import { mergeStationDetail } from '../../features/station-search/model/mergeStationDetail';
 import { useSearchSuggestions } from '../../features/station-search/model/useSearchSuggestions';
 import { describeApiError } from '../../shared/api/client';
 import { separateMarkerGroups } from '../../shared/rider-contract/clusters';
@@ -212,11 +213,11 @@ function RiderHome({ initialMap }: { initialMap: SavedMapLocation }) {
     stationOutlook(station, outlook.forecastMap.get(station.stationId), outlook.effectiveMinutes, now).state))
     .sort((a, b) => compareOutlooks(a, b, outlook.forecastMap, outlook.effectiveMinutes, now));
   const listStations = !submittedSearch && !showSaved && nearbyLimit !== null ? sortedList.slice(0, nearbyLimit) : sortedList;
-  const currentSelection = selectedRouteStation ?? (selected && {
-    ...(viewStations.find(({ stationId }) => stationId === selected.stationId)
-      ?? listStations.find(({ stationId }) => stationId === selected.stationId) ?? selected),
-    ...detail.data,
-  });
+  const currentSelection = selectedRouteStation ?? (selected && mergeStationDetail(
+    viewStations.find(({ stationId }) => stationId === selected.stationId)
+      ?? listStations.find(({ stationId }) => stationId === selected.stationId) ?? selected,
+    detail.data,
+  ));
   const selectedId = currentSelection?.stationId;
   const selectedCoordinate = currentSelection ? stationLocation(currentSelection) : null;
   const selectedLabelPoint = selectedCoordinate && bounds && isSupportedViewport(bounds)
@@ -270,16 +271,19 @@ function RiderHome({ initialMap }: { initialMap: SavedMapLocation }) {
         if (offsetX || offsetY) offsets.set(id, { x: offsetX ?? 0, y: offsetY ?? 0 });
       });
     }
-    baseMarkers.forEach((station, index) => {
+    const [rentalStation, returnStation] = routeStations ?? [];
+    baseMarkers.forEach((station) => {
       const coordinate = stationLocation(station);
       if (!coordinate) return;
       const state = availability(station, now);
-      const role = index === 0 ? 'rental' : 'return';
+      // Only the route's own stations get rental/return tags; any other selection keeps the station badge.
+      const role = station.stationId === rentalStation?.stationId ? 'rental'
+        : station.stationId === returnStation?.stationId ? 'return' : undefined;
       markers.push({
         id: `station:${station.stationId}`,
         coordinate,
         text: state === 'unknown' ? '?' : `${station.parkingBikeTotCnt}`,
-        kind: routeStations ? role : station.stationId === selectedId ? 'selected' : 'station',
+        kind: role ?? (station.stationId === selectedId ? 'selected' : 'station'),
         stock: state === 'available' ? 'ready' : state,
         highlighted: station.stationId === selectedId,
         offset: offsets.get(station.stationId),
