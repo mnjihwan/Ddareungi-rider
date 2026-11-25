@@ -18,6 +18,7 @@ const { apiClient } = await import('../src/shared/api/client.ts');
 const { fetchRecommendedRoute, routingStatusQuery } = await import('../src/features/route-planning/api/routeApi.ts');
 const { fetchBatchStations, fetchInventoryHistory, fetchNearbyStations, fetchServiceMode, fetchViewportStations, searchPlaces, searchStations } =
   await import('../src/features/station-search/api/stationApi.ts');
+const { ApiConfigError, API_CONFIG_MESSAGE, describeApiError, ensureSecureApiBase } = await import('../src/shared/api/client.ts');
 const { FORECAST_REFRESH_MS, stationForecastQuery } = await import('../src/features/forecast/api/forecastApi.ts');
 
 const now = Date.parse('2026-11-20T03:00:00Z');
@@ -342,4 +343,14 @@ test('station detail forecast refreshes within the 10-minute validity window', (
   const disabled = stationForecastQuery('ST-12', undefined);
   assert.equal(disabled.refetchInterval, false);
   assert.notEqual(typeof disabled.queryFn, 'function');
+});
+
+test('release builds report a misconfigured API address instead of the generic failure', () => {
+  assert.throws(() => ensureSecureApiBase('http://192.168.0.10:8080', false), (error) =>
+    error instanceof ApiConfigError && error.message === API_CONFIG_MESSAGE);
+  assert.throws(() => ensureSecureApiBase('', false), ApiConfigError);
+  assert.doesNotThrow(() => ensureSecureApiBase('https://api.example.test', false));
+  assert.doesNotThrow(() => ensureSecureApiBase('http://192.168.0.10:8080', true));
+  assert.equal(describeApiError(new ApiConfigError()), API_CONFIG_MESSAGE);
+  assert.equal(describeApiError(new Error('network')), '요청을 처리하지 못했어요. 연결을 확인하고 다시 시도해 주세요.');
 });

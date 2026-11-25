@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
+import { ApiConfigError } from '../../../shared/api/client';
 import { createLatestRequest } from '../../../shared/api/latestRequest';
 import { hasChosenStation, routeErrorMessage } from '../../../shared/rider-contract/routeSearch';
 import type { Coordinates, RouteEndpointRole } from '../../../shared/rider-contract/types';
@@ -69,7 +70,10 @@ export function useRoutePlanner() {
       const result = await fetchRecommendedRoute(origin.coordinate, destination.coordinate, stations, routingStatus, signal);
       if (!signal.aborted) setRoute(result);
     } catch (error) {
-      if (!signal.aborted) setError(routeErrorMessage(error, { stationChosen: hasChosenStation(stations) }));
+      if (!signal.aborted) {
+        setError(error instanceof ApiConfigError ? error.message
+          : routeErrorMessage(error, { stationChosen: hasChosenStation(stations) }));
+      }
     } finally {
       if (!signal.aborted) setPending(false);
     }
