@@ -294,7 +294,7 @@ public class PlanBikeRoute {
     }
 
     // The projection is a routing input. Both displayed legs come from their respective providers.
-    private static Location projectOntoApproach(Location station, Location start, Location next) {
+    static Location projectOntoApproach(Location station, Location start, Location next) {
         double longitudeScale = Math.cos(Math.toRadians(station.latitude()));
         double dx = (next.longitude() - start.longitude()) * longitudeScale;
         double dy = next.latitude() - start.latitude();
@@ -302,7 +302,9 @@ public class PlanBikeRoute {
         if (lengthSquared == 0) return start;
         double x = (station.longitude() - start.longitude()) * longitudeScale;
         double y = station.latitude() - start.latitude();
-        double fraction = Math.min(1, (x * dx + y * dy) / lengthSquared);
+        // Clamp to the segment: a station behind the walk's first point projects onto the start itself, never onto
+        // the backward extension (a point off the provider's geometry).
+        double fraction = Math.max(0, Math.min(1, (x * dx + y * dy) / lengthSquared));
         return new Location(start.latitude() + fraction * dy,
                 start.longitude() + fraction * (next.longitude() - start.longitude()));
     }
