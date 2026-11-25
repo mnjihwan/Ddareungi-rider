@@ -150,9 +150,13 @@ public class StationController {
         return ApiResponse.ok(view.items().stream().map(StationResponse::from).toList(), view.meta());
     }
 
+    /**
+     * {@code latitude}/{@code longitude} are the distance centre. They are required: as primitives an omitted value
+     * bound to 0.0 and every {@code distanceMeters} was measured from (0, 0). A missing one is 400 INVALID_PARAMETER.
+     */
     public record StationBatchRequest(
             @NotNull @Size(max = 50) List<@NotBlank @Size(max = 30) String> stationIds,
-            @DecimalMin("-90") @DecimalMax("90") double latitude,
-            @DecimalMin("-180") @DecimalMax("180") double longitude
+            @NotNull @DecimalMin("-90") @DecimalMax("90") Double latitude,
+            @NotNull @DecimalMin("-180") @DecimalMax("180") Double longitude
     ) {}
 }

@@ -212,6 +212,11 @@ class ApiContractTest {
     }
 
     @Test void missingAndMalformedParameters() throws Exception {
+        // The batch distance centre is required: an omitted coordinate is no longer measured from (0, 0).
+        failure(mvc.perform(post("/api/v1/stations/batch").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"stationIds\":[\"ST-002\"],\"latitude\":37.4979}")), 400, "INVALID_PARAMETER");
+        failure(mvc.perform(post("/api/v1/stations/batch").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"stationIds\":[\"ST-002\"]}")), 400, "INVALID_PARAMETER");
         failure(mvc.perform(get("/api/v1/stations/nearby").param("longitude", "127")), 400, "INVALID_PARAMETER")
                 .andExpect(jsonPath("$.error.details[0].field").value("latitude"));
         failure(mvc.perform(get("/api/v1/stations/nearby").param("latitude", "abc").param("longitude", "127")),
