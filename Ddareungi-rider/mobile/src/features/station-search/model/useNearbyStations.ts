@@ -2,10 +2,10 @@ import { skipToken, useQuery } from '@tanstack/react-query';
 import type { Coordinates } from '../../../shared/types/coordinates';
 import { clusterRequestBounds } from '../../../shared/rider-contract/mapClusters';
 import type { MapBounds } from '../../../shared/rider-contract/types';
-import { fetchBatchStations, fetchNearbyStations, fetchStationClusters, fetchStationDetail, fetchViewportStations } from '../api/stationApi';
+import { fetchNearbyStations, fetchStationClusters, fetchStationDetail, fetchViewportStations } from '../api/stationApi';
+import { batchStationsQuery, STATION_POLL_MS, STATION_REFRESH_MS } from './stationQueries';
 
-export const STATION_REFRESH_MS = 30_000;
-const STATION_POLL_MS = 60_000;
+export { STATION_REFRESH_MS };
 
 export function isSupportedViewport(bounds: MapBounds): boolean {
   const { south, north, west, east } = bounds;
@@ -55,18 +55,6 @@ export function useStationDetail(id?: string) {
   });
 }
 
-function sameIds(previous: unknown, ids: readonly string[]): boolean {
-  return Array.isArray(previous) && previous.length === ids.length && previous.every((id, index) => id === ids[index]);
-}
-
 export function useBatchStations(ids: string[], center: Coordinates) {
-  return useQuery({
-    queryKey: ['station-batch', ids, center],
-    queryFn: ({ signal }) => fetchBatchStations(ids, center, signal),
-    enabled: ids.length > 0,
-    staleTime: STATION_REFRESH_MS,
-    refetchInterval: STATION_POLL_MS,
-    // Moving the map changes only the distance center. Keep the same stations on screen while distances refresh.
-    placeholderData: (previous, previousQuery) => sameIds(previousQuery?.queryKey[1], ids) ? previous : undefined,
-  });
+  return useQuery(batchStationsQuery(ids, center));
 }

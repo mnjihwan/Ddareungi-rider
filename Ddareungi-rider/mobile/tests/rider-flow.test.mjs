@@ -4,6 +4,7 @@ import { QueryClient, QueryObserver } from '@tanstack/react-query';
 import { isCurrentFix, locationLossOnResume, LOCATION_MAX_AGE_MS, LOCATION_MESSAGES, readLocation } from '../src/features/current-location/model/location.ts';
 import { asFixedLocation } from '../src/features/route-planning/model/endpoints.ts';
 import { routeStationObservation } from '../src/features/route-planning/model/routeStationObservation.ts';
+import { routeStationRole } from '../src/features/rider-map/model/scenes.ts';
 import { createRiderStorage, parseSavedItems } from '../src/features/saved/model/riderStorage.ts';
 import { mergeStationDetail } from '../src/features/station-search/model/mergeStationDetail.ts';
 import { stationCountLabel } from '../src/features/station-search/model/stationCountLabel.ts';
@@ -19,6 +20,7 @@ const { fetchRecommendedRoute, routingStatusQuery } = await import('../src/featu
 const { fetchBatchStations, fetchInventoryHistory, fetchNearbyStations, fetchServiceMode, fetchViewportStations, searchPlaces, searchStations } =
   await import('../src/features/station-search/api/stationApi.ts');
 const { ApiConfigError, API_CONFIG_MESSAGE, describeApiError, ensureSecureApiBase } = await import('../src/shared/api/client.ts');
+const { batchStationsQuery } = await import('../src/features/station-search/model/stationQueries.ts');
 const { FORECAST_REFRESH_MS, stationForecastQuery } = await import('../src/features/forecast/api/forecastApi.ts');
 
 const now = Date.parse('2026-11-20T03:00:00Z');
@@ -353,4 +355,43 @@ test('release builds report a misconfigured API address instead of the generic f
   assert.doesNotThrow(() => ensureSecureApiBase('http://192.168.0.10:8080', true));
   assert.equal(describeApiError(new ApiConfigError()), API_CONFIG_MESSAGE);
   assert.equal(describeApiError(new Error('network')), '요청을 처리하지 못했어요. 연결을 확인하고 다시 시도해 주세요.');
+});
+
+test('favorites keep the same stations while the map center moves and start empty when the IDs change', async (t) => {
+  const client = new QueryClient();
+  const pending = [];
+  const centers = [];
+  useAdapter(t, async (config) => {
+    const body = JSON.parse(config.data);
+    centers.push({ latitude: body.latitude, longitude: body.longitude });
+    if (centers.length === 1) return success(config, [station]);
+    return new Promise((resolve) => pending.push(() => resolve(success(config, [station]))));
+  });
+  const moved = { latitude: center.latitude + 0.01, longitude: center.longitude };
+  await client.fetchQuery(batchStationsQuery(['ST-12'], center));
+  const observer = new QueryObserver(client, batchStationsQuery(['ST-12'], center));
+  const unsubscribe = observer.subscribe(() => {});
+  t.after(() => { unsubscribe(); pending.forEach((resolve) => resolve()); client.clear(); });
+
+  observer.setOptions(batchStationsQuery(['ST-12'], moved));
+  const movedResult = observer.getCurrentResult();
+  assert.equal(movedResult.isPlaceholderData, true);
+  assert.deepEqual(movedResult.data, [station]);
+  assert.equal(movedResult.isPending, false);
+  // axios reaches the adapter after its interceptor chain, a few microtasks later.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(centers.at(-1), moved);
+
+  observer.setOptions(batchStationsQuery(['ST-12', 'ST-44'], moved));
+  const changed = observer.getCurrentResult();
+  assert.equal(changed.isPlaceholderData, false);
+  assert.equal(changed.data, undefined);
+});
+
+test('only the route stations get rental and return marker roles', () => {
+  const routeStations = [{ stationId: 'ST-1' }, { stationId: 'ST-2' }];
+  assert.equal(routeStationRole('ST-1', routeStations), 'rental');
+  assert.equal(routeStationRole('ST-2', routeStations), 'return');
+  assert.equal(routeStationRole('ST-3', routeStations), undefined);
+  assert.equal(routeStationRole('ST-1', undefined), undefined);
 });

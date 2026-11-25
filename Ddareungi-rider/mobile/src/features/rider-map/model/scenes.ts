@@ -22,6 +22,19 @@ export interface MapRouteSegment {
 
 export const ROUTE_COLORS = { WALK: '#2563A6', BIKE: '#0087A8' };
 
+/**
+ * Rental/return tag for the route's own stations, matched by ID; any other station (such as an extra selection)
+ * keeps its normal badge. `routeStations` is [rental, return].
+ */
+export function routeStationRole(
+  stationId: string, routeStations?: readonly { stationId: string }[],
+): 'rental' | 'return' | undefined {
+  const [rental, arrival] = routeStations ?? [];
+  if (stationId === rental?.stationId) return 'rental';
+  if (stationId === arrival?.stationId) return 'return';
+  return undefined;
+}
+
 const markerColors: Record<MapMarker['kind'], string> = {
   station: '#395780',
   selected: '#203C60',
