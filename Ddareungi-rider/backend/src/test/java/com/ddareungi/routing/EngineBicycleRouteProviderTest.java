@@ -89,7 +89,7 @@ class EngineBicycleRouteProviderTest {
         server.expect(requestTo("https://api.heigit.org/openrouteservice/v2/directions/cycling-regular/geojson"))
                 .andRespond(withServerError().body("private-test-key"));
         server.expect(requestTo("https://api.heigit.org/openrouteservice/v2/directions/cycling-regular/geojson"))
-                .andRespond(withBadRequest().contentType(MediaType.APPLICATION_JSON).body("{}"));
+                .andRespond(withBadRequest().contentType(MediaType.APPLICATION_JSON).body("{\"error\":{\"code\":2010}}"));
         assertThatThrownBy(() -> ors.route(from, to)).isInstanceOfSatisfying(RouteException.class, error -> {
             assertThat(error.code).isEqualTo("BIKE_ROUTE_PROVIDER_ERROR");
             assertThat(error.getMessage()).doesNotContain("private-test-key");
