@@ -1,10 +1,10 @@
 # 백엔드 코드 검토 — 2026-11-25
 
-검토 범위: `develop`(`4b3d051`)의 `Ddareungi-rider/backend` 전체(소스 149개, 약 9,400줄). `main` 대비 백엔드 파일 대부분이 이 브랜치에서 바뀌어 사실상 백엔드 코드 전체를 대상으로 봤습니다. 검토 수준은 extra-high이고, 확인한 11건을 모두 수정했습니다.
+검토 범위: `develop`(`4b3d051`)의 `Ddareungi-rider/backend` 전체(소스 149개, 약 9,400줄). `main` 대비 백엔드 파일 대부분이 이 브랜치에서 바뀌어 사실상 백엔드 코드 전체를 대상으로 봤습니다. 검토 수준은 extra-high입니다. 11건을 보고했고, 그중 10건을 수정했습니다. 10번은 테스트로 확인한 결과 의도된 동작이라 수정하지 않았습니다(오탐).
 
 - 중요(이 브랜치에서 생김): 2건
 - 브랜치 이전부터 있던 문제: 3건
-- 경미: 6건
+- 경미: 6건(그중 1건 오탐)
 
 모바일 앱 검토는 [review-2026-11-25.md](review-2026-11-25.md)에 있습니다.
 
@@ -74,11 +74,11 @@
 - 원인: 시간 초과된 요청을 취소(`cancel(true)`)한 직후 bulkhead 슬롯을 반납했습니다. 실제 HTTP 요청은 아직 진행 중일 수 있습니다.
 - 수정: 슬롯을 호출자와 시도 스레드가 함께 잡고, 마지막 시도 스레드가 실제로 끝날 때 반납합니다. 시작 전에 취소된 작업도 스레드 종료 시점에 반납되도록 `ContextPropagation.start`에 종료 콜백을 추가했습니다.
 
-### 10. 반납 접근 지점 투영이 구간 뒤쪽 연장선까지 나감
+### 10. 반납 접근 지점 투영이 구간 뒤쪽 연장선까지 나감 — 오탐, 수정하지 않음
 
 - 위치: `routing/PlanBikeRoute.java`(`projectOntoApproach`)
-- 원인: 투영 비율을 1에서만 자르고 0에서는 자르지 않았습니다.
-- 수정: 0~1로 제한해 구간 위에만 투영합니다. 대여소가 도보 시작점 뒤에 있으면 시작점 자체가 되어 추가 외부 호출을 하지 않습니다.
+- 검토 내용: 투영 비율을 1에서만 자르고 0에서는 자르지 않아, 대여소가 도보 첫 구간의 뒤쪽에 있으면 연장선 위의 점이 나옵니다.
+- 확인 결과: 의도된 동작입니다. 경로 제공자가 도보 시작점을 대여소에서 조금 떨어진 도로 지점으로 붙이면, 같은 도로에서 대여소와 가장 가까운 지점은 시작점의 뒤쪽에 있습니다. 기존 `PlanBikeRouteTest.reroutesBothLegsToTheSameRoadAccessNearTheReturnStation`이 바로 이 경우(시작점 127.0403, 투영점 127.0400)를 검증합니다. 0으로 제한하자 이 테스트와 `keepsTheProvidersPathsIfTheAdditionalReturnApproachIsUnavailable`이 실패해 변경을 되돌렸습니다.
 
 ### 11. ORS 엔진에서 HTTP 400을 모두 '경로 없음'으로 처리함
 
@@ -104,13 +104,18 @@
 | 7 | `KakaoPlaceSearchProviderTest.oneUnreadableDocumentIsSkippedNotTheWholeAnswer` |
 | 8 | `ApiContractTest.missingAndMalformedParameters`(좌표 누락 batch → 400) |
 | 9 | `ResilientCallerTest.bulkheadSlotIsHeldUntilTheCancelledExchangeEnds` |
-| 10 | `PlanBikeRouteProjectionTest` |
 | 11 | `OpenRouteServiceClientTest.onlyNoRouteErrorCodesBecomeNoRoadRoute` |
 
 ## 검증
 
-- 백엔드 테스트(`./gradlew :backend:test`)와 `bootJar`는 PR CI의 `Backend test and bootJar` 작업 결과로 확인합니다. 검토 환경에서는 Maven Central이 프록시를 거쳐 `429 Too Many Requests`를 반복해 로컬 Gradle 빌드가 의존성을 받지 못했습니다.
-- 결과는 PR에 기록합니다.
+| 대상 | 명령 | 결과 |
+| --- | --- | --- |
+| 백엔드 전체 테스트 | `./gradlew :backend:test` | 710개 중 709개 통과, 1개 건너뜀(기존), 실패 0 |
+| 실행 jar | `./gradlew :backend:bootJar` | 성공 |
+| 수정 전 코드로 새 테스트 실행 | 재고 캐시·서울 수집·`ResilientCaller` 구현만 `develop` 버전으로 되돌려 실행 | 새 테스트 5개 모두 실패(수정이 없으면 잡히는 것을 확인) |
+
+- 검토 환경에서는 Maven Central이 프록시를 거쳐 `429 Too Many Requests`를 반복해, 다운로드를 한 번에 하나씩 하도록 줄여(`--max-workers=1`) 의존성을 받았습니다.
+- 처음 전체 실행에서 4개가 실패했습니다. 원인은 10번 오탐(기존 테스트 2개), ORS 동작 변경을 반영하지 않은 기존 테스트 1개(`EngineBicycleRouteProviderTest`: 빈 본문 400 대신 경로 없음 코드 2010으로 갱신), 새 테스트의 Mockito 재스텁 오류 1개였고 모두 고쳤습니다.
 
 ## 미검증·후속
 
