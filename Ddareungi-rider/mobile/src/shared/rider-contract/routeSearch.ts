@@ -3,7 +3,7 @@
 import { apiError, apiErrorMessage, isRateLimited, RATE_LIMIT_MESSAGE, type ApiMeta } from "./apiEnvelope.ts";
 import { decodePolyline } from "./polyline.ts";
 import type { BikeRoute, Coordinates, RoutePlan, RouteSearchOptions, RouteSearchResult, RouteSearchRoute,
-  RoutingStatus } from "./types.ts";
+  RoutingStatus, Station } from "./types.ts";
 
 /** Spec 13.1 upper bound of `options.maxWalkingDistanceMeters` (the server rejects 10001 with a 400). */
 export const MAX_WALKING_DISTANCE_METERS = 10_000;
@@ -76,17 +76,69 @@ export function toBikeRoute(route: RouteSearchRoute, origin: Coordinates, destin
   };
 }
 
+function isPartialPlan(meta: ApiMeta | undefined): boolean {
+  return meta?.partial === true && (meta.warnings ?? []).some(warning => warning.code === "PROVIDER_PARTIAL_FAILURE");
+}
+
+function attributionOf(result: RouteSearchResult): string {
+  return typeof result.attribution === "string" ? result.attribution : "";
+}
+
 /** `recommended` first, then `alternatives` in server order. Throws on a body that is not a search result. */
 export function toRoutePlan(result: RouteSearchResult, meta: ApiMeta | undefined, origin: Coordinates,
   destination: Coordinates): RoutePlan {
   if (!result?.recommended || !Array.isArray(result.recommended.segments) || !Array.isArray(result.alternatives)) {
     throw new Error("Invalid route search response");
   }
-  const attribution = typeof result.attribution === "string" ? result.attribution : "";
+  const attribution = attributionOf(result);
   return {
     routes: [result.recommended, ...result.alternatives].map(route => toBikeRoute(route, origin, destination, attribution)),
-    partial: meta?.partial === true && (meta.warnings ?? []).some(warning => warning.code === "PROVIDER_PARTIAL_FAILURE"),
+    partial: isPartialPlan(meta),
   };
+}
+
+/** Segment order every planner/map route is drawn with (spec 13.1): walk to the rental, ride, walk on. */
+export const DRAWABLE_SEGMENT_TYPES = ["WALK", "BIKE", "WALK"] as const;
+
+function isStation(value: unknown): value is Station {
+  return typeof value === "object" && value !== null
+    && typeof (value as Station).stationId === "string" && typeof (value as Station).stationName === "string";
+}
+
+/**
+ * One route as the planner and map draw it, or null when it cannot be drawn: a segment order other than
+ * WALK, BIKE, WALK, a missing rental/return station, a malformed polyline, or a leg with fewer than two points
+ * (spec 13.1 guarantees at least two).
+ */
+export function toDrawableBikeRoute(route: RouteSearchRoute, origin: Coordinates, destination: Coordinates,
+  attribution: string): BikeRoute | null {
+  if (!route || typeof route !== "object" || !Array.isArray(route.segments)
+    || !isStation(route.originStation) || !isStation(route.destinationStation)
+    || route.segments.map(segment => segment?.type).join(",") !== DRAWABLE_SEGMENT_TYPES.join(",")) {
+    return null;
+  }
+  try {
+    const bikeRoute = toBikeRoute(route, origin, destination, attribution);
+    return bikeRoute.legs.every(leg => leg.path.length >= 2) ? bikeRoute : null;
+  } catch {
+    return null; // decodePolyline rejects truncated or out-of-range input.
+  }
+}
+
+/**
+ * `toRoutePlan` for the planner and map: an undrawable recommended route rejects the response, and undrawable
+ * alternatives are dropped so that one bad alternative cannot fail the whole search.
+ */
+export function toDrawableRoutePlan(result: RouteSearchResult, meta: ApiMeta | undefined, origin: Coordinates,
+  destination: Coordinates): RoutePlan {
+  if (!result?.recommended || !Array.isArray(result.alternatives)) throw new Error("Invalid route search response");
+  const attribution = attributionOf(result);
+  const recommended = toDrawableBikeRoute(result.recommended, origin, destination, attribution);
+  if (!recommended) throw new Error("Invalid route legs");
+  const alternatives = result.alternatives
+    .map(route => toDrawableBikeRoute(route, origin, destination, attribution))
+    .filter((route): route is BikeRoute => route !== null);
+  return { routes: [recommended, ...alternatives], partial: isPartialPlan(meta) };
 }
 
 export const ROUTE_FALLBACK_MESSAGE = "경로를 가져오지 못했어요. 잠시 후 다시 검색해 주세요.";

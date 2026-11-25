@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { api, searchBikeRoutes } from "../src/lib/api.ts";
-import { routeErrorMessage, toRoutePlan, buildRouteSearchBody, defaultRouteSearchOptions, hasChosenStation,
+import { routeErrorMessage, toRoutePlan, toDrawableRoutePlan, buildRouteSearchBody, defaultRouteSearchOptions, hasChosenStation,
   ROUTE_ERROR_MESSAGES, ROUTE_FALLBACK_MESSAGE, ROUTE_NOT_FOUND_CHOSEN_STATION_MESSAGE, MAX_WALKING_DISTANCE_METERS,
 } from "../src/lib/routeSearch.ts";
 import { RATE_LIMIT_MESSAGE } from "../src/lib/apiEnvelope.ts";
@@ -24,6 +24,12 @@ const route = (id, overrides = {}) => ({
 });
 const result = { recommended: route("r"), alternatives: [route("a1", { rentalAvailability: "UNKNOWN" }), route("a2")],
   attribution: "경로: Kakao Mobility" };
+// Spec 13.1: every segment polyline has at least two points, so the planner can draw it.
+const drawableRoute = (id, overrides = {}) => route(id, {
+  segments: route(id).segments.map(segment => ({ ...segment, encodedPolyline: GOOGLE })), ...overrides,
+});
+const drawableResult = { recommended: drawableRoute("r"),
+  alternatives: [drawableRoute("a1", { rentalAvailability: "UNKNOWN" }), drawableRoute("a2")], attribution: "경로: Kakao Mobility" };
 
 test("search response maps to the planner/map view: recommended first, decoded paths, request endpoints", () => {
   const plan = toRoutePlan(result, { requestId: "r" }, origin, destination);
@@ -59,11 +65,35 @@ test("partial flag only for PROVIDER_PARTIAL_FAILURE; a body without recommended
     distanceMeters: 1, durationSeconds: 1, encodedPolyline: "_", steps: [] }] } }, undefined, origin, destination));
 });
 
+test("drawable plan rejects an undrawable recommended route and drops only undrawable alternatives", () => {
+  const brokenAlternatives = [
+    drawableRoute("short", { segments: drawableRoute("short").segments.slice(0, 2) }),
+    drawableRoute("truncated", { segments: drawableRoute("truncated").segments
+      .map((segment, index) => index === 1 ? { ...segment, encodedPolyline: "_p~iF~ps|U_" } : segment) }),
+    drawableRoute("single-point", { segments: drawableRoute("single-point").segments
+      .map((segment, index) => index === 2 ? { ...segment, encodedPolyline: "??" } : segment) }),
+    drawableRoute("no-station", { originStation: null }),
+    drawableRoute("no-segments", { segments: null }),
+    null,
+  ];
+  const plan = toDrawableRoutePlan({ ...drawableResult, alternatives: [brokenAlternatives[0], drawableRoute("ok"),
+    ...brokenAlternatives.slice(1)] }, { requestId: "r", partial: true, warnings: [{ code: "PROVIDER_PARTIAL_FAILURE" }] },
+  origin, destination);
+  assert.deepEqual(plan.routes.map(r => r.routeId), ["route-r", "route-ok"]);
+  assert.equal(plan.partial, true);
+  for (const recommended of brokenAlternatives) {
+    assert.throws(() => toDrawableRoutePlan({ ...drawableResult, recommended }, undefined, origin, destination),
+      /Invalid route (legs|search response)/);
+  }
+  assert.throws(() => toDrawableRoutePlan({ ...drawableResult, alternatives: null }, undefined, origin, destination),
+    /Invalid route search response/);
+});
+
 test("searchBikeRoutes posts to /routes/search with station IDs only when chosen and no null options", async (t) => {
   const calls = [];
   const original = api.post;
   api.post = async (url, body, config) => { calls.push({ url, body: JSON.parse(JSON.stringify(body)), config });
-    return { data: { success: true, data: result, meta: { requestId: "r" }, timestamp: "t" } }; };
+    return { data: { success: true, data: drawableResult, meta: { requestId: "r" }, timestamp: "t" } }; };
   t.after(() => { api.post = original; });
   const plan = await searchBikeRoutes(origin, destination, { departureStationId: "ST-1", arrivalStationId: undefined });
   assert.equal(calls[0].url, "/routes/search");

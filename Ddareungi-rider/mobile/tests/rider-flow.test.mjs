@@ -295,7 +295,8 @@ test('route search keeps only drawable WALK, BIKE, WALK alternatives', async (t)
   let recommended = route('recommended', walkBikeWalk);
   useAdapter(t, async (config) => success(config, { recommended, alternatives, attribution: 'fixture' }));
   const signal = new AbortController().signal;
-  alternatives = [route('two-legs', ['WALK', 'BIKE']), route('valid', walkBikeWalk), route('single-point', walkBikeWalk, '_p~iF~ps|U')];
+  alternatives = [route('two-legs', ['WALK', 'BIKE']), route('valid', walkBikeWalk), route('single-point', walkBikeWalk, '_p~iF~ps|U'),
+    route('truncated', walkBikeWalk, '_p~iF~ps|U_'), { ...route('no-station', walkBikeWalk), originStation: null }];
   const result = await fetchRecommendedRoute(center, destination, {}, { configured: true }, signal);
   assert.deepEqual(result.alternatives.map(({ routeId }) => routeId), ['valid']);
   recommended = route('broken', ['WALK', 'BIKE']);
