@@ -1,0 +1,13 @@
+{
+  "//": "Shared with the web build. Vite reads the nearest tsconfig, so this one must not extend expo/tsconfig.base.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true
+  },
+  "include": ["*.ts"]
+}
