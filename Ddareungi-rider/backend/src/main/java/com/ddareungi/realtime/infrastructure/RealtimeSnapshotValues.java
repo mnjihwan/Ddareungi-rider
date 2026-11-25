@@ -110,6 +110,8 @@ final class RealtimeSnapshotValues {
         if (!Double.isFinite(lat) || !Double.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
             return Optional.empty();
         }
+        // (0, 0) is a missing position coerced to numbers; the join would move the station off the map.
+        if (lat == 0 && lon == 0) return Optional.empty();
         return Optional.of(new RealtimeStationStatus(stationId, name, rackCount, bikeCount, sharedRate, lat, lon, updatedAt));
     }
 

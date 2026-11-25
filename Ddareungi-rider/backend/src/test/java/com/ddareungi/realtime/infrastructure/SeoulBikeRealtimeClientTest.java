@@ -5,6 +5,7 @@ import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.http.MediaType;
 import tools.jackson.databind.json.JsonMapper;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.anything;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 class SeoulBikeRealtimeClientTest {
@@ -56,5 +57,72 @@ class SeoulBikeRealtimeClientTest {
         server.expect(anything()).andRespond(withSuccess(body(field), MediaType.APPLICATION_JSON));
         try { return client.fetchAll().getFirst().availableBikeCount(); }
         finally { server.verify(); }
+    }
+
+    private static String row(String id, String count, String latitude, String longitude) {
+        return "{\"stationId\":\"" + id + "\",\"stationName\":\"n\",\"parkingBikeTotCnt\":" + count
+                + ",\"stationLatitude\":" + latitude + ",\"stationLongitude\":" + longitude + "}";
+    }
+
+    private static String page(String... rows) {
+        return "{\"rentBikeStatus\":{\"RESULT\":{\"CODE\":\"INFO-000\"},\"row\":[" + String.join(",", rows) + "]}}";
+    }
+
+    private static SeoulBikeRealtimeClient client(RestClient.Builder builder, int pageSize, int maxPages) {
+        return new SeoulBikeRealtimeClient(new SeoulBikeApiProperties("http://localhost", "test", pageSize, maxPages, "bikeList", ""),
+                builder, JsonMapper.builder().build());
+    }
+
+    /** One bad row is skipped (that station stays unknown) instead of failing the refresh of every station. */
+    @org.junit.jupiter.api.Test void invalidRowsAreSkippedAndTheRestIsKept() {
+        var builder = RestClient.builder();
+        var server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(anything()).andRespond(withSuccess(page(
+                row("ST-1", "\"3\"", "\"37.5\"", "\"127\""),
+                row("ST-2", "\"\"", "\"37.5\"", "\"127\""),        // count missing
+                row("ST-3", "\"4\"", "\"\"", "\"\""),              // coordinates missing
+                row("ST-4", "\"5\"", "\"0\"", "\"0\""),            // (0, 0)
+                row("ST-5", "\"6\"", "\"37.6\"", "\"127.1\""),
+                row("ST-6", "\"7\"", "\"37.7\"", "\"127.2\""),
+                row("ST-7", "\"8\"", "\"37.8\"", "\"127.3\"")), MediaType.APPLICATION_JSON));
+        var statuses = client(builder, 1000, 1).fetchAll();
+        org.assertj.core.api.Assertions.assertThat(statuses).extracting(s -> s.stationId())
+                .containsExactly("ST-1", "ST-5", "ST-6", "ST-7");
+        server.verify();
+    }
+
+    @org.junit.jupiter.api.Test void mostlyInvalidRowsStillFailTheRefresh() {
+        var builder = RestClient.builder();
+        var server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(anything()).andRespond(withSuccess(page(
+                row("ST-1", "\"3\"", "\"37.5\"", "\"127\""),
+                row("ST-2", "\"\"", "\"37.5\"", "\"127\""),
+                row("ST-3", "\"x\"", "\"37.5\"", "\"127\"")), MediaType.APPLICATION_JSON));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> client(builder, 1000, 1).fetchAll())
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    /** Station count that is an exact multiple of the page size: the next page answers INFO-200, the end of data. */
+    @org.junit.jupiter.api.Test void emptyPageAfterAFullPageEndsTheListInsteadOfFailing() {
+        for (String empty : java.util.List.of("{\"CODE\":\"INFO-200\",\"MESSAGE\":\"none\"}",
+                "{\"RESULT\":{\"CODE\":\"INFO-200\",\"MESSAGE\":\"none\"}}",
+                "{\"rentBikeStatus\":{\"RESULT\":{\"CODE\":\"INFO-200\"}}}")) {
+            var builder = RestClient.builder();
+            var server = MockRestServiceServer.bindTo(builder).build();
+            server.expect(requestTo("http://localhost/test/json/bikeList/1/2")).andRespond(withSuccess(page(
+                    row("ST-1", "\"3\"", "\"37.5\"", "\"127\""), row("ST-2", "\"4\"", "\"37.6\"", "\"127.1\"")),
+                    MediaType.APPLICATION_JSON));
+            server.expect(requestTo("http://localhost/test/json/bikeList/3/4")).andRespond(withSuccess(empty, MediaType.APPLICATION_JSON));
+            org.assertj.core.api.Assertions.assertThat(client(builder, 2, 5).fetchAll()).as(empty).hasSize(2);
+            server.verify();
+        }
+    }
+
+    @org.junit.jupiter.api.Test void noDataOnTheFirstPageIsStillAnError() {
+        var builder = RestClient.builder();
+        var server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(anything()).andRespond(withSuccess("{\"CODE\":\"INFO-200\"}", MediaType.APPLICATION_JSON));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> client(builder, 1000, 1).fetchAll())
+                .isInstanceOf(IllegalStateException.class);
     }
 }

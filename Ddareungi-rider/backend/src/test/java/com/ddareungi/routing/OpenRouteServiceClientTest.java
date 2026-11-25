@@ -79,4 +79,27 @@ class OpenRouteServiceClientTest {
             "segments":[{"steps":[{"instruction":"Continue straight","name":"강남대로","type":6,"distance":200,"duration":140}]}]}}]}
           """.formatted(coordinates);
     }
+
+    // Only ORS "no routable connection" codes read as NO_ROAD_ROUTE; other 4xx are request/config problems (502).
+    @Test void onlyNoRouteErrorCodesBecomeNoRoadRoute() {
+        for (int code : new int[] {2004, 2009, 2010, 6010}) {
+            assertThat(orsError(HttpStatus.BAD_REQUEST, "{\"error\":{\"code\":" + code + ",\"message\":\"private-test-key\"}}"))
+                    .as("code " + code).isEqualTo("NO_ROAD_ROUTE");
+        }
+        assertThat(orsError(HttpStatus.BAD_REQUEST, "{\"error\":{\"code\":2003,\"message\":\"bad value\"}}"))
+                .isEqualTo("ROUTING_UNAVAILABLE");
+        assertThat(orsError(HttpStatus.BAD_REQUEST, "not json")).isEqualTo("ROUTING_UNAVAILABLE");
+        assertThat(orsError(HttpStatus.BAD_REQUEST, "{\"error\":\"Access disallowed\"}")).isEqualTo("ROUTING_UNAVAILABLE");
+        assertThat(orsError(HttpStatus.NOT_FOUND, "{\"error\":{\"code\":2099}}")).isEqualTo("ROUTING_UNAVAILABLE");
+        assertThat(orsError(HttpStatus.UNAUTHORIZED, "private-test-key")).isEqualTo("ROUTING_AUTH");
+    }
+    private String orsError(HttpStatus status, String body) {
+        var builder=RestClient.builder();var stub=MockRestServiceServer.bindTo(builder).build();
+        var ors=new OpenRouteServiceClient(builder,JsonMapper.builder().build(),"private-test-key");
+        stub.expect(anything()).andRespond(withStatus(status).contentType(MediaType.APPLICATION_JSON).body(body));
+        Throwable thrown=catchThrowable(()->ors.directions("foot-walking",from,to));
+        assertThat(thrown).isInstanceOf(RouteException.class);var error=(RouteException) thrown;
+        assertThat(error.getMessage()).doesNotContain("private-test-key");assertThat(error.getCause()).isNull();
+        return error.code;
+    }
 }

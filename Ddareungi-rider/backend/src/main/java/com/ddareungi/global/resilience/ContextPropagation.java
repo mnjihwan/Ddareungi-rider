@@ -38,8 +38,23 @@ public final class ContextPropagation {
      * (interrupting the thread) without waiting for it, unlike a closed executor.
      */
     public static <T> Future<T> start(String name, Callable<T> task) {
+        return start(name, task, () -> {});
+    }
+
+    /**
+     * Like {@link #start(String, Callable)}, and runs {@code afterExit} on the new thread once it is done with the
+     * task, whether the task completed, failed, or was cancelled (even before it began). A cancelled future returns to
+     * its caller at once while the thread may still be inside the task; {@code afterExit} marks the real end.
+     */
+    public static <T> Future<T> start(String name, Callable<T> task, Runnable afterExit) {
         var future = new FutureTask<>(wrap(task));
-        Thread.ofVirtual().name(name).start(future);
+        Thread.ofVirtual().name(name).start(() -> {
+            try {
+                future.run();
+            } finally {
+                afterExit.run();
+            }
+        });
         return future;
     }
 

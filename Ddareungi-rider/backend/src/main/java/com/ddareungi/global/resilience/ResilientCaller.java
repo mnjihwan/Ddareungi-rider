@@ -15,6 +15,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 /**
@@ -26,6 +27,8 @@ import java.util.function.Supplier;
  *   <li>Retried (GET only, while the deadline leaves room): timeouts, 5xx, connection errors.</li>
  *   <li>Never retried and never counted by the breaker: 4xx including 429.</li>
  *   <li>Each attempt runs on a virtual thread capped at the remaining deadline and is cancelled when it runs out.</li>
+ *   <li>The bulkhead slot is held until every attempt thread has actually finished, not only until the caller
+ *       gives up: a cancelled exchange can still be on the wire, and must keep counting against the limit.</li>
  * </ul>
  * Review M7: a timeout that only happened because the remaining request deadline was shorter than the provider's
  * read timeout (the budget was mostly spent elsewhere) is reported to the breaker as ignored, not as a failure,
@@ -116,8 +119,9 @@ public final class ResilientCaller {
             throw new ProviderCallException(ProviderCallException.Kind.BULKHEAD_FULL, name + " bulkhead is full");
         }
         var faults = new Attempts();
+        var slot = new BulkheadSlot(bulkhead);
         try {
-            T result = idempotent ? withRetry(exchange, deadline, faults) : attempt(exchange, deadline, faults);
+            T result = idempotent ? withRetry(exchange, deadline, faults, slot) : attempt(exchange, deadline, faults, slot);
             if (breaker != null) breaker.onSuccess(permit);
             return result;
         } catch (RuntimeException error) {
@@ -132,7 +136,24 @@ public final class ResilientCaller {
             if (!(error instanceof ProviderCallException) && isTimeout(error)) throw timeout("provider timed out");
             throw error;
         } finally {
-            bulkhead.release();
+            slot.release();
+        }
+    }
+
+    /**
+     * One bulkhead permit shared by the caller and the attempt threads it started. It returns to the bulkhead when the
+     * last holder lets go, so an attempt that timed out (and was cancelled) still occupies the slot while it runs.
+     */
+    static final class BulkheadSlot {
+        private final Semaphore bulkhead;
+        private final AtomicInteger holders = new AtomicInteger(1);
+
+        BulkheadSlot(Semaphore bulkhead) { this.bulkhead = bulkhead; }
+
+        void retain() { holders.incrementAndGet(); }
+
+        void release() {
+            if (holders.decrementAndGet() == 0) bulkhead.release();
         }
     }
 
@@ -141,7 +162,7 @@ public final class ResilientCaller {
         volatile boolean providerFault;
     }
 
-    private <T> T withRetry(Supplier<T> exchange, Deadline deadline, Attempts faults) {
+    private <T> T withRetry(Supplier<T> exchange, Deadline deadline, Attempts faults, BulkheadSlot slot) {
         var policy = RetryPolicy.builder()
                 .maxRetries(settings.retry().maxRetries())
                 .delay(settings.retry().delay())
@@ -149,7 +170,7 @@ public final class ResilientCaller {
                         && deadline.remaining().compareTo(settings.retry().delay().plus(MIN_ATTEMPT_BUDGET)) > 0)
                 .build();
         try {
-            return new RetryTemplate(policy).execute(() -> attempt(exchange, deadline, faults));
+            return new RetryTemplate(policy).execute(() -> attempt(exchange, deadline, faults, slot));
         } catch (RetryException error) {
             Throwable last = error.getLastException() != null ? error.getLastException() : error.getCause();
             if (last instanceof RuntimeException runtime) throw runtime;
@@ -159,12 +180,19 @@ public final class ResilientCaller {
         }
     }
 
-    private <T> T attempt(Supplier<T> exchange, Deadline deadline, Attempts faults) {
+    private <T> T attempt(Supplier<T> exchange, Deadline deadline, Attempts faults, BulkheadSlot slot) {
         if (deadline.expired()) throw budgetTimeout("deadline exceeded before attempt");
         Duration budget = deadline.remaining();
         // M7: with less budget than the read timeout, running out of budget is our limit, not the provider's.
         boolean budgetShort = readTimeout != null && budget.compareTo(readTimeout) < 0;
-        var future = ContextPropagation.start(name + "-call", exchange::get);
+        slot.retain();
+        java.util.concurrent.Future<T> future;
+        try {
+            future = ContextPropagation.start(name + "-call", exchange::get, slot::release);
+        } catch (RuntimeException | Error notStarted) {
+            slot.release();
+            throw notStarted;
+        }
         try {
             return future.get(budget.toNanos(), TimeUnit.NANOSECONDS);
         } catch (TimeoutException error) {

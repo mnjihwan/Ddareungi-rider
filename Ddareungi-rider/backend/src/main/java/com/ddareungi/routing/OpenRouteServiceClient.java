@@ -16,11 +16,18 @@ import tools.jackson.databind.json.JsonMapper;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.IntStream;
 
 @Component
 @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "routing.provider", havingValue = "ors")
 public class OpenRouteServiceClient implements RouteProvider {
+    /**
+     * ORS error codes ({@code {"error":{"code":n}}}) that mean "no routable connection": 2004 route distance over the
+     * engine limit (too far, like Kakao TOO_FAR_AWAY), 2009 route not found, 2010 and 6010 no routable point near a
+     * coordinate. Every other 4xx is a request or configuration problem and must not read as "no route".
+     */
+    static final Set<Integer> NO_ROAD_CODES = Set.of(2004, 2009, 2010, 6010);
     private final RestClient client;
     private final JsonMapper mapper;
     private final String key;
@@ -112,12 +119,30 @@ public class OpenRouteServiceClient implements RouteProvider {
             if (error.kind() == ProviderCallException.Kind.TIMEOUT) throw KakaoRouteClient.timeout();
             throw invalidResponse();
         } catch (RestClientResponseException error) {
-            int status = error.getStatusCode().value();
-            if (status == 429 || status == 403) throw new RouteException(HttpStatus.SERVICE_UNAVAILABLE, "ROUTING_LIMIT", "길찾기 요청이 많거나 연결을 사용할 수 없어요. 잠시 후 다시 시도해 주세요.");
-            if (status == 400 || status == 404) throw new RouteException(HttpStatus.UNPROCESSABLE_ENTITY, "NO_ROAD_ROUTE", "이 위치까지 연결되는 도보·자전거 경로를 찾지 못했어요. 가까운 도로나 다른 출발·도착 장소를 선택해 주세요.");
-            throw invalidResponse();
+            throw translate(error);
         } catch (RuntimeException error) { throw invalidResponse(); }
         // Provider bodies and causes may contain credentials; never forward them.
+    }
+    /** Maps an ORS HTTP error; the body is read only for its numeric code and never forwarded. */
+    private RouteException translate(RestClientResponseException error) {
+        int status = error.getStatusCode().value();
+        if (status == 429 || status == 403) return new RouteException(HttpStatus.SERVICE_UNAVAILABLE, "ROUTING_LIMIT", "길찾기 요청이 많거나 연결을 사용할 수 없어요. 잠시 후 다시 시도해 주세요.");
+        if (status == 401) return new RouteException(HttpStatus.SERVICE_UNAVAILABLE, "ROUTING_AUTH", "길찾기 연결을 사용할 수 없어요. 잠시 후 다시 시도해 주세요.");
+        Integer code = errorCode(error);
+        // A 404 without a readable code keeps the former meaning (route not found).
+        if ((code != null && NO_ROAD_CODES.contains(code)) || (code == null && status == 404)) return noRoad();
+        return invalidResponse();
+    }
+    private @org.jspecify.annotations.Nullable Integer errorCode(RestClientResponseException error) {
+        try {
+            JsonNode code = mapper.readTree(error.getResponseBodyAsString()).path("error").path("code");
+            return code.isIntegralNumber() ? code.asInt() : null;
+        } catch (RuntimeException unreadable) {
+            return null;
+        }
+    }
+    private static RouteException noRoad() {
+        return new RouteException(HttpStatus.UNPROCESSABLE_ENTITY, "NO_ROAD_ROUTE", "이 위치까지 연결되는 도보·자전거 경로를 찾지 못했어요. 가까운 도로나 다른 출발·도착 장소를 선택해 주세요.");
     }
     private static List<List<Double>> coordinates(List<Location> locations) {
         return locations.stream().map(p -> List.of(p.longitude(), p.latitude())).toList();

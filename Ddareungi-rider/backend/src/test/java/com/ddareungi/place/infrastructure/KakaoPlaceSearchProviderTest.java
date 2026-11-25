@@ -144,4 +144,17 @@ class KakaoPlaceSearchProviderTest {
             assertThat(error.getCause()).isNull();
         });
     }
+
+    @Test void oneUnreadableDocumentIsSkippedNotTheWholeAnswer() {
+        server.expect(anything()).andRespond(withSuccess("""
+                {"documents":[
+                  {"place_name":"강남역 2호선","x":"127.0276","y":"37.4979","category_group_code":"SW8"},
+                  {"place_name":"","x":"127.0","y":"37.5"},
+                  {"place_name":"좌표없음","x":"NaN","y":"37.5"},
+                  {"place_name":"강남역 신분당선","x":"127.0286","y":"37.4969","category_group_code":"SW8"}
+                ]}""", MediaType.APPLICATION_JSON));
+        assertThat(provider.keyword("강남역", null, null)).extracting(Place::name)
+                .containsExactly("강남역 2호선", "강남역 신분당선");
+        server.verify();
+    }
 }

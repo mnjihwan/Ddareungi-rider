@@ -2,6 +2,7 @@ package com.ddareungi.station.infrastructure;
 
 import java.time.*;
 import java.util.*;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 import org.springframework.context.annotation.Profile;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -12,14 +13,23 @@ import org.springframework.dao.DataAccessException;
 @Profile("infra")
 public class InventoryDayCache {
     private static final ZoneOffset KST = ZoneOffset.ofHours(9);
+    static final Duration TODAY_TTL = Duration.ofSeconds(30);
+    /** Yesterday can still receive late (backfilled) observations, so it is cached briefly. */
+    static final Duration YESTERDAY_TTL = Duration.ofMinutes(10);
+    static final Duration HISTORY_TTL = Duration.ofHours(6);
     private final StringRedisTemplate redis;
     private final PreloadedInventoryStore preloaded;
-    private final Object[] locks = new Object[64];
+    /**
+     * Striped locks that coalesce concurrent misses of one key on this instance. ReentrantLock, not synchronized:
+     * the loader blocks on Redis and MySQL, and on JDK 21 a virtual thread blocked inside a synchronized block (or
+     * waiting to enter one) pins its carrier thread, which can stall every request on a small instance.
+     */
+    private final ReentrantLock[] locks = new ReentrantLock[64];
 
     public InventoryDayCache(StringRedisTemplate redis, PreloadedInventoryStore preloaded) {
         this.redis = redis;
         this.preloaded = preloaded;
-        Arrays.setAll(locks, index -> new Object());
+        Arrays.setAll(locks, index -> new ReentrantLock());
     }
 
     public List<StationInventoryReader.Observation> get(String station, LocalDate date,
@@ -34,7 +44,9 @@ public class InventoryDayCache {
         if (date.isBefore(today.minusDays(8))) return loader.get();
         String key = "station:inventory:day:v1:" + station + ":" + date;
         // Coalesce concurrent misses for this application instance without an unbounded lock map.
-        synchronized (locks[Math.floorMod(key.hashCode(), locks.length)]) {
+        ReentrantLock lock = locks[Math.floorMod(key.hashCode(), locks.length)];
+        lock.lock();
+        try {
             try {
                 String value = redis.opsForValue().get(key);
                 if (value != null) {
@@ -43,11 +55,18 @@ public class InventoryDayCache {
                 }
             } catch (DataAccessException ignored) { /* Redis is optional; MySQL remains authoritative. */ }
             var rows = loader.get();
-            Duration ttl = date.equals(today) || rows.isEmpty() ? Duration.ofSeconds(30) : Duration.ofHours(6);
-            try { redis.opsForValue().set(key, encode(rows), ttl); }
+            try { redis.opsForValue().set(key, encode(rows), ttl(date, today, rows.isEmpty())); }
             catch (DataAccessException ignored) { /* Do not turn a successful DB read into a failure. */ }
             return rows;
+        } finally {
+            lock.unlock();
         }
+    }
+
+    static Duration ttl(LocalDate date, LocalDate today, boolean empty) {
+        if (date.equals(today) || empty) return TODAY_TTL;
+        if (date.equals(today.minusDays(1))) return YESTERDAY_TTL;
+        return HISTORY_TTL;
     }
 
     private String encode(List<StationInventoryReader.Observation> rows) {
