@@ -318,6 +318,22 @@ test('station detail never replaces a newer list observation', () => {
   assert.equal(mergeStationDetail(listed, undefined), listed);
 });
 
+test('station detail realtime fields stay together and a timestamp-less UNAVAILABLE detail wins', () => {
+  const listed = { ...station, parkingBikeTotCnt: 5, realtimeStatus: 'STALE', realtimeUpdatedAt: '2026-11-20T03:00:00Z', realtimeAgeSeconds: 200 };
+  const newerWithoutStatus = { ...station, parkingBikeTotCnt: 6, realtimeUpdatedAt: '2026-11-20T03:01:00Z', realtimeAgeSeconds: 5 };
+  delete newerWithoutStatus.realtimeStatus;
+  const merged = mergeStationDetail(listed, newerWithoutStatus);
+  assert.equal(merged.parkingBikeTotCnt, 6);
+  assert.equal(merged.realtimeStatus, undefined);
+  assert.equal(merged.realtimeAgeSeconds, 5);
+  const gone = { ...station, parkingBikeTotCnt: null, realtimeStatus: 'UNAVAILABLE', realtimeUpdatedAt: null, realtimeAgeSeconds: null };
+  assert.equal(mergeStationDetail(listed, gone).realtimeStatus, 'UNAVAILABLE');
+  assert.equal(mergeStationDetail(listed, gone).parkingBikeTotCnt, null);
+  const olderUnavailable = { ...gone, realtimeUpdatedAt: '2026-11-20T02:40:00Z' };
+  assert.equal(mergeStationDetail(listed, olderUnavailable).parkingBikeTotCnt, 5);
+  assert.equal(mergeStationDetail(listed, olderUnavailable).realtimeStatus, 'STALE');
+});
+
 test('station detail forecast refreshes within the 10-minute validity window', () => {
   const enabled = stationForecastQuery('ST-12', '/api/v1/stations/forecasts');
   assert.equal(enabled.refetchInterval, FORECAST_REFRESH_MS);
