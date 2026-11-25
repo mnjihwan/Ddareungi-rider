@@ -56,4 +56,32 @@ class InventoryDayCacheTest {
         verify(loader).get();
         verifyNoInteractions(values);
     }
+
+    @Test void yesterdayCanReceiveLateRowsSoItIsCachedBriefly() {
+        var row = new StationInventoryReader.Observation("ST-1", today.minusDays(1).atStartOfDay().atOffset(ZoneOffset.ofHours(9)), 2);
+        cache.get("ST-1", today.minusDays(1), () -> List.of(row));
+        verify(values).set(endsWith(today.minusDays(1).toString()), eq("v1;0:2"), eq(Duration.ofMinutes(10)));
+    }
+
+    /** JDK 21: blocking inside synchronized pins the carrier thread (jdk.VirtualThreadPinned). The miss path must not. */
+    @Test void cacheMissOnAVirtualThreadDoesNotPinItsCarrier() throws Exception {
+        try (var recording = new jdk.jfr.Recording()) {
+            recording.enable("jdk.VirtualThreadPinned").withThreshold(Duration.ZERO);
+            recording.start();
+            var worker = Thread.ofVirtual().start(() -> cache.get("ST-1", today, () -> {
+                try { Thread.sleep(30); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                return List.of();
+            }));
+            worker.join(5_000);
+            recording.stop();
+            var file = java.nio.file.Files.createTempFile("inventory-pinning", ".jfr");
+            try {
+                recording.dump(file);
+                assertThat(jdk.jfr.consumer.RecordingFile.readAllEvents(file))
+                        .noneMatch(event -> event.getEventType().getName().equals("jdk.VirtualThreadPinned"));
+            } finally {
+                java.nio.file.Files.deleteIfExists(file);
+            }
+        }
+    }
 }

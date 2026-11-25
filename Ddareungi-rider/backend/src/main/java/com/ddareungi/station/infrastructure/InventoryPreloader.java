@@ -10,8 +10,19 @@ import org.springframework.stereotype.Component;
 @Profile("infra")
 public class InventoryPreloader {
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(InventoryPreloader.class);
+    /** Every refresh re-reads at least this much before the last checkpoint (rows written slightly late). */
+    static final Duration CHECKPOINT_OVERLAP = Duration.ofMinutes(10);
+    /**
+     * Rows can arrive much later than their observed slot (collector backlog or backfill after an outage). Once a day
+     * is marked ready, reads are served from the preloaded store without a MySQL fallback, so such rows would never
+     * appear. The table has no insert-time column to select by, so the recent window is re-copied periodically.
+     */
+    static final Duration LATE_ARRIVAL_WINDOW = Duration.ofHours(3);
+    static final Duration LATE_RESCAN_INTERVAL = Duration.ofMinutes(10);
     private final JdbcTemplate jdbc;
     private final PreloadedInventoryStore store;
+    private LocalDateTime lastLateRescan;
+
     public InventoryPreloader(JdbcTemplate jdbc, PreloadedInventoryStore store) { this.jdbc = jdbc; this.store = store; }
 
     @Scheduled(scheduler = "inventoryPreloadScheduler", initialDelay = 1000, fixedDelay = 30000)
@@ -28,12 +39,15 @@ public class InventoryPreloader {
                 }
             }
             var checkpoint = store.checkpoint();
-            var from = checkpoint == null ? through.toLocalDate().atStartOfDay() : checkpoint.minusMinutes(10);
+            var from = checkpoint == null ? through.toLocalDate().atStartOfDay() : checkpoint.minus(CHECKPOINT_OVERLAP);
+            boolean lateRescan = lastLateRescan == null || !through.isBefore(lastLateRescan.plus(LATE_RESCAN_INTERVAL));
+            if (lateRescan && from.isAfter(through.minus(LATE_ARRIVAL_WINDOW))) from = through.minus(LATE_ARRIVAL_WINDOW);
             if (from.isBefore(oldest.atStartOfDay())) from = oldest.atStartOfDay();
-            if (from.isAfter(through)) from = through.minusMinutes(10);
+            if (from.isAfter(through)) from = through.minus(CHECKPOINT_OVERLAP);
             copy(from, through);
             // Checkpoint advances only after every Redis write succeeds. Replays are idempotent.
             store.completed(through);
+            if (lateRescan) lastLateRescan = through;
         } catch (RuntimeException error) {
             log.warn("Inventory preload failed; database fallback available: {}", error.getClass().getSimpleName());
         }
