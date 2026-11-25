@@ -296,4 +296,12 @@ class PlaceSearchControllerTest {
     private static Place place(String name, String category, String url) {
         return new Place(name, "", new Location(37.5, 127.02), url, category);
     }
+
+    /** The keyword search already answered (empty); a failing address fallback is "no results", not 502/504. */
+    @Test void failingAddressFallbackKeepsTheEmptyAnswer() {
+        when(provider.address(anyString())).thenThrow(new PlaceProviderException("down", false));
+        assertThat(controller.search("없는장소이름", null, null).data()).isEmpty();
+        when(provider.address(anyString())).thenThrow(new PlaceProviderException("slow", true));
+        assertThat(controller.search("없는장소이름", null, null).data()).isEmpty();
+    }
 }

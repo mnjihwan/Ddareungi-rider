@@ -63,29 +63,20 @@ public class KakaoPlaceSearchProvider implements PlaceSearchProvider {
                     .queryParam("sort", "distance");
             if (categoryGroupCode != null) uri.queryParam("category_group_code", categoryGroupCode);
             return uri.build(query);
-        }), documents -> {
-            var result = new ArrayList<Place>();
-            for (var item : documents) {
-                if (categoryGroupCode == null || categoryGroupCode.equals(item.path("category_group_code").asString(""))) {
-                    result.add(place(item));
-                }
-            }
-            return result;
-        });
+        }), documents -> each(documents, item ->
+                categoryGroupCode == null || categoryGroupCode.equals(item.path("category_group_code").asString(""))
+                        ? place(item) : null));
     }
 
     @Override
     public List<Place> address(String query) {
         return parse("Invalid address response", fetch(uri -> uri.path("/v2/local/search/address.json")
-                .queryParam("query", "{query}").queryParam("size", 5).build(query)), documents -> {
-            var result = new ArrayList<Place>();
-            for (var address : documents) {
-                String name = address.path("address_name").asString("");
-                result.add(new Place(name, name, new Location(Double.parseDouble(address.path("y").asString()),
-                        Double.parseDouble(address.path("x").asString())), null, ""));
-            }
-            return result;
-        });
+                .queryParam("query", "{query}").queryParam("size", 5).build(query)), documents -> each(documents, address -> {
+            String name = address.path("address_name").asString("");
+            if (name.isBlank()) throw new IllegalStateException("Invalid address name");
+            return new Place(name, name, new Location(Double.parseDouble(address.path("y").asString()),
+                    Double.parseDouble(address.path("x").asString())), null, "");
+        }));
     }
 
     @Override
@@ -111,13 +102,28 @@ public class KakaoPlaceSearchProvider implements PlaceSearchProvider {
                 .queryParam("category_group_code", categoryGroupCode)
                 .queryParam("x", center.longitude()).queryParam("y", center.latitude())
                 .queryParam("radius", radiusMeters).queryParam("sort", "distance").queryParam("size", 15).build()),
-                documents -> {
-                    var result = new ArrayList<Place>();
-                    for (var item : documents) {
-                        if (categoryGroupCode.equals(item.path("category_group_code").asString(""))) result.add(place(item));
-                    }
-                    return result;
-                });
+                documents -> each(documents, item ->
+                        categoryGroupCode.equals(item.path("category_group_code").asString("")) ? place(item) : null));
+    }
+
+    /**
+     * Maps every document, skipping the ones that cannot be read (blank name, missing or non-finite coordinates), so
+     * one bad document does not fail the whole answer. A null mapping result is a filtered document, not an error.
+     * When documents exist but none could be read, the response format itself is wrong and the call fails.
+     */
+    static <T> List<T> each(JsonNode documents, Function<JsonNode, @Nullable T> mapper) {
+        var result = new ArrayList<T>();
+        int skipped = 0;
+        for (var item : documents) {
+            try {
+                T value = mapper.apply(item);
+                if (value != null) result.add(value);
+            } catch (RuntimeException invalid) {
+                skipped++;
+            }
+        }
+        if (skipped > 0 && result.isEmpty()) throw new IllegalStateException("No readable document");
+        return result;
     }
 
     /**

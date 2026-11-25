@@ -126,7 +126,12 @@ public class PlaceSearchService {
             var distinct = new LinkedHashMap<String, Place>();
             Stream.concat(subways.stream(), result.stream()).forEach(place -> distinct.putIfAbsent(identity(place), place));
             var merged = new ArrayList<>(distinct.values());
-            if (merged.isEmpty()) merged.addAll(cached(PlaceSearchCache.key(term, null, "address"), () -> provider.address(term)));
+            if (merged.isEmpty()) {
+                // Supplementary like the subway and station lookups: the keyword search already answered (with
+                // nothing), so an address-API failure is "no results", never a provider error for the whole search.
+                try { merged.addAll(cached(PlaceSearchCache.key(term, null, "address"), () -> provider.address(term))); }
+                catch (RuntimeException ignored) { /* Keep the successful empty answer. */ }
+            }
             return merged;
         } catch (PlaceProviderException error) {
             throw publicError(error, "장소 검색 응답을 가져오지 못했습니다.");
