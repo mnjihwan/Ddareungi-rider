@@ -236,4 +236,27 @@ class ResilientCallerTest {
         }
         assertThat(seen).hasValue("caller-test");
     }
+
+    /** A timed-out exchange that is still running keeps its bulkhead slot until it actually ends. */
+    @Test void bulkheadSlotIsHeldUntilTheCancelledExchangeEnds() throws Exception {
+        var bulkhead = new Semaphore(1);
+        var caller = new ResilientCaller("test", breaker(), bulkhead, noRetry(), Duration.ofMillis(100));
+        var finish = new CountDownLatch(1);
+        assertThatThrownBy(() -> caller.call(() -> {
+            // Ignores interruption, like a socket read that cancellation cannot stop.
+            while (true) {
+                try { if (finish.await(5, TimeUnit.SECONDS)) return "late"; } catch (InterruptedException ignored) { }
+            }
+        }, true)).isInstanceOfSatisfying(ProviderCallException.class,
+                error -> assertThat(error.kind()).isEqualTo(ProviderCallException.Kind.TIMEOUT));
+        assertThat(bulkhead.availablePermits()).isZero();
+        assertThatThrownBy(() -> caller.call(() -> "next", true)).isInstanceOfSatisfying(ProviderCallException.class,
+                error -> assertThat(error.kind()).isEqualTo(ProviderCallException.Kind.BULKHEAD_FULL));
+
+        finish.countDown();
+        long until = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (bulkhead.availablePermits() == 0 && System.nanoTime() < until) Thread.onSpinWait();
+        assertThat(bulkhead.availablePermits()).isEqualTo(1);
+        assertThat(caller.call(() -> "next", true)).isEqualTo("next");
+    }
 }
