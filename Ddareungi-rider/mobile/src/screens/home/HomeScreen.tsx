@@ -10,7 +10,7 @@ import { useCurrentLocation } from '../../features/current-location/model/useCur
 import { useStationListForecasts } from '../../features/forecast/model/useStationForecasts';
 import { requestRouteMappingCheck } from '../../features/rider-map/api/routeMappingCheck';
 import { loadLastMap, saveLastMap } from '../../features/rider-map/model/lastMapStorage';
-import { type MapMarker, type MapRouteSegment } from '../../features/rider-map/model/scenes';
+import { routeStationRole, type MapMarker, type MapRouteSegment } from '../../features/rider-map/model/scenes';
 import { RiderMap, type RiderMapHandle } from '../../features/rider-map/ui/RiderMap';
 import { routeStationObservation } from '../../features/route-planning/model/routeStationObservation';
 import { type Endpoint, useRoutePlanner } from '../../features/route-planning/model/useRoutePlanner';
@@ -271,14 +271,11 @@ function RiderHome({ initialMap }: { initialMap: SavedMapLocation }) {
         if (offsetX || offsetY) offsets.set(id, { x: offsetX ?? 0, y: offsetY ?? 0 });
       });
     }
-    const [rentalStation, returnStation] = routeStations ?? [];
     baseMarkers.forEach((station) => {
       const coordinate = stationLocation(station);
       if (!coordinate) return;
       const state = availability(station, now);
-      // Only the route's own stations get rental/return tags; any other selection keeps the station badge.
-      const role = station.stationId === rentalStation?.stationId ? 'rental'
-        : station.stationId === returnStation?.stationId ? 'return' : undefined;
+      const role = routeStationRole(station.stationId, routeStations);
       markers.push({
         id: `station:${station.stationId}`,
         coordinate,

@@ -44,6 +44,8 @@ export function StationDetail({
     queryFn: ({ signal }) => loadForecast(station.stationId, signal),
     enabled: !!forecastPath,
     staleTime: 5 * 60_000,
+    // forecastAt drops a forecast whose baseTime is over 10 minutes old; refresh while the detail stays open.
+    refetchInterval: forecastPath ? 60_000 : false,
   });
   const prediction = forecast.data ? forecastAt(forecast.data, minutes) : null;
   return (

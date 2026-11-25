@@ -2,7 +2,7 @@ import axios from "axios";
 import type { Coordinates, Forecast, Place, Station, MapBounds, NearbyStations, RoutePlan, RouteSearchOptions,
   RouteSearchResult, RoutingStatus, StationClusters, ViewportStations } from "./types.ts";
 import { unwrap, type ApiEnvelope } from "./apiEnvelope.ts";
-import { buildRouteSearchBody, toRoutePlan, type RouteStationChoice } from "./routeSearch.ts";
+import { buildRouteSearchBody, toDrawableRoutePlan, type RouteStationChoice } from "./routeSearch.ts";
 import { isTruncated } from "./mapClusters.ts";
 import type { InventoryRecord } from "./inventoryComparison.ts";
 
@@ -20,14 +20,15 @@ export async function loadInventoryHistory(stationId: string, startTime: string,
 /**
  * `POST /routes/search` (spec 13.1, phase 3 A6; replaces the deprecated `/routes/plan`). The body comes from
  * `buildRouteSearchBody` (chosen stations lift the walking limit; `status` decides `preferBikeRoad`; no nulls).
- * Polylines are decoded into the planner/map view model; `routes[0]` is the recommended route.
+ * Polylines are decoded into the planner/map view model; `routes[0]` is the recommended route. RoutePlanner draws
+ * exactly WALK, BIKE, WALK, so an undrawable recommended route is rejected and undrawable alternatives are dropped.
  */
 export async function searchBikeRoutes(origin: Coordinates, destination: Coordinates,
   stations: RouteStationChoice = {}, signal?: AbortSignal, options?: RouteSearchOptions,
   status?: Pick<RoutingStatus, "bikeRoadPreferenceSupported"> | null): Promise<RoutePlan> {
   const body = (await api.post<ApiEnvelope<RouteSearchResult>>("/routes/search",
     buildRouteSearchBody(origin, destination, stations, status, options), {signal, timeout: 90_000})).data;
-  return toRoutePlan(unwrap(body), body.meta, origin, destination);
+  return toDrawableRoutePlan(unwrap(body), body.meta, origin, destination);
 }
 /** Server maximum of `limit` (spec 11.1). D11: lists may be cut at 100 stations (e.g. the 3km tab). */
 export const NEARBY_LIMIT = 100;

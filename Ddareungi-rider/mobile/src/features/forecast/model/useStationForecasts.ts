@@ -1,7 +1,7 @@
 import { skipToken, useQuery } from '@tanstack/react-query';
 import type { Station } from '../../../entities/station/model/types';
 import { stationOutlook } from '../../../shared/rider-contract/status';
-import { forecastPath, forecastStationIds, loadForecast, loadForecasts } from '../api/forecastApi';
+import { forecastPath, forecastStationIds, loadForecasts, stationForecastQuery } from '../api/forecastApi';
 
 const LIST_REFRESH_MS = 60_000;
 
@@ -29,9 +29,5 @@ export function useStationListForecasts(stations: readonly Station[], minutes: n
 }
 
 export function useStationForecast(stationId: string) {
-  return useQuery({
-    queryKey: ['forecast', stationId],
-    queryFn: forecastPath ? ({ signal }) => loadForecast(stationId, signal) : skipToken,
-    staleTime: 5 * LIST_REFRESH_MS,
-  });
+  return useQuery(stationForecastQuery(stationId));
 }
