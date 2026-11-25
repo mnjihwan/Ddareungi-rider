@@ -18,6 +18,7 @@ const { apiClient } = await import('../src/shared/api/client.ts');
 const { fetchRecommendedRoute, routingStatusQuery } = await import('../src/features/route-planning/api/routeApi.ts');
 const { fetchBatchStations, fetchInventoryHistory, fetchNearbyStations, fetchServiceMode, fetchViewportStations, searchPlaces, searchStations } =
   await import('../src/features/station-search/api/stationApi.ts');
+const { FORECAST_REFRESH_MS, stationForecastQuery } = await import('../src/features/forecast/api/forecastApi.ts');
 
 const now = Date.parse('2026-11-20T03:00:00Z');
 const center = { latitude: 37.4979, longitude: 127.0276 };
@@ -315,4 +316,14 @@ test('station detail never replaces a newer list observation', () => {
   assert.equal(mergeStationDetail({ ...listed, realtimeUpdatedAt: null }, older).parkingBikeTotCnt, 2);
   assert.equal(mergeStationDetail(listed, { ...newer, stationId: 'other' }), listed);
   assert.equal(mergeStationDetail(listed, undefined), listed);
+});
+
+test('station detail forecast refreshes within the 10-minute validity window', () => {
+  const enabled = stationForecastQuery('ST-12', '/api/v1/stations/forecasts');
+  assert.equal(enabled.refetchInterval, FORECAST_REFRESH_MS);
+  assert.ok(FORECAST_REFRESH_MS < 10 * 60_000);
+  assert.equal(typeof enabled.queryFn, 'function');
+  const disabled = stationForecastQuery('ST-12', undefined);
+  assert.equal(disabled.refetchInterval, false);
+  assert.notEqual(typeof disabled.queryFn, 'function');
 });

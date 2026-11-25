@@ -1,7 +1,13 @@
+import { queryOptions, skipToken } from '@tanstack/react-query';
 import { apiClient } from '../../../shared/api/client.ts';
 import type { Forecast } from '../../../shared/rider-contract/types.ts';
 
 export const FORECAST_HORIZONS = [5, 10, 15, 30, 60] as const;
+/**
+ * `forecastAt` discards a forecast whose baseTime is more than 10 minutes old, so an open detail must refetch
+ * well within that window instead of waiting for a remount or focus change.
+ */
+export const FORECAST_REFRESH_MS = 60_000;
 const BATCH_SIZE = 100;
 
 function forecastEndpoint(configuredPath?: string): string | undefined {
@@ -45,4 +51,13 @@ export async function loadForecast(stationId: string, signal?: AbortSignal): Pro
   const forecast = forecasts.find((value) => value.stationId === stationId);
   if (!forecast) throw new Error('Forecast unavailable');
   return forecast;
+}
+
+export function stationForecastQuery(stationId: string, path = forecastPath) {
+  return queryOptions({
+    queryKey: ['forecast', stationId],
+    queryFn: path ? ({ signal }) => loadForecast(stationId, signal) : skipToken,
+    staleTime: 5 * FORECAST_REFRESH_MS,
+    refetchInterval: path ? FORECAST_REFRESH_MS : false,
+  });
 }
